@@ -5,6 +5,11 @@ using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
 using GamePlayer = Server.Game.Player;
+// 注意：Assembly-CSharp 里同时存在全局命名空间的 Corpse（base DeviceBase，客户端用）与
+// Server.Game.Corpse（base Server.Game.Device，服务端用）。C# 的类型查找中，
+// 外层（全局）命名空间优先于 using 引入的命名空间，因此裸写 Corpse 会静默解析到全局那个，
+// 编译通过但 Harmony 在运行期找不到目标。必须显式限定。
+using GameCorpse = Server.Game.Corpse;
 
 namespace HideAndSeek.Features.Rule
 {
@@ -12,11 +17,11 @@ namespace HideAndSeek.Features.Rule
     /// 禁止尸体报告，使对局永不进入调查／学级裁判阶段（捉迷藏没有"开会"环节）。
     ///
     /// 原版有三条通往调查阶段的路径，本功能覆盖前两条，第三条由 WhiteWinFeature 改写：
-    ///   ① 首具尸体出现后 50~70 秒自动进入 —— Corpse 构造函数（:168820）
+    ///   ① 首具尸体出现后 50~70 秒自动进入 —— Server.Game.Corpse 构造函数（:168820）
     ///        TimeManager.PushSurvivalJob(WaitDetectiveSecond, EndSurvival)
     ///      拦在 PushSurvivalJob 入口把延迟改成极大值：保留原版代码路径不变，
     ///      但实际不再触发。StateList[5]（客户端显示的"预计发现时刻"）由另一个钩子同步修正。
-    ///   ② 玩家走到尸体旁手动报警 —— Corpse.Interact（:168866）
+    ///   ② 玩家走到尸体旁手动报警 —— Server.Game.Corpse.Interact（:168866）
     ///   ③ 限制时间归零且有未发现尸体 —— GameRoom.SurvivalTick（:171256）
     ///
     /// 三个钩子各自独立成嵌套类：PatchLoader 对嵌套类型逐个 try/catch，
@@ -45,7 +50,7 @@ namespace HideAndSeek.Features.Rule
         /// 避免误伤 TimeManager 上其它 50~70 秒的生存任务。
         /// </summary>
         private static bool IsAutoDetectiveJob(Action action)
-            => action != null && action.Target is Corpse && action.Method.Name == "EndSurvival";
+            => action != null && action.Target is GameCorpse && action.Method.Name == "EndSurvival";
 
         // ── 路径 ①：自动进入调查的排程时间 ──────────────────────────────
         [HarmonyPatch(typeof(TimeManager), nameof(TimeManager.PushSurvivalJob), new[] { typeof(int), typeof(Action) })]
@@ -66,16 +71,17 @@ namespace HideAndSeek.Features.Rule
         }
 
         // ── 路径 ① 的显示同步：StateList[5] = 预计发现时刻 ────────────────
-        [HarmonyPatch(typeof(Corpse), MethodType.Constructor, new[] { typeof(GamePlayer), typeof(PublicPlayerInfo) })]
+        [HarmonyPatch(typeof(GameCorpse), MethodType.Constructor, new[] { typeof(GamePlayer), typeof(PublicPlayerInfo) })]
         internal static class CorpseCtorHook
         {
             [HarmonyPostfix]
-            private static void Postfix(Corpse __instance)
+            private static void Postfix(GameCorpse __instance)
             {
                 if (ModeRuntime.Bypass)
                     return;
 
-                var states = __instance?.Info?.StateList;
+                // 服务端 Device 用 DeviceInfo；客户端的 DeviceBase.Info 是另一套，不要混用
+                var states = __instance?.DeviceInfo?.StateList;
                 if (states == null || states.Count <= 5)
                     return;
 
@@ -84,7 +90,7 @@ namespace HideAndSeek.Features.Rule
         }
 
         // ── 路径 ②：手动报警 ────────────────────────────────────────────
-        [HarmonyPatch(typeof(Corpse), "Interact", new[] { typeof(GamePlayer), typeof(Packet) })]
+        [HarmonyPatch(typeof(GameCorpse), "Interact", new[] { typeof(GamePlayer), typeof(Packet) })]
         internal static class InteractHook
         {
             [HarmonyPrefix]
