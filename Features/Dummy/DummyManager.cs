@@ -279,7 +279,7 @@ namespace HideAndSeek.Features.Dummy
             ("rin", 102), ("benjamin", 102), ("小熊", 102),
             ("luna", 103), ("露娜", 103),
             ("jeremy", 104), ("杰瑞米", 104),
-            ("hasung", 105),
+            ("hasung", 105), ("河成", 105),
             ("kaho", 106), ("红毛", 106),
             ("miyuki", 107), ("美雪", 107),
             ("liliana", 108), ("莉莉安娜", 108),
@@ -316,8 +316,11 @@ namespace HideAndSeek.Features.Dummy
             var sb = new StringBuilder("{\"ok\":true,\"characters\":[");
 
             bool first = true;
+            var seen = new HashSet<int>();
             foreach (var alias in CharacterAliases)
             {
+                if (!seen.Add(alias.Id))
+                    continue;
                 if (dic == null || !dic.TryGetValue(alias.Id, out var cd) || cd == null)
                     continue;
                 if (!first) sb.Append(',');
