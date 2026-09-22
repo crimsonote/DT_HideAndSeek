@@ -38,6 +38,7 @@ namespace HideAndSeek.Features.Weapon
         [HarmonyPostfix]
         private static void Postfix(GameRoom __instance)
         {
+            Diagnostics.Hit("WeaponGrant");
             if (ModeRuntime.Bypass)
                 return;
             if (GiveAtStart == null || !GiveAtStart.Value)

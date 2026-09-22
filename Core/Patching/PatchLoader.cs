@@ -101,6 +101,7 @@ namespace HideAndSeek.Core
                     }
 
                     result.EnabledCount++;
+                    Diagnostics.MarkLoaded(desc.Section);
                     log.LogInfo($"[HS] 已启用功能: {desc.Type.Name} ([{desc.Section}], {desc.Side})");
                 }
                 catch (Exception ex)

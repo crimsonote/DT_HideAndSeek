@@ -22,6 +22,7 @@ namespace HideAndSeek.Features.System
         [HarmonyPostfix]
         private static void Postfix()
         {
+            Diagnostics.Hit("ModeWatchdog");
             ModeWatchdog.Tick();
         }
     }

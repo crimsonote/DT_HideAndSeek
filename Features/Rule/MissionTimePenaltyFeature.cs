@@ -51,6 +51,7 @@ namespace HideAndSeek.Features.Rule
         [HarmonyPrefix]
         private static void PrefixClearMission()
         {
+            Diagnostics.Hit("MissionTimePenalty");
             _inClearMission = false;
             _capturedDelta = 0f;
 

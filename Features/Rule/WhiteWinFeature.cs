@@ -44,6 +44,7 @@ namespace HideAndSeek.Features.Rule
         [HarmonyPrefix]
         private static bool Prefix(GameRoom __instance)
         {
+            Diagnostics.Hit("WhiteWinOnTimeout");
             if (ModeRuntime.Bypass)
                 return true;
             if (OnTimeout == null || !OnTimeout.Value)

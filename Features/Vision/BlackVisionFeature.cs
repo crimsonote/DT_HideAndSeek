@@ -53,6 +53,7 @@ namespace HideAndSeek.Features.Vision
         [HarmonyPostfix]
         private static void PostfixColor(GamePlayer __instance, EPlayerColor value)
         {
+            Diagnostics.Hit("BlackVision");
             if (value != EPlayerColor.Black)
                 return;
             if (!IsBlack(__instance))

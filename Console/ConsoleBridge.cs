@@ -50,6 +50,8 @@ namespace HideAndSeek.Console
             if (__0 == null)
                 return true;
 
+            Diagnostics.Hit("ConsoleBridge");
+
             var pending = Traverse.Create(__0);
             string raw = pending.Field("Command").GetValue<string>();
             if (string.IsNullOrWhiteSpace(raw))

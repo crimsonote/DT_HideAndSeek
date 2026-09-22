@@ -26,6 +26,7 @@ namespace HideAndSeek.Features.Rule
         [HarmonyPrefix]
         private static bool Prefix(GamePlayer player)
         {
+            Diagnostics.Hit("NoMasterMind");
             if (ModeRuntime.Bypass)
                 return true;
 

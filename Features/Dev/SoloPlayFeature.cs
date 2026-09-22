@@ -34,6 +34,7 @@ namespace HideAndSeek.Features.Dev
         [HarmonyPrefix]
         private static bool Prefix(ref int __result)
         {
+            Diagnostics.Hit("SoloPlay");
             if (ModeRuntime.Bypass)
                 return true;
 

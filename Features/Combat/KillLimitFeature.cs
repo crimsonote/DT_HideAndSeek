@@ -29,6 +29,7 @@ namespace HideAndSeek.Features.Combat
         [HarmonyPrefix]
         private static bool Prefix(ref int __result)
         {
+            Diagnostics.Hit("KillLimit");
             if (ModeRuntime.Bypass)
                 return true;
 

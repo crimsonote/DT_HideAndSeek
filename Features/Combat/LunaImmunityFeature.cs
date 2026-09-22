@@ -33,6 +33,7 @@ namespace HideAndSeek.Features.Combat
         [HarmonyPrefix]
         private static bool Prefix(GamePlayer __instance, int targetId)
         {
+            Diagnostics.Hit("LunaImmunity");
             if (ModeRuntime.Bypass)
                 return true;
 

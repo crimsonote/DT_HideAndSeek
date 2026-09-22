@@ -82,6 +82,7 @@ namespace HideAndSeek.Features.Rule
         [HarmonyPrefix]
         private static bool PrefixInteract()
         {
+            Diagnostics.Hit("CorpseReport");
             if (ModeRuntime.Bypass)
                 return true;
             if (BlockManualReport == null || !BlockManualReport.Value)

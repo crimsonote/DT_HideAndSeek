@@ -34,6 +34,7 @@ namespace HideAndSeek.Console
             switch (name)
             {
                 case "hs":           return Status();
+                case "hs_check":     return Diagnostics.Report();
                 case "hs_mode":      return SetMode(args);
                 case "hs_aoi":       return SetAoi(args);
                 case "hs_cd":        return SetCooldown(args);

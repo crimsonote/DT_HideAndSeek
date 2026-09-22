@@ -74,6 +74,7 @@ namespace HideAndSeek.Features.Vision
         [HarmonyPrefix]
         private static bool PrefixAddPlayer(GamePlayer __instance, GamePlayer player, ref bool __result)
         {
+            Diagnostics.Hit("AoiCulling");
             if (ModeRuntime.Bypass)
                 return true;
             if (!IsBlack(player))                 // 接收者不是黑方 → 原版行为

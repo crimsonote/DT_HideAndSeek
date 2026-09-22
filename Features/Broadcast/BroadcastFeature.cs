@@ -73,6 +73,7 @@ namespace HideAndSeek.Features.Broadcast
         [HarmonyPostfix]
         private static void PostfixStartSurvive(GameRoom __instance)
         {
+            Diagnostics.Hit("Broadcast");
             if (!Ready)
                 return;
 

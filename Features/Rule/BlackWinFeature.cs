@@ -30,6 +30,7 @@ namespace HideAndSeek.Features.Rule
         [HarmonyPostfix]
         private static void Postfix(GamePlayer __instance)
         {
+            Diagnostics.Hit("BlackWin");
             if (ModeRuntime.Bypass)
                 return;
 

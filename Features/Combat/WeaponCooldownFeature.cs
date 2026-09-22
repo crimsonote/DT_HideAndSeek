@@ -36,6 +36,7 @@ namespace HideAndSeek.Features.Combat
         [HarmonyPrefix]
         private static void Prefix(ref int seconds)
         {
+            Diagnostics.Hit("WeaponCooldown");
             if (ModeRuntime.Bypass)
                 return;
             if (seconds != VanillaRearmSeconds)
