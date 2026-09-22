@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Text;
 using BepInEx.Configuration;
@@ -44,7 +44,7 @@ namespace HideAndSeek.Console
                 {
                     case "hs_check": case "hs_mode": case "hs_aoi": case "hs_cd":
                     case "hs_killlimit": case "hs_dummy": case "hs_flash":
-                    case "hs_roomname": case "hs_tp":
+                    case "hs_roomname": case "hs_tp": case "hs_grant":
                         name = sub;
                         args = args.Skip(1).ToArray();
                         break;
@@ -62,6 +62,7 @@ namespace HideAndSeek.Console
                 case "hs_cd":        return SetCooldown(args);
                 case "hs_killlimit": return SetKillLimit(args);
                 case "hs_tp":        return Teleport(args);
+                case "hs_grant":     return Grant(args);
                 default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
             }
         }
@@ -343,6 +344,32 @@ namespace HideAndSeek.Console
 
         private static GamePlayer FindPlayer(GameRoom room, int id)
             => room?.Players?.FirstOrDefault(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
+
+        // ── /hs_grant [on|off] ──────────────────────────────────────
+        // 切换发刀模式：on = 开局随机发刀并锁死武器架；off = 原版自行跑刀。
+        // GiveAtStart 只在 StartSurvive 那一刻被读取，所以改动下一局才生效。
+        private static string Grant(string[] args)
+        {
+            var give = HideAndSeek.Features.Weapon.WeaponGrantFeature.GiveAtStart;
+            var block = HideAndSeek.Features.Weapon.WeaponGrantFeature.BlockFurtherWeapons;
+            if (give == null)
+                return Error("发刀功能未加载");
+
+            if (args.Length == 0)
+                return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)}}}";
+
+            bool? on = ParseBool(args[0]);
+            if (on == null)
+                return Error("用法: hs_grant <on|off>（on=开局随机发刀并锁死武器架；off=自行跑刀。改动下一局生效）");
+
+            give.Value = on.Value;
+
+            // 自动发刀必须同时锁死武器架，否则第二个人拿到刀就会出现两个黑方
+            if (block != null)
+                block.Value = on.Value;
+
+            return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)},\"note\":\"下一局生效\"}}";
+        }
 
         // ── 小工具 ──────────────────────────────────────────────────
         /// <summary>
