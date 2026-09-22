@@ -258,29 +258,50 @@ namespace HideAndSeek.Features.Dummy
             if (room == null || DesiredCharacter.Count == 0)
                 return;
 
+            // 只在选角阶段动手：本方法挂在 PickCharacterTick（每秒回调），
+            // 不设这道闸的话，进入 Survive 后仍会每秒重试，把日志刷满。
+            if (room.State != EGameState.PickCharacter)
+                return;
+
+            var handled = new List<int>();
+
             foreach (var kv in DesiredCharacter)
             {
                 int id = kv.Key;
                 int chara = kv.Value;
-                if (chara == 0)
-                    continue;
 
                 var player = room.Players.FirstOrDefault(p =>
                     p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
+
+                // 人还没进来就先搁置，等他真的进房再处理
                 if (player == null)
                     continue;
+
+                handled.Add(id);
 
                 try
                 {
                     room.PickCharacter(player, chara);
-                    if (player.CharacterId == chara) Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
-                    else Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角 {chara} 未生效（State={room.State}，当前角色={player.CharacterId}）。");
+
+                    // -2 是游戏的「随机」选项，它**不会**改动 player.CharacterId
+                    // （实际角色要等所有人选完后才分配），所以不能拿它判定成败。
+                    if (chara == -2)
+                        Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选择「随机」，交由游戏在选角结束后分配。");
+                    else if (player.CharacterId == chara)
+                        Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
+                    else
+                        Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角 {chara} 未生效（State={room.State}，当前角色={player.CharacterId}）。");
                 }
                 catch (global::System.Exception ex)
                 {
                     Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角失败 — {ex.Message}");
                 }
             }
+
+            // 处理过的一次即出队：PickCharacter 对重复调用是幂等的，重试没有意义，
+            // 只会让日志每秒重复一条，把控制台里的命令返回值冲掉。
+            foreach (int id in handled)
+                DesiredCharacter.Remove(id);
         }
 
         /// <summary>角色别名 → 角色 ID。数字 ID 由调用方先处理。</summary>
