@@ -1,4 +1,4 @@
-# HideAndSeek 部署脚本
+﻿# HideAndSeek 部署脚本
 # 用法：
 #   pwsh -File deploy.ps1
 #   pwsh -File deploy.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Deadly Trick"
