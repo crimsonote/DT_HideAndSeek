@@ -199,11 +199,18 @@ namespace HideAndSeek.Console
         }
 
         // ── /hs_roomname [新名字] ────────────────────────────────────
-        // 改的是 Steam 大厅元数据里的房间名，即"房间列表里显示的名字"。
+        // 改的是 Steam 大厅元数据里的房间名，即「房间列表里显示的名字」。
+        // 无参数时回读大厅里的实际值 —— 客户端界面不展示这条元数据，只能这样验证。
         private static string RoomName(string[] args)
         {
             if (args.Length == 0)
-                return $"{{\"ok\":true,\"name\":\"{HideAndSeek.Features.System.RoomNameFeature.LastName?.Value ?? ""}\"}}";
+            {
+                if (!HideAndSeek.Features.System.RoomNameFeature.Query(out string cur, out string qerr))
+                    return Error("读取房间名失败: " + qerr);
+
+                string last = HideAndSeek.Features.System.RoomNameFeature.LastName?.Value ?? "";
+                return $"{{\"ok\":true,\"lobbyName\":\"{cur}\",\"lastSet\":\"{last}\"}}";
+            }
 
             // 房间名可能含空格，拼回整串
             string name = string.Join(" ", args).Trim();
