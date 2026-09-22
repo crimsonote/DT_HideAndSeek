@@ -1,0 +1,166 @@
+# HideAndSeek 开发规范
+
+《Deadly Trick》的**房主端**捉迷藏玩法模块，参照 DT_Tools 的框架实现。
+
+**核心约束：零改动上游。** 不修改 `D:\git\DT_Tools\DT_Tools\` 下任何文件；
+与该项目的全部交互只能通过两条外部路径（配置复用 + 命令桥），详见下文。
+
+---
+
+## 编码（最容易踩，且不报错）
+
+**所有 `.cs` 必须带 UTF-8 BOM。**
+
+中文 Windows 上 Roslyn 对"无 BOM + 非 ASCII"的文件会退回**系统 ANSI（GBK）**读取，
+中文字面量在**编译期**就已损坏，且不产生任何警告 —— 表现是游戏里看到乱码：
+
+```text
+"假人" 的 UTF-8 字节 = E5 81 87 E4 BA BA
+E5 81 按 GBK 解读     = 鍋      ← 实测就出现过"假人 → 鍋水漢"这种乱码
+```
+
+- 用工具（编辑器 / write 类 API）**重写文件后必须复查 BOM** —— 覆写常常会丢掉它
+- 复查与补齐：
+
+```powershell
+$utf8Bom = New-Object System.Text.UTF8Encoding($true)
+Get-ChildItem -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\' } | ForEach-Object {
+    $b = [System.IO.File]::ReadAllBytes($_.FullName)
+    if (-not ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) {
+        [System.IO.File]::WriteAllText($_.FullName, [System.Text.Encoding]::UTF8.GetString($b), $utf8Bom)
+    }
+}
+```
+
+- 验证编译产物里的中文是否正确（比看源码可靠）：
+
+```powershell
+$u8 = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($dll))
+$u8 -match '假人'      # 应为 True
+$u8 -match '鍋'        # 应为 False
+```
+
+---
+
+## 构建与部署
+
+```powershell
+# 构建（必须在 HideAndSeek 目录内：根目录的 global.json 钉的是未安装的 7.0.410）
+cd D:\git\DT_Tools\HideAndSeek
+dotnet build -c Release --nologo
+
+# 部署（游戏需先退出，否则 DLL 被锁）
+pwsh -File deploy.ps1
+```
+
+部署后**先看日志的"失败 N"**：
+
+```text
+[HS] HideAndSeek 0.1.0 加载完成：启用 17，跳过 2，失败 0
+```
+
+**`失败` 必须为 0。** 补丁挂不上不会让功能报错，只会静默失效 —— 曾因此让
+"离开对局恢复光照"白改两轮。
+
+---
+
+## 代码组织
+
+- 命名空间与目录一致：`HideAndSeek.Features.Vision` ↔ `Features/Vision/`。
+- 功能一律 `[PatchFeature(section, description, defaultEnabled, side)]` 声明，
+  子项用 `[ConfigField(default, desc, Min, Max)]`，由 `ConfigBinder` 自动 Bind，
+  **禁止手写 `Config.Bind`**（`ConsoleBridge` 段除外）。
+- `Plugin.cs` 只组装：解析配置来源 → `PatchLoader.Load` → 落盘 → 报告。
+- 不署他人之名；author 留空。
+
+---
+
+## 已踩过的坑（改代码前先读这一节）
+
+### 1. 同名类型会被外层命名空间抢走
+
+`Assembly-CSharp` 里存在这些重名：`Corpse` / `Player` / `Item` / `DeviceManager` / `Summon`。
+C# 的查找规则里**外层（全局）命名空间优先于 `using` 引入的命名空间**，于是
+`typeof(Corpse)` 会静默解析到**全局那个**，编译通过但 Harmony 运行时找不到目标。
+
+→ 一律用别名显式限定：
+
+```csharp
+using GamePlayer = Server.Game.Player;
+using GameCorpse = Server.Game.Corpse;
+using GameDeviceManager = Server.Game.DeviceManager;
+```
+
+另外服务端 `Device` 读状态用 **`DeviceInfo`**，客户端的 `DeviceBase.Info` 是另一套。
+
+### 2. `System.*` 会被自己的命名空间截胡
+
+本程序集存在 `HideAndSeek.Features.System`，所以在 `Features.*` 下写
+`System.StringSplitOptions` 会解析到它。→ 用 `global::System.XXX`。
+
+### 3. Harmony 重载歧义
+
+目标方法有重载时，`nameof` 不带参数类型会抛 `Ambiguous match`，整个补丁挂不上。
+`GameRoom.ChangeGameState` 就有两个重载（public 单参 / private 双参）：
+
+```csharp
+[HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
+```
+
+私有方法用字符串定位（`[HarmonyPatch(typeof(X), "PrivateMethod")]`），
+但内部类型（如 `MissionManager`）用字符串类型名会解析到 `0Harmony` 上，
+必须改用 `[HarmonyTargetMethod]` + `AccessTools.TypeByName`。
+
+### 4. `AddPlayer` 是双向的，剔除必须自己补回来
+
+`X.AddPlayer(Y)` 的语义是"把 X 介绍给 Y"。原版让某人**重新可见**的唯一途径是
+**被观察者自己移动**（`Player.Move` → `SearchAndUpdatePlayer`）。
+站着不动的目标一旦被 `RemovePlayer`，就再也没有路径被加回来 —— 客户端上那个
+Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
+黑方移动时立即校正 + 每秒 tick 兜底，两处都主动 `AddPlayer`。
+
+同时要跳过 `State == EPlayerState.Hide`：死亡玩家被 `MakeSpectatorGhost` 置为
+`Hide` + `IsGhost=true`，原版会跳过他们，我们补 `AddPlayer` 时也必须跳过，
+否则会把死人的幽灵塞给黑方。
+
+### 5. 假黑灯是客户端的本地状态
+
+`Managers.Game.Darkness` 只由 `S_AREA_PUBLIC` 驱动。发这个包时 **`RoomId` 必须合法** ——
+客户端 `ChangeArea` 会执行 `RoomDic[RoomId]`，`RoomId = 0` 直接抛 `KeyNotFoundException`，
+`Darkness` 根本不会被改。
+
+而且**不需要写"解除黑灯"逻辑**：原版回大厅时会自行 `Darkness = false`（客户端 `:29110`）。
+多写的解除逻辑反而会在切区域（`Area.SendAreaInfo`）时把灯重新涂黑。
+→ 判据只需一条：**房间处于 `Survive` 才维持黑灯**。
+
+### 6. 上游 DT_Tools 没有"插件注册表"
+
+它的 `[PatchFeature]` 与 `IConsoleCommand` 都只扫**自己**的程序集，外部无法注入。
+集成只有两条路：
+
+- **配置复用**：Bind 到 `DT_Tools.Plugin.Instance.Config`，段会出现在 DT CONFIG 页；
+  注意它的 `Plugin.Instance` 在**它自己的 Awake** 里才赋值，我们在 `Start` 里读可能还是 null。
+- **命令桥**：Prefix 拦截 `DT_Tools.Console.WebConsole.ExecuteCommand`。
+  ⚠️ 它的命令列表缓存 `_cachedCommandsJson` 在**它的 Awake** 里就生成好了，
+  而我们的补丁在 `Start` 才挂上（BepInEx 顺序：所有 Awake → 所有 Start），
+  所以必须自己重建缓存，否则命令"能执行但不在列表/补全里"。
+
+### 7. 部署相关
+
+- 游戏运行时 `HideAndSeek.dll` 被锁，`Copy-Item` 会失败 —— 但**不检查返回值就会误报成功**。
+- 上游 DT_Tools 需要 `MonoMod.Backports.dll` 与 `MonoMod.ILHelpers.dll` 在
+  `BepInEx\core`，缺了它 `Awake` 静默失败、WebConsole 根本不启动（19450 无监听）。
+
+---
+
+## 常用命令
+
+| 命令 | 用途 |
+|---|---|
+| `hs` | 模式与参数总览 |
+| `hs_check` | **自检**：每个功能的 `loaded`（补丁是否挂上）与 `hits`（触发次数）——能区分"没挂上"和"挂上但没触发" |
+| `hs_mode on\|off` | 模式总开关（含可见性与光照回滚） |
+| `hs_aoi` | 视野裁剪参数 |
+| `hs_cd` / `hs_killlimit` | 击杀冷却 / 次数上限 |
+| `hs_dummy add\|del\|list\|clear` | 假人靶子 |
+| `hs_flash on\|off` | 开局灯效开关 |
