@@ -70,24 +70,11 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        // ── 路径 ① 的显示同步：StateList[5] = 预计发现时刻 ────────────────
-        [HarmonyPatch(typeof(GameCorpse), MethodType.Constructor, new[] { typeof(GamePlayer), typeof(PublicPlayerInfo) })]
-        internal static class CorpseCtorHook
-        {
-            [HarmonyPostfix]
-            private static void Postfix(GameCorpse __instance)
-            {
-                if (ModeRuntime.Bypass)
-                    return;
-
-                // 服务端 Device 用 DeviceInfo；客户端的 DeviceBase.Info 是另一套，不要混用
-                var states = __instance?.DeviceInfo?.StateList;
-                if (states == null || states.Count <= 5)
-                    return;
-
-                states[5] = TimeManager.Instance.SurviveTime + DelaySeconds;
-            }
-        }
+        // 注：这里曾有一个 CorpseCtorHook，试图把 StateList[5]（客户端显示的"预计发现时刻"）
+        // 也改成极大值，但实测无效 —— 尸体状态在构造函数内部就已对外同步，
+        // Postfix 改的只是服务端之后没人再读的副本，客户端仍显示原版的 50~70 秒。
+        // "到时间不报告"由上面的 PushSurvivalJob 拦截保证，与本钩子无关，
+        // 因此删除它 —— 留一个无效补丁只会误导后来的人。
 
         // ── 路径 ②：手动报警 ────────────────────────────────────────────
         [HarmonyPatch(typeof(GameCorpse), "Interact", new[] { typeof(GamePlayer), typeof(Packet) })]
