@@ -13,34 +13,29 @@ namespace HideAndSeek.Features.Vision
     /// <summary>
     /// 黑方视野裁剪（AOI）：黑方只能"看见"附近一定范围内的玩家。
     ///
-    /// 原理是复用原版自己的兴趣区域原语，而不是屏蔽客户端渲染：
-    ///   X.SharedPlayers 的语义是"能看到 X 的人"，服务端
-    ///   AddPlayer（:175822）向观察者发 S_SPAWN、RemovePlayer（:175841）发 S_DESPAWN，
-    ///   而位置广播 BroadcastToPlayerAndObservers（:176969）只发给 SharedPlayers。
-    ///   因此把远处的玩家从黑方的观察列表里移除，黑方客户端上：3D 模型消失、
-    ///   小地图 pin 消失、MyPlayer.GetTargetPlayer 也选不中他。
+    /// 原理是复用原版自己的兴趣区域原语：X.SharedPlayers 的语义是"能看到 X 的人"，
+    /// 服务端 AddPlayer（:175822）向观察者发 S_SPAWN、RemovePlayer（:175841）发 S_DESPAWN，
+    /// 位置广播 BroadcastToPlayerAndObservers（:176969）只发给 SharedPlayers。
+    /// 因此把远处的玩家从黑方的观察列表移除，黑方客户端上模型、小地图 pin、
+    /// 以及 MyPlayer.GetTargetPlayer 的索敌会同时消失。
     ///
-    /// 两个时机：
-    ///   ① 加入 —— Prefix AddPlayer：接收者是黑方且超出阈值时拒绝（随移动触发）
-    ///   ② 剔除 —— Postfix SurvivalTick：每秒清理超出阈值的（滞回避免抖动）
+    /// ★ 必须双向维护（这是最容易漏的一点）：
+    ///   原版让"某人重新可见"的唯一途径是**被观察者自己移动**
+    ///   （Player.Move :175883 → AreaManager.SearchAndUpdatePlayer :173427 → AddPlayer）。
+    ///   站着不动的目标一旦被剔除，就再没有任何路径被加回来 —— 客户端上那个
+    ///   Player 对象已 despawn，走到跟前也看不见。所以这里必须自己补 AddPlayer：
+    ///     · 黑方移动时立即校正（否则只靠每秒一次的 tick，靠近后会"慢一拍"）
+    ///     · SurvivalTick 每秒兜底
+    ///   进入用 EnterRange、退出用 ExitRange，构成滞回；AddPlayer 幂等，重复调用无害。
     ///
-    /// 阈值依据：客户端攻击索敌 224、服务端距离校验 672（451584 = 672²）、
-    /// 跑速约 728/s、位置包 10Hz（采样粒度 72.8，故滞回必须远大于它）。
-    ///
-    /// ★ 技能感知豁免（SkillAware）—— 两类技能需要"看得见目标"才能在客户端选中，
-    ///   而 AOI 会让它们静默失效：
-    ///
-    ///   - TimeStop（Seol）：SkillData.IsTarget=true、Range=3.0×224=672。
-    ///     客户端 UpdateSkillTargetPlayer → GetSkillTarget（:31443）只遍历本地 Players，
-    ///     672 内若无人被生成则 CanUseSkillCondition=false → UseSkill 直接 return，
-    ///     表现为"按键毫无反应"。故把阈值放宽到 672（与关掉 AOI 的原版逐位等价）。
-    ///
+    /// ★ 技能感知豁免（SkillAware）—— 两类技能需要"看得见目标"才能在客户端选中：
+    ///   - TimeStop（Seol）：SkillData.IsTarget=true、Range=3.0×224=672。客户端
+    ///     GetSkillTarget（:31443）只遍历本地 Players，672 内无人则 CanUseSkillCondition=false，
+    ///     按键毫无反应。故阈值放宽到 672。
     ///   - Marionette（Rin 的小熊）：探测是**纯客户端本地判定**
     ///     （Summon.DetectNearbyPlayer :7290，以召唤物坐标为圆心遍历本地 Players），
-    ///     而召唤物固定在自己脚下、不随人移动。本人走远后熊周围的人被裁掉，
-    ///     于是"熊贴着人也报无人在附近"。故圆心改为召唤物坐标，
-    ///     并**按它自己的探测半径 448 取阈值**（不是沿用 900 —— 那会让熊周围的
-    ///     可见范围比该技能应有的信息多一倍）。
+    ///     而召唤物固定在自己脚下、不随人移动。故圆心改为召唤物坐标，
+    ///     并按它自己的探测半径 448 取阈值（不用 900，那会让可见范围翻倍）。
     /// </summary>
     [HarmonyPatch]
     [PatchFeature(
@@ -50,11 +45,11 @@ namespace HideAndSeek.Features.Vision
         side: FeatureSide.Host)]
     internal static class AoiCullingFeature
     {
-        [ConfigField(600f, "进入可见范围的距离。建议不小于客户端攻击距离 224，且略小于服务端校验距离 672。",
+        [ConfigField(750f, "进入可见范围的距离。建议不小于客户端攻击距离 224；调大能让靠近时更早被识别。",
             Min = 200f, Max = 5000f)]
         public static ConfigEntry<float> EnterRange;
 
-        [ConfigField(900f, "离开可见范围的距离。必须明显大于进入距离（滞回），否则边界会抖动。",
+        [ConfigField(1100f, "离开可见范围的距离。须明显大于进入距离（滞回），否则边界会抖动。",
             Min = 200f, Max = 5000f)]
         public static ConfigEntry<float> ExitRange;
 
@@ -131,10 +126,7 @@ namespace HideAndSeek.Features.Vision
             }
         }
 
-        /// <summary>
-        /// 黑方若已放出小熊，返回召唤物坐标作为裁剪圆心。
-        /// 返回 false 时调用方应使用黑方自己的坐标。
-        /// </summary>
+        /// <summary>黑方若已放出小熊，返回召唤物坐标作为裁剪圆心。</summary>
         private static bool TryMiniCenter(GamePlayer black, out float cx, out float cy)
         {
             cx = 0f;
@@ -162,12 +154,58 @@ namespace HideAndSeek.Features.Vision
             return true;
         }
 
-        /// <summary>黑方自己的坐标，作为默认圆心。</summary>
         private static void OwnCenter(GamePlayer black, out float cx, out float cy)
         {
             var pos = black?.PublicInfo?.Pos;
             cx = pos?.X ?? 0f;
             cy = pos?.Y ?? 0f;
+        }
+
+        /// <summary>解出某黑方本次应使用的圆心与进入/退出半径。</summary>
+        private static void Resolve(GamePlayer black,
+            out float cx, out float cy, out float enter, out float exit)
+        {
+            enter = EnterRange?.Value ?? 750f;
+            exit = ExitRange?.Value ?? 1100f;
+
+            if (SkillAwareOn && SkillTypeOf(black) == ESkillType.TimeStop)
+            {
+                enter = Math.Max(enter, TimeStopSearchRange);
+                exit = Math.Max(exit, TimeStopSearchRange);
+            }
+
+            if (TryMiniCenter(black, out cx, out cy))
+            {
+                enter = MarionetteEnterRange?.Value ?? 448f;
+                exit = MarionetteExitRange?.Value ?? 648f;
+            }
+            else
+            {
+                OwnCenter(black, out cx, out cy);
+            }
+        }
+
+        /// <summary>
+        /// 对黑方附近的人主动确保可见。黑方移动时立即调用，
+        /// 避免只靠每秒一次的 tick 而产生"靠近后慢一拍"的观感。
+        /// </summary>
+        private static void RevealNearby(GameRoom room, GamePlayer black)
+        {
+            if (room == null || black == null)
+                return;
+
+            Resolve(black, out float cx, out float cy, out float enter, out _);
+            float enterSq = enter * enter;
+
+            var all = room.Players;
+            for (int i = 0; i < all.Count; i++)
+            {
+                var other = all[i];
+                if (other == null || other == black)
+                    continue;
+                if (DistanceSq(other, cx, cy) <= enterSq)
+                    other.AddPlayer(black);      // 幂等：不在列表才真正发送 S_SPAWN
+            }
         }
 
         // ── ① 加入：拒绝把远处的玩家介绍给黑方 ──────────────────────────
@@ -182,17 +220,9 @@ namespace HideAndSeek.Features.Vision
 
             Diagnostics.Hit("AoiCulling");
 
-            float range = EnterRange?.Value ?? 600f;
+            Resolve(player, out float cx, out float cy, out float enter, out _);
 
-            if (SkillAwareOn && SkillTypeOf(player) == ESkillType.TimeStop)
-                range = Math.Max(range, TimeStopSearchRange);
-
-            if (TryMiniCenter(player, out float cx, out float cy))
-                range = MarionetteEnterRange?.Value ?? 448f;   // 熊模式：用它自己的探测圈
-            else
-                OwnCenter(player, out cx, out cy);
-
-            if (DistanceSq(__instance, cx, cy) <= range * range)
+            if (DistanceSq(__instance, cx, cy) <= enter * enter)
                 return true;                      // 在范围内，允许
 
             __result = false;
@@ -213,7 +243,27 @@ namespace HideAndSeek.Features.Vision
                 = TimeManager.Instance.SurviveTime;
         }
 
-        // ── ② 剔除：超出阈值的从黑方观察列表移除 ─────────────────────────
+        // ── ② 黑方移动：立即校正可见性（消除"慢一拍"）────────────────────
+        [HarmonyPatch(typeof(GamePlayer), nameof(GamePlayer.Move), new[] { typeof(PosInfo), typeof(bool) })]
+        internal static class MoveHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+                if (!IsBlack(__instance))
+                    return;
+
+                var room = GameRoom.Instance;
+                if (room == null || room.State != EGameState.Survive)
+                    return;
+
+                RevealNearby(room, __instance);
+            }
+        }
+
+        // ── ③ 每秒兜底：进入的保证可见、超出的剔除 ──────────────────────
         [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
         [HarmonyPostfix]
         private static void PostfixSurvivalTick(GameRoom __instance)
@@ -227,7 +277,7 @@ namespace HideAndSeek.Features.Vision
             int now = TimeManager.Instance.SurviveTime;
 
             // 用 Players 而非 AlivePlayers：假人可能不在 AlivePlayers 里，
-            // 那会让下面的恢复逻辑看不到它。
+            // 那会让下面的恢复逻辑连机会都没有。
             var all = __instance.Players;
             for (int i = 0; i < all.Count; i++)
             {
@@ -235,17 +285,9 @@ namespace HideAndSeek.Features.Vision
                 if (!IsBlack(black))
                     continue;
 
-                float range = ExitRange?.Value ?? 900f;
-
-                if (SkillAwareOn && SkillTypeOf(black) == ESkillType.TimeStop)
-                    range = Math.Max(range, TimeStopSearchRange);
-
-                if (TryMiniCenter(black, out float cx, out float cy))
-                    range = MarionetteExitRange?.Value ?? 648f;   // 熊模式
-                else
-                    OwnCenter(black, out cx, out cy);
-
-                float rangeSq = range * range;
+                Resolve(black, out float cx, out float cy, out float enter, out float exit);
+                float enterSq = enter * enter;
+                float exitSq = exit * exit;
 
                 for (int j = 0; j < all.Count; j++)
                 {
@@ -255,28 +297,24 @@ namespace HideAndSeek.Features.Vision
 
                     float dSq = DistanceSq(other, cx, cy);
 
-                    if (dSq <= rangeSq)
+                    if (dSq <= enterSq)
                     {
-                        // 在范围内 → 主动确保可见。
-                        //
-                        // 关键：剔除是单向动作，而原版的"重新可见"依赖**被观察者自己移动**
-                        // （AddPlayer 由 AreaManager.SearchAndUpdatePlayer 在被观察者 Move 时触发）。
-                        // 假人站着不动，所以一旦被剔除就永久消失 —— 这正是
-                        // "白方时能看到、变黑后走到它面前也看不到"的原因。
-                        // AddPlayer 幂等（已在列表则立即返回 false），每秒调用开销可忽略。
+                        // 进入范围 → 确保可见（补回可能被剔除掉的目标）
                         other.AddPlayer(black);
                         continue;
                     }
+
+                    if (dSq <= exitSq)
+                        continue;                 // 滞回区间 → 维持现状，不增不减
 
                     long key = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);
                     if (VisibleSince.TryGetValue(key, out int since) && minVisible > 0f
                         && now - since < minVisible)
                         continue;                 // 还在最短可见保护期内
 
-                    // 记录实际距离：用于区分"被裁剪剔除"与"被黑灯遮住"两种看不见
                     Plugin.Log.LogInfo(
                         $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 剔除 #{other.PublicInfo.PlayerId}" +
-                        $"（距离 {Math.Sqrt(dSq):F0} > 阈值 {range:F0}，圆心 {cx:F0},{cy:F0}）");
+                        $"（距离 {Math.Sqrt(dSq):F0} > 阈值 {exit:F0}，圆心 {cx:F0},{cy:F0}）");
 
                     other.RemovePlayer(black);    // 幂等：不在 SharedPlayers 时直接返回 false
                     VisibleSince.Remove(key);
