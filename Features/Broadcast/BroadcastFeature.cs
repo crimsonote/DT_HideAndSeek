@@ -1,4 +1,5 @@
-﻿using System.Linq;
+﻿using System.Collections.Generic;
+using System.Linq;
 using BepInEx.Configuration;
 using DummyClient;
 using HarmonyLib;
@@ -79,6 +80,8 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField("捉迷藏开始了~", "拿刀通告（仅自行拿刀模式发出；自动指定黑方时不发）。")]
         public static ConfigEntry<string> WeaponTaken;
 
+        [ConfigField(true, "房主用 hs_* 命令改动玩法设置时，向全场播报这次调整（仅在生存阶段播报）。")]
+        public static ConfigEntry<bool> AnnounceRuleChanges;
         [ConfigField(true, "有玩家进入房间时，单独向他播报玩法规则。")]
         public static ConfigEntry<bool> WelcomeOnJoin;
 
@@ -88,6 +91,8 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(3200, "开局提示的延迟毫秒数（须晚于自动发刀，才能分出黑方）。", Min = 0f, Max = 30000f)]
         public static ConfigEntry<int> StartDelayMs;
 
+        /// <summary>对局期间改动过、待回大厅播报的规则（以文本自身为键，天然去重）。</summary>
+        private static readonly Dictionary<string, string> PendingRuleChanges = new Dictionary<string, string>();
         private static bool Ready => !ModeRuntime.Bypass && Enabled != null && Enabled.Value;
 
         /// <summary>当前是否为"自动指定黑方"模式（开局直接发刀）。</summary>
@@ -110,6 +115,52 @@ namespace HideAndSeek.Features.Broadcast
             room.Broadcast(BuildChat(text));
         }
 
+        /// <summary>
+        /// 播报一条"规则被调整"。由 hs_* 命令在改动配置后调用 ——
+        /// 房主改了玩法，在场玩家理应知情，否则只能靠察觉行为异常去猜。
+        /// 仅在生存阶段播报：大厅里说这些没有意义。
+        /// </summary>
+        public static void AnnounceRule(string change)
+        {
+            if (!Ready || string.IsNullOrEmpty(change))
+                return;
+            if (AnnounceRuleChanges == null || !AnnounceRuleChanges.Value)
+                return;
+
+            var room = GameRoom.Instance;
+            if (room == null)
+                return;
+
+            // 大厅里改 → 立即播报；对局中改 → 攒着，回大厅再统一播报。
+            // 对局中不播的原因：那等于当场告诉所有人"房主正在动规则"，本身就是额外信息。
+            if (room.State == EGameState.Lobby)
+            {
+                Notice(room, "【规则调整】" + change);
+                return;
+            }
+
+            PendingRuleChanges[change] = change;
+        }
+
+        /// <summary>回大厅时，把对局期间改动过的规则一次性播报出来。</summary>
+        [HarmonyPatch(typeof(GameRoom), "StartLobby")]
+        internal static class LobbyAnnounceHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (PendingRuleChanges.Count == 0)
+                    return;
+
+                if (Ready && AnnounceRuleChanges != null && AnnounceRuleChanges.Value)
+                {
+                    foreach (var kv in PendingRuleChanges)
+                        Notice(__instance, "【规则调整】" + kv.Value);
+                }
+
+                PendingRuleChanges.Clear();
+            }
+        }
         private static void NoticeTo(GamePlayer player, string text)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))

@@ -96,6 +96,7 @@ namespace HideAndSeek.Console
                 return Error("用法: hs_mode <on|off>");
 
             ModeRuntime.Enabled.Value = value.Value;
+            AnnounceRule(value.Value ? "捉迷藏模式已开启" : "捉迷藏模式已关闭");
             return $"{{\"ok\":true,\"mode\":{Bool(ModeRuntime.Active)}}}";
         }
 
@@ -128,6 +129,7 @@ namespace HideAndSeek.Console
                 }
             }
 
+            AnnounceRule($"黑方视野 = {Num(AoiCullingFeature.EnterRange, 750f)} / {Num(AoiCullingFeature.ExitRange, 1100f)}");
             return Status();
         }
 
@@ -141,6 +143,7 @@ namespace HideAndSeek.Console
                 return Error("用法: hs_cd <秒>");
 
             WeaponCooldownFeature.RearmSeconds.Value = f < 1f ? 1 : (int)f;
+            AnnounceRule($"刀冷却 = {WeaponCooldownFeature.RearmSeconds.Value} 秒");
             return Status();
         }
 
@@ -157,6 +160,7 @@ namespace HideAndSeek.Console
             else
                 return Error("用法: hs_killlimit <n|unlimited>");
 
+            AnnounceRule($"击杀上限 = {KillLimitFeature.MaxKills.Value}");
             return Status();
         }
 
@@ -370,6 +374,14 @@ namespace HideAndSeek.Console
 
             return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)},\"note\":\"下一局生效\"}}";
         }
+
+        /// <summary>
+        /// 广播一条规则调整。由改动玩法的命令在写入配置后调用 ——
+        /// 房主单方面改规则时，在场玩家理应知情，否则只能靠察觉异常去猜。
+        /// 是否真的发出由 BroadcastFeature.AnnounceRuleChanges 与当前游戏阶段决定。
+        /// </summary>
+        private static void AnnounceRule(string change)
+            => HideAndSeek.Features.Broadcast.BroadcastFeature.AnnounceRule(change);
 
         // ── 小工具 ──────────────────────────────────────────────────
         /// <summary>
