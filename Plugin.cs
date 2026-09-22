@@ -42,6 +42,10 @@ namespace HideAndSeek
             // 之后运行期的修改仍遵循"内存优先、显式保存才落盘"的语义。
             config.Save();
 
+            // 补丁挂上后重建 DT_Tools 的命令列表缓存 —— 它的缓存是在**自己的 Awake** 里
+            // 生成的，早于本插件挂补丁；不刷新的话 hs_* 处于"能执行但不在列表/补全里"的状态。
+            HideAndSeek.Console.ConsoleBridge.RefreshCommandList();
+
             Log.LogInfo(
                 $"[HS] HideAndSeek {Version} 加载完成（DT_Tools {(DtBridge.HasDtTools ? "已检测到" : "未检测到")}）：" +
                 $"启用 {result.EnabledCount}，跳过 {result.SkippedCount}，失败 {result.FailedCount}。" +

@@ -45,6 +45,49 @@ namespace HideAndSeek.Console
 
         private static Type DtConsoleType() => AccessTools.TypeByName(DtConsoleTypeName);
 
+        /// <summary>
+        /// 补丁挂上之后，主动重建 DT_Tools 的命令列表缓存。
+        ///
+        /// 为什么需要这一步：WebConsole 在它**自己的 Awake** 里就执行了
+        /// `_cachedCommandsJson = BuildCommandsJson()`，而本插件的补丁要到
+        /// **本插件的 Start** 才挂上（BepInEx 的顺序是"所有 Awake → 所有 Start"）。
+        /// 也就是说 Postfix 挂上时缓存早已定型，之后再不会调用 BuildCommandsJson，
+        /// 于是 hs_* 处于一种尴尬状态：**能执行**（执行是运行时路径，Prefix 有效），
+        /// 却不出现在 /api/commands、命令列表与前端补全里。
+        /// 这里在装载完成后主动重算一次缓存即可解决。
+        /// </summary>
+        internal static void RefreshCommandList()
+        {
+            try
+            {
+                var type = DtConsoleType();
+                if (type == null)
+                    return;
+
+                var instance = AccessTools.PropertyGetter(type, "Instance")?.Invoke(null, null);
+                if (instance == null)
+                {
+                    Plugin.Log.LogInfo("[HS] ConsoleBridge：DT_Tools 控制台尚未就绪，跳过命令列表刷新。");
+                    return;
+                }
+
+                var build = AccessTools.Method(type, "BuildCommandsJson");
+                var field = AccessTools.Field(type, "_cachedCommandsJson");
+                if (build == null || field == null)
+                {
+                    Plugin.Log.LogWarning("[HS] ConsoleBridge：找不到 BuildCommandsJson/_cachedCommandsJson，hs_* 不会出现在命令列表（仍可执行）。");
+                    return;
+                }
+
+                field.SetValue(instance, build.Invoke(instance, null));
+                Plugin.Log.LogInfo("[HS] ConsoleBridge：已重建 DT_Tools 命令列表缓存，hs_* 现在应在列表与补全中可见。");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] ConsoleBridge：重建命令列表失败 — {ex.Message}");
+            }
+        }
+
         // ── ① 拦截执行 ──────────────────────────────────────────────
         [HarmonyPatch]
         internal static class ExecuteHook
@@ -106,7 +149,13 @@ namespace HideAndSeek.Console
                 => AccessTools.Method(DtConsoleType(), "BuildCommandsJson");
 
             [HarmonyPrepare]
-            private static bool Prepare() => Target() != null;
+            private static bool Prepare()
+            {
+                bool ok = Target() != null;
+                if (!ok)
+                    Plugin.Log.LogWarning("[HS] ConsoleBridge：找不到 WebConsole.BuildCommandsJson，hs_* 不会出现在命令列表（仍可执行）。");
+                return ok;
+            }
 
             [HarmonyTargetMethod]
             private static MethodBase TargetMethod() => Target();

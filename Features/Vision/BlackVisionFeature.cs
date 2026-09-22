@@ -94,7 +94,10 @@ namespace HideAndSeek.Features.Vision
         }
 
         // ── ④ 离开对局阶段：把真实光照还回去 ──────────────────────────
-        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState))]
+        // GameRoom 上有两个 ChangeGameState 重载（public 单参 :169991 / private 双参 :170004），
+        // 不指定参数类型会抛 "Ambiguous match"，导致整个补丁静默挂不上
+        // —— 那会让"回大厅仍是黑灯"这个 bug 看起来像没修过。
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
         internal static class GameStateHook
         {
             [HarmonyPostfix]
