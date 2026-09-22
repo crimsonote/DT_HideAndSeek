@@ -102,6 +102,26 @@ namespace HideAndSeek.Features.Dummy
             }
         }
 
+        // ── 选角重试 ────────────────────────────────────────────────
+        // GameRoom.PickCharacter（:171136）有两道前置：
+        //   State == EGameState.PickCharacter  且  _pickReady == true
+        // 在 StartPick 的 Postfix 里调用时 _pickReady 通常仍是 false，
+        // 整条调用会被静默丢弃（日志 "[Pick] PickCharacter ignored - phase not ready yet"），
+        // 只能等 40 秒后原版强制随机 —— 这正是"指定了角色却不遵守、一路拖到选角结束"的原因。
+        // PickCharacterTick 是该阶段内的定期回调，那时状态已就绪，用它做重试。
+        // ApplyPickedCharacters 幂等：PickCharacter 内部有 _pickPlayers.Contains 检查。
+        [HarmonyPatch(typeof(GameRoom), "PickCharacterTick")]
+        internal static class PickTickHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+
+                DummyManager.ApplyPickedCharacters(__instance);
+            }
+        }
         // ── 生命周期：vanilla 回大厅会清掉所有 IsDummy 玩家，需要重建 ──────────
         // StartLobby（:170202-170289）会 HandleLeavePlayer + 归还座位 + 发 S_LEAVE_GAME，
         // 把 IsDummy 的假人全部清掉；不重建的话第二局就没有靶子。

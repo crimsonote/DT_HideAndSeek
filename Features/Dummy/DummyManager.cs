@@ -264,7 +264,8 @@ namespace HideAndSeek.Features.Dummy
                 try
                 {
                     room.PickCharacter(player, chara);
-                    Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
+                    if (player.CharacterId == chara) Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
+                    else Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角 {chara} 未生效（State={room.State}，当前角色={player.CharacterId}）。");
                 }
                 catch (global::System.Exception ex)
                 {
