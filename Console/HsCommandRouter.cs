@@ -38,11 +38,12 @@ namespace HideAndSeek.Console
                 case "hs_check":     return Diagnostics.Report();
                 case "hs_dummy":     return Dummy(args);
                 case "hs_flash":     return Flash(args);
+                case "hs_roomname":  return RoomName(args);
                 case "hs_mode":      return SetMode(args);
                 case "hs_aoi":       return SetAoi(args);
                 case "hs_cd":        return SetCooldown(args);
                 case "hs_killlimit": return SetKillLimit(args);
-                default:             return Error($"未知命令 {name}（可用：hs / hs_mode / hs_aoi / hs_cd / hs_killlimit）");
+                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname）");
             }
         }
 
@@ -195,6 +196,24 @@ namespace HideAndSeek.Console
 
             entry.Value = on.Value;
             return $"{{\"ok\":true,\"flash\":{Bool(entry.Value)}}}";
+        }
+
+        // ── /hs_roomname [新名字] ────────────────────────────────────
+        // 改的是 Steam 大厅元数据里的房间名，即"房间列表里显示的名字"。
+        private static string RoomName(string[] args)
+        {
+            if (args.Length == 0)
+                return $"{{\"ok\":true,\"name\":\"{HideAndSeek.Features.System.RoomNameFeature.LastName?.Value ?? ""}\"}}";
+
+            // 房间名可能含空格，拼回整串
+            string name = string.Join(" ", args).Trim();
+            if (name.Length == 0)
+                return Error("用法: hs_roomname <新房间名>（无参数则显示当前值）");
+
+            if (!HideAndSeek.Features.System.RoomNameFeature.Apply(name, out string err))
+                return Error("改名失败: " + err);
+
+            return $"{{\"ok\":true,\"name\":\"{name}\"}}";
         }
 
         // ── 小工具 ──────────────────────────────────────────────────

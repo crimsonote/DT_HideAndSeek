@@ -36,11 +36,12 @@ namespace HideAndSeek.Console
             ("hs",           "hs",                                                "捉迷藏模式：总览当前状态"),
             ("hs_check",     "hs_check",                                          "自检：各功能的挂载状态与触发次数"),
             ("hs_mode",      "hs_mode <on|off>",                                  "捉迷藏模式总开关（含可见性与光照回滚）"),
-            ("hs_aoi",       "hs_aoi [on|off] [enter=600] [exit=900] [min=3]",    "黑方视野裁剪参数"),
+            ("hs_aoi",       "hs_aoi [on|off] [enter=750] [exit=1100] [min=3]",   "黑方视野裁剪参数"),
             ("hs_cd",        "hs_cd <秒>",                                        "黑方击杀后的冷却秒数"),
             ("hs_killlimit", "hs_killlimit <n|unlimited>",                        "黑方击杀次数上限"),
             ("hs_dummy",     "hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>", "假人玩家（测试用）：生成 / 移除 / 查看靶子"),
             ("hs_flash",     "hs_flash <on|off>",                                 "开局灯效：开关闪烁（关闭后直接进入白亮黑灭的定态）"),
+            ("hs_roomname",  "hs_roomname [新名字]",                              "修改房间在 Steam 列表里显示的名字（仅房主可改）"),
         };
 
         private static Type DtConsoleType() => AccessTools.TypeByName(DtConsoleTypeName);
