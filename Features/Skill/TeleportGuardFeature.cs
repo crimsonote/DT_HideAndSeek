@@ -41,7 +41,10 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(true, "把黑洞特效改写到实际落点（就近出生点），用于提示附近的人它要来了；关闭则保留原版的坐标泄露。")]
         public static ConfigEntry<bool> BlockVfxLeak;
 
-        [ConfigField(true, "仅对黑方生效：白方使用黑洞时完全保持原版（原需求就是限制黑方滥用）。")]
+        [ConfigField(false,
+            "是否区分阵营。关闭（默认）＝黑白方行为一致，落点都会被改写 —— " +
+            "不会因「只有黑方被改写」而让玩家从落点差异推断出谁是黑方；" +
+            "开启后只限制黑方、白方完全保持原版。")]
         public static ConfigEntry<bool> OnlyForBlack;
 
         /// <summary>本次施法的施法者 ID，用于区分"自己脚下那一发"与"目标身上那一发"。</summary>
