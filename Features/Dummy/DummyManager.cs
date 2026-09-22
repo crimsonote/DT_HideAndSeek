@@ -273,6 +273,66 @@ namespace HideAndSeek.Features.Dummy
             }
         }
 
+        /// <summary>角色别名 → 角色 ID。数字 ID 由调用方先处理。</summary>
+        private static readonly (string Key, int Id)[] CharacterAliases =
+        {
+            ("rin", 102), ("benjamin", 102), ("小熊", 102),
+            ("luna", 103), ("露娜", 103),
+            ("jeremy", 104), ("杰瑞米", 104),
+            ("hasung", 105),
+            ("kaho", 106), ("红毛", 106),
+            ("miyuki", 107), ("美雪", 107),
+            ("liliana", 108), ("莉莉安娜", 108),
+            ("seol", 109), ("雪", 109),
+            ("louis", 110), ("路易斯", 110),
+            ("soi", 111),
+            ("noel", 112), ("诺艾尔", 112),
+            ("lian", 113),
+        };
+
+        /// <summary>把角色名（英文或常见中文）解析成角色 ID。</summary>
+        public static bool TryParseCharacterName(string text, out int characterId)
+        {
+            characterId = 0;
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string key = text.Trim().ToLowerInvariant();
+            foreach (var alias in CharacterAliases)
+            {
+                if (alias.Key == key)
+                {
+                    characterId = alias.Id;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>角色清单（供命令展示）。</summary>
+        public static string CharacterList()
+        {
+            var dic = Managers.Data?.CharacterDic;
+            var sb = new StringBuilder("{\"ok\":true,\"characters\":[");
+
+            bool first = true;
+            foreach (var alias in CharacterAliases)
+            {
+                if (dic == null || !dic.TryGetValue(alias.Id, out var cd) || cd == null)
+                    continue;
+                if (!first) sb.Append(',');
+                first = false;
+
+                sb.Append("{\"id\":").Append(alias.Id)
+                  .Append(",\"name\":\"").Append(cd.Name).Append('"')
+                  .Append(",\"alias\":\"").Append(alias.Key).Append('"')
+                  .Append('}');
+            }
+
+            sb.Append("]}");
+            return sb.ToString();
+        }
+
         /// <summary>按配置或随机解析一个合法角色 ID（绝不留 -1）。</summary>
         private static int ResolveCharacter(int wanted, int ordinal)
         {

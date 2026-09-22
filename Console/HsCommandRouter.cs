@@ -144,7 +144,7 @@ namespace HideAndSeek.Console
             return Status();
         }
 
-        // ── /hs_dummy add [id] [charaId] | del <id> | list | clear ──
+        // ── /hs_dummy add [座位号 1-16] [角色ID|角色名] | del <座位号> | list | chars | clear ──
         private static string Dummy(string[] args)
         {
             if (args.Length == 0 || args[0].Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -152,18 +152,25 @@ namespace HideAndSeek.Console
 
             switch (args[0].ToLowerInvariant())
             {
+                case "chars":
+                    return DummyManager.CharacterList();
+
                 case "add":
                 {
-                    int id = 0, chara = 0;
+                    // 座位号：1-16；0 或省略 = 自动找空位
+                    int id = 0;
                     if (args.Length >= 2 && !int.TryParse(args[1], out id))
-                        return Error("用法: hs_dummy add [座位号] [角色ID]");
-                    if (args.Length >= 3 && !int.TryParse(args[2], out chara))
-                        return Error("用法: hs_dummy add [座位号] [角色ID]");
+                        return Error("座位号必须是数字（1-16，0=自动）。例: hs_dummy add 5 luna");
+
+                    // 角色：数字 ID 或角色名（luna / 露娜 / seol …）
+                    int chara = 0;
+                    if (args.Length >= 3 && !TryParseCharacter(args[2], out chara))
+                        return Error("角色无效（用 hs_dummy chars 查看）。例: hs_dummy add 5 luna");
 
                     if (!DummyManager.Spawn(id, chara, out int actual, out string err))
                         return Error("生成失败: " + err);
 
-                    return $"{{\"ok\":true,\"id\":{actual}}}";
+                    return $"{{\"ok\":true,\"id\":{actual},\"characterId\":{chara}}}";
                 }
 
                 case "del":
@@ -180,8 +187,17 @@ namespace HideAndSeek.Console
                     return $"{{\"ok\":true,\"removed\":{DummyManager.Clear()}}}";
 
                 default:
-                    return Error("用法: hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>");
+                    return Error("用法: hs_dummy <add [座位号] [角色]|del <座位号>|list|chars|clear>；角色可填 ID 或名字，如 luna");
             }
+        }
+
+        /// <summary>角色参数：数字 ID 或角色名（luna / 露娜 / seol …）。</summary>
+        private static bool TryParseCharacter(string text, out int charaId)
+        {
+            if (int.TryParse(text, out charaId) && charaId > 0)
+                return true;
+
+            return DummyManager.TryParseCharacterName(text, out charaId);
         }
 
         // ── /hs_flash [on|off] ──────────────────────────────────────
