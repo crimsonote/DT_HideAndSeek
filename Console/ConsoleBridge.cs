@@ -108,7 +108,7 @@ namespace HideAndSeek.Console
             private static MethodBase TargetMethod() => Target();
 
             [HarmonyPrefix]
-            private static bool Prefix(object __0)
+            private static bool Prefix(object __instance, object __0)
             {
                 if (__0 == null)
                     return true;
@@ -137,6 +137,21 @@ namespace HideAndSeek.Console
 
                 pending.Field("ResultJson").SetValue(json);
                 pending.Field("Done").GetValue<ManualResetEventSlim>()?.Set();
+
+                // 同时写入日志流。WebConsole 有两条返回通道：
+                //   ResultJson（结构化）与 Log（文本，前端终端区轮询 /api/log）。
+                // 只写 ResultJson 的话，命令确实执行了、脚本也能拿到 JSON，
+                // 但终端文本区看起来"什么都不返回"。
+                try
+                {
+                    var logMethod = AccessTools.Method(__instance?.GetType(), "Log");
+                    logMethod?.Invoke(__instance, new object[] { json, global::BepInEx.Logging.LogLevel.Info });
+                }
+                catch
+                {
+                    // 日志写入失败不影响命令结果
+                }
+
                 return false;
             }
         }
