@@ -103,17 +103,22 @@ namespace HideAndSeek.Features.Dummy
                 int want = AutoSpawnCount?.Value ?? 0;
                 if (want <= 0)
                     return;
-                if (DummyManager.ActiveCount > 0)
-                    return;   // 还没被清，不重复建
+
+                // vanilla 直接删人、我们收不到通知，先把跟踪列表与实际房间对齐
+                DummyManager.ResyncTracking();
+
+                int have = DummyManager.ActiveCount;
+                if (have >= want)
+                    return;
 
                 int ok = 0;
-                for (int i = 0; i < want; i++)
+                for (int i = have; i < want; i++)
                 {
                     if (DummyManager.Spawn(0, 0, out _, out _))
                         ok++;
                 }
 
-                Plugin.Log.LogInfo($"[HS] Dummy：回大厅后重建 {ok}/{want} 个假人。");
+                Plugin.Log.LogInfo($"[HS] Dummy：回大厅后重建 {ok} 个假人（原有 {have}，目标 {want}）。");
             }
         }
 

@@ -40,6 +40,7 @@ namespace HideAndSeek.Console
             ("hs_cd",        "hs_cd <秒>",                                        "黑方击杀后的冷却秒数"),
             ("hs_killlimit", "hs_killlimit <n|unlimited>",                        "黑方击杀次数上限"),
             ("hs_dummy",     "hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>", "假人玩家（测试用）：生成 / 移除 / 查看靶子"),
+            ("hs_flash",     "hs_flash <on|off>",                                 "开局灯效：开关闪烁（关闭后直接进入白亮黑灭的定态）"),
         };
 
         private static Type DtConsoleType() => AccessTools.TypeByName(DtConsoleTypeName);

@@ -26,6 +26,11 @@ namespace HideAndSeek.Features.Vision
         side: FeatureSide.Host)]
     internal static class StartFlashFeature
     {
+        [ConfigField(true,
+            "是否播放亮灭闪烁。关闭后不再闪烁，改为**直接进入定态**（白方亮、黑方暗）——" +
+            "玩法所需的光照结果不受影响。可用命令 hs_flash on|off 运行时切换。")]
+        public static ConfigEntry<bool> FlashEnabled;
+
         [ConfigField(true, "有人拿走武器（转为黑方）时播放灯效。")]
         public static ConfigEntry<bool> OnWeaponTaken;
 
@@ -47,11 +52,20 @@ namespace HideAndSeek.Features.Vision
             }
         }
 
-        /// <summary>播放一次：亮 → 灭 → 亮 → 灭 → 定态。</summary>
+        /// <summary>播放一次：亮 → 灭 → 亮 → 灭 → 定态；若闪烁被关闭则直接进入定态。</summary>
         internal static void Play(GameRoom room)
         {
             if (ModeRuntime.Bypass || room == null)
                 return;
+
+            // 关闭闪烁 ≠ 什么都不做：仍然要落到"白方亮、黑方暗"的定态，
+            // 那是玩法本身需要的光照结果，与"开局信号"是两件事。
+            if (FlashEnabled == null || !FlashEnabled.Value)
+            {
+                SetFinal(room);
+                Plugin.Log.LogInfo("[HS] StartFlash：闪烁已关闭，直接进入定态（白方亮 / 黑方暗）。");
+                return;
+            }
 
             int step = Interval;
             room.PushAfter(0,         () => SetAll(room, true));
@@ -66,7 +80,7 @@ namespace HideAndSeek.Features.Vision
         private static void SetAll(GameRoom room, bool light)
         {
             foreach (var player in room.Players)
-                SendLight(player, light);
+                SendLight(player, light, force: true);
         }
 
         /// <summary>收尾定态：白方恢复真实光照，黑方保持黑暗。</summary>
@@ -79,11 +93,16 @@ namespace HideAndSeek.Features.Vision
 
                 bool light = player.Color != EPlayerColor.Black
                              && player.Color != EPlayerColor.Dark;
-                SendLight(player, light);
+                SendLight(player, light, force: false);
             }
         }
 
-        private static void SendLight(GamePlayer player, bool light)
+        /// <summary>
+        /// force=true 时强制亮/灭 —— 闪灯阶段必须这样，否则在真停电的对局里
+        /// 信号根本看不见（那正是最需要提示"开始了"的场合）。
+        /// force=false 时"亮"以区域真实光照为准 —— 收尾定态不该把停电的灯点亮。
+        /// </summary>
+        private static void SendLight(GamePlayer player, bool light, bool force)
         {
             if (player?.PublicInfo == null)
                 return;
@@ -92,8 +111,7 @@ namespace HideAndSeek.Features.Vision
             if (area == null)
                 return;
 
-            // "亮"用真实光照作为基准，避免在停电对局里把灯点亮
-            bool value = light && area.IsLight;
+            bool value = force ? light : (light && area.IsLight);
 
             player.Session.Send(new S_AREA_PUBLIC
             {

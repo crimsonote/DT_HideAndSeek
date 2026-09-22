@@ -115,6 +115,9 @@ namespace HideAndSeek.Features.Dummy
                 player.Ready = true;                                    // 否则开始键没反应
 
                 room.Players.Add(player);
+                // 对局中途生成时也必须计入存活，否则 AliveCount / 胜负判定看不到它
+                if (room.State == EGameState.Survive || room.State == EGameState.Detective)
+                    room.AlivePlayers.Add(player);
                 InvokeInitLobby(player);
                 InvokeMarkRosterDirty(room);
 
@@ -205,6 +208,25 @@ namespace HideAndSeek.Features.Dummy
             return n;
         }
 
+        /// <summary>
+        /// 把跟踪列表与房间实际状态对齐。
+        /// vanilla 的 StartLobby（:170202-170250）会用 HandleLeavePlayer 直接删掉 IsDummy 玩家，
+        /// 我们收不到通知，SpawnedIds 会残留失效 ID —— 不先对齐的话，"是否已被清空"的判断永远为假，
+        /// 回大厅后就不会重建假人。
+        /// </summary>
+        public static void ResyncTracking()
+        {
+            var room = GameRoom.Instance;
+            if (room == null)
+            {
+                SpawnedIds.Clear();
+                return;
+            }
+
+            SpawnedIds.RemoveAll(id =>
+                !room.Players.Any(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id));
+        }
+
         /// <summary>按配置或随机解析一个合法角色 ID（绝不留 -1）。</summary>
         private static int ResolveCharacter(int wanted, int ordinal)
         {
@@ -224,10 +246,22 @@ namespace HideAndSeek.Features.Dummy
             }
 
             if (dic == null || dic.Count == 0)
-                return 102;   // Rin，Define.DEFAULT_OWNED_CHARACTER_IDS 的第一项
+                return 102;   // Rin
+
+            // 优先用"默认拥有"角色池：它不含 Luna(103)、Liliana(108)、Noel(112)、Lian(113)。
+            // 尤其要避开 Luna —— 露娜系免疫普通刀杀（LunaImmunityFeature），
+            // 假人若随机到露娜，黑方刀不动它，测试就失去意义了。
+            var pool = Define.DEFAULT_OWNED_CHARACTER_IDS?
+                .Where(id => dic.ContainsKey(id))
+                .ToList();
+
+            if (pool != null && pool.Count > 0)
+                return pool[Util.GetRandomNumber(0, pool.Count)];
 
             var ids = dic.Values
-                .Where(c => c != null && c.Type != ECharacterType.Madeline)
+                .Where(c => c != null
+                            && c.Type != ECharacterType.Madeline
+                            && c.Type != ECharacterType.Luna)
                 .Select(c => c.DataId)
                 .ToList();
 

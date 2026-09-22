@@ -37,6 +37,7 @@ namespace HideAndSeek.Console
                 case "hs":           return Status();
                 case "hs_check":     return Diagnostics.Report();
                 case "hs_dummy":     return Dummy(args);
+                case "hs_flash":     return Flash(args);
                 case "hs_mode":      return SetMode(args);
                 case "hs_aoi":       return SetAoi(args);
                 case "hs_cd":        return SetCooldown(args);
@@ -176,6 +177,24 @@ namespace HideAndSeek.Console
                 default:
                     return Error("用法: hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>");
             }
+        }
+
+        // ── /hs_flash [on|off] ──────────────────────────────────────
+        private static string Flash(string[] args)
+        {
+            var entry = StartFlashFeature.FlashEnabled;
+            if (entry == null)
+                return Error("灯效功能未加载");
+
+            if (args.Length == 0)
+                return $"{{\"ok\":true,\"flash\":{Bool(entry.Value)}}}";
+
+            bool? on = ParseBool(args[0]);
+            if (on == null)
+                return Error("用法: hs_flash <on|off>（关闭后不再闪烁，但仍会直接进入黑灭白亮的定态）");
+
+            entry.Value = on.Value;
+            return $"{{\"ok\":true,\"flash\":{Bool(entry.Value)}}}";
         }
 
         // ── 小工具 ──────────────────────────────────────────────────

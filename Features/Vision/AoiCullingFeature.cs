@@ -27,16 +27,20 @@ namespace HideAndSeek.Features.Vision
     /// 阈值依据：客户端攻击索敌 224、服务端距离校验 672（451584 = 672²）、
     /// 跑速约 728/s、位置包 10Hz（采样粒度 72.8，故滞回必须远大于它）。
     ///
-    /// ★ 技能感知豁免（见 SkillAware）：
-    ///   某些技能需要"看得见目标"才能在客户端选中，而 AOI 会让它们静默失效：
+    /// ★ 技能感知豁免（SkillAware）—— 两类技能需要"看得见目标"才能在客户端选中，
+    ///   而 AOI 会让它们静默失效：
+    ///
     ///   - TimeStop（Seol）：SkillData.IsTarget=true、Range=3.0×224=672。
-    ///     客户端 UpdateSkillTargetPlayer → GetSkillTarget 只遍历本地 Players，
-    ///     672 内若无人被生成则 CanUseSkillCondition=false，按键毫无反应。
-    ///   - Marionette（Rin 的小熊）：探测是**纯客户端本地判定**（Summon.DetectNearbyPlayer
-    ///     以召唤物坐标为圆心遍历本地 Players），而召唤物固定在自己脚下不随人移动。
-    ///     本人走远后熊周围的人被裁掉，于是"熊贴着人也报无人在附近"。
-    ///   处理方式：持 TimeStop 时把阈值放宽到其索敌半径；持 Marionette 且召唤物已放出时，
-    ///   把裁剪圆心改成召唤物坐标（并按其探测半径）。
+    ///     客户端 UpdateSkillTargetPlayer → GetSkillTarget（:31443）只遍历本地 Players，
+    ///     672 内若无人被生成则 CanUseSkillCondition=false → UseSkill 直接 return，
+    ///     表现为"按键毫无反应"。故把阈值放宽到 672（与关掉 AOI 的原版逐位等价）。
+    ///
+    ///   - Marionette（Rin 的小熊）：探测是**纯客户端本地判定**
+    ///     （Summon.DetectNearbyPlayer :7290，以召唤物坐标为圆心遍历本地 Players），
+    ///     而召唤物固定在自己脚下、不随人移动。本人走远后熊周围的人被裁掉，
+    ///     于是"熊贴着人也报无人在附近"。故圆心改为召唤物坐标，
+    ///     并**按它自己的探测半径 448 取阈值**（不是沿用 900 —— 那会让熊周围的
+    ///     可见范围比该技能应有的信息多一倍）。
     /// </summary>
     [HarmonyPatch]
     [PatchFeature(
@@ -60,11 +64,22 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(true, "技能感知：持时停（放宽到 672）或放出小熊（圆心改为召唤物）时自动豁免裁剪，避免技能静默失效。")]
         public static ConfigEntry<bool> SkillAware;
 
+        [ConfigField(true,
+            "小熊豁免：小熊的『视野切换』与『附近探测』都由客户端遍历本地玩家完成，" +
+            "不豁免则两者在 AOI 下一起失效。代价是黑方小地图会为召唤物附近（半径见下）的人生成 pin —— " +
+            "原版该技能只给 HUD 提示、不给位置。")]
+        public static ConfigEntry<bool> MarionetteExempt;
+
+        [ConfigField(448f, "小熊豁免的进入半径（以召唤物为圆心），对应其客户端探测圈。",
+            Min = 100f, Max = 2000f)]
+        public static ConfigEntry<float> MarionetteEnterRange;
+
+        [ConfigField(648f, "小熊豁免的退出半径（滞回 200，采样粒度约 72.8）。",
+            Min = 100f, Max = 2000f)]
+        public static ConfigEntry<float> MarionetteExitRange;
+
         /// <summary>TimeStop 的客户端索敌半径 = SkillData.Range(3.0) × 224（:31451 的换算）。</summary>
         private const float TimeStopSearchRange = 672f;
-
-        /// <summary>小熊的客户端探测半径（Summon.DetectNearbyPlayer 的椭圆按 448/410.67，这里取保守圆）。</summary>
-        private const float MarionetteDetectRadius = 448f;
 
         /// <summary>(黑方 PlayerId, 对方 PlayerId) → 首次可见的 SurviveTime。</summary>
         private static readonly Dictionary<long, int> VisibleSince = new Dictionary<long, int>();
@@ -117,36 +132,42 @@ namespace HideAndSeek.Features.Vision
         }
 
         /// <summary>
-        /// 计算某黑方的裁剪圆心与半径。
-        /// 默认是黑方自己；持 Marionette 且召唤物已放出时改为召唤物坐标及其探测半径。
+        /// 黑方若已放出小熊，返回召唤物坐标作为裁剪圆心。
+        /// 返回 false 时调用方应使用黑方自己的坐标。
         /// </summary>
-        private static void ResolveCenterAndRange(
-            GamePlayer black, float baseRange, out float cx, out float cy, out float range)
+        private static bool TryMiniCenter(GamePlayer black, out float cx, out float cy)
+        {
+            cx = 0f;
+            cy = 0f;
+
+            if (!SkillAwareOn)
+                return false;
+            if (MarionetteExempt != null && !MarionetteExempt.Value)
+                return false;
+            if (SkillTypeOf(black) != ESkillType.Marionette)
+                return false;
+
+            int summonId = GetSummonId(black.SkillComponent);
+            if (summonId == 0)
+                return false;   // 召唤物还没放出来
+
+            // Assembly-CSharp 同时存在全局 DeviceManager 与 Server.Game.DeviceManager，须显式限定
+            var summon = Server.Game.DeviceManager.Instance?.GetSummon(summonId);
+            var spos = summon?.DeviceInfo?.Pos;
+            if (spos == null)
+                return false;
+
+            cx = spos.X;
+            cy = spos.Y;
+            return true;
+        }
+
+        /// <summary>黑方自己的坐标，作为默认圆心。</summary>
+        private static void OwnCenter(GamePlayer black, out float cx, out float cy)
         {
             var pos = black?.PublicInfo?.Pos;
             cx = pos?.X ?? 0f;
             cy = pos?.Y ?? 0f;
-            range = baseRange;
-
-            if (!SkillAwareOn)
-                return;
-
-            if (SkillTypeOf(black) != ESkillType.Marionette)
-                return;
-
-            int summonId = GetSummonId(black.SkillComponent);
-            if (summonId == 0)
-                return;   // 召唤物还没放出来
-
-            // 注意：Assembly-CSharp 同时存在全局 DeviceManager 与 Server.Game.DeviceManager，须显式限定
-            var summon = Server.Game.DeviceManager.Instance?.GetSummon(summonId);
-            var spos = summon?.DeviceInfo?.Pos;
-            if (spos == null)
-                return;
-
-            cx = spos.X;
-            cy = spos.Y;
-            range = Math.Max(baseRange, MarionetteDetectRadius);
         }
 
         // ── ① 加入：拒绝把远处的玩家介绍给黑方 ──────────────────────────
@@ -161,13 +182,15 @@ namespace HideAndSeek.Features.Vision
 
             Diagnostics.Hit("AoiCulling");
 
-            float enter = EnterRange?.Value ?? 600f;
+            float range = EnterRange?.Value ?? 600f;
 
-            // 时停：客户端索敌半径比 AOI 更远，必须放宽否则技能点不出来
             if (SkillAwareOn && SkillTypeOf(player) == ESkillType.TimeStop)
-                enter = Math.Max(enter, TimeStopSearchRange);
+                range = Math.Max(range, TimeStopSearchRange);
 
-            ResolveCenterAndRange(player, enter, out float cx, out float cy, out float range);
+            if (TryMiniCenter(player, out float cx, out float cy))
+                range = MarionetteEnterRange?.Value ?? 448f;   // 熊模式：用它自己的探测圈
+            else
+                OwnCenter(player, out cx, out cy);
 
             if (DistanceSq(__instance, cx, cy) <= range * range)
                 return true;                      // 在范围内，允许
@@ -200,7 +223,6 @@ namespace HideAndSeek.Features.Vision
             if (__instance.State != EGameState.Survive)
                 return;
 
-            float exit = ExitRange?.Value ?? 900f;
             float minVisible = MinVisibleSeconds?.Value ?? 3f;
             int now = TimeManager.Instance.SurviveTime;
 
@@ -211,19 +233,24 @@ namespace HideAndSeek.Features.Vision
                 if (!IsBlack(black))
                     continue;
 
-                float baseExit = exit;
-                if (SkillAwareOn && SkillTypeOf(black) == ESkillType.TimeStop)
-                    baseExit = Math.Max(baseExit, TimeStopSearchRange);
+                float range = ExitRange?.Value ?? 900f;
 
-                ResolveCenterAndRange(black, baseExit, out float cx, out float cy, out float range);
-                float exitSq = range * range;
+                if (SkillAwareOn && SkillTypeOf(black) == ESkillType.TimeStop)
+                    range = Math.Max(range, TimeStopSearchRange);
+
+                if (TryMiniCenter(black, out float cx, out float cy))
+                    range = MarionetteExitRange?.Value ?? 648f;   // 熊模式
+                else
+                    OwnCenter(black, out cx, out cy);
+
+                float rangeSq = range * range;
 
                 for (int j = 0; j < alive.Count; j++)
                 {
                     var other = alive[j];
                     if (other == null || other == black)
                         continue;
-                    if (DistanceSq(other, cx, cy) <= exitSq)
+                    if (DistanceSq(other, cx, cy) <= rangeSq)
                         continue;
 
                     long key = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);

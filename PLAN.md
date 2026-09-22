@@ -375,6 +375,38 @@ WeaponTaken    = 有人拿起了武器……
 - `KillLimit` 是否真被游戏调用 → 看 `[HS] KillLimit：BlackKillLimit → N` 日志
 - 离开对局后黑灯是否恢复 → 看 `[HS] BlackVision：已恢复真实光照（切至 ...）` 日志
 
+### v2 实现记录（代码已完成，待实机验证）
+
+| 项 | 状态 | 文件 |
+|---|---|---|
+| A 假人模块 | ✅ | `Features/Dummy/DummyFeature.cs`、`Features/Dummy/DummyManager.cs` |
+| B 技能兼容 | ✅ | `Features/Vision/AoiCullingFeature.cs`（时停/小熊豁免）、`Features/Skill/TeleportGuardFeature.cs`（黑洞） |
+| C 开局灯效 | ✅ | `Features/Vision/StartFlashFeature.cs` |
+| D 倍率语义 | ✅ | `Features/Rule/MissionTimePenaltyFeature.cs`（仅措辞，行为不变） |
+
+**关键调研结论（均已落进实现）**
+
+- **Kaho 监视无需修**：`SendTraceTarget`（:175923）直接 `Session.Send` 绕过 SharedPlayers；
+  `TabletManager.DeletePin`（:32430）原版自带 ComplyRules 白名单；箭头跟的是 minimap pin 的 transform。
+- **Seol 时停**：服务端 AoE 遍历 `AlivePlayers` 不受影响，但客户端 `GetSkillTarget`（:31443）
+  只遍历本地已生成玩家，672 内无人时 `CanUseSkillCondition=false` → 按键毫无反应。故放宽 AOI 阈值到 672。
+- **小熊（Rin/Marionette）**：探测是**纯客户端本地判定**（`Summon.DetectNearbyPlayer` :7290），
+  圆心是召唤物坐标；服务端零探测逻辑 ⇒ 只能把 AOI 圆心改到召唤物（半径用其 448 探测圈）。
+- **黑洞（Noel/Teleport）**：落点 = 最远存活玩家的**精确当前位置**（:177454），已有 2000ms 前摇与 60s 冷却；
+  真正的漏洞是 `BroadcastWorldVFX(BlackHoleVfx, 目标坐标, 1792)` —— 客户端 `PlayBlackHoleEffect`
+  在本地找不到该玩家时**回落到包里的真实坐标**（:27152），于是被 AOI 隐藏的人身上会精确出现黑洞特效。
+- **假人不能复用 `HandleEnterPlayer`**：其 build 校验会必然拒收合成 session。范本是迁移的 `RestorePlayers`。
+- **`IsDummy=true` 的两个代价**：`StartLobby` 每局会清掉假人（已加回大厅重建）；
+  `BlackWinFeature` 原来把假人排除在白方存活之外（已改为计入）。
+
+### 待你实机验证
+
+1. `KillLimit` 是否真被游戏调用 → 看 `[HS] KillLimit：BlackKillLimit → N` 日志
+2. 离开对局后黑灯是否恢复 → 看 `[HS] BlackVision：已恢复真实光照（切至 ...）`
+3. 假人：`hs_dummy add` 后约 1 秒内客户端出现名牌与身体；能否被刀死；回大厅后是否自动重建
+4. 开局灯效节奏是否合适（默认亮灭两次、间隔 400ms）
+5. 黑洞：作为黑方使用后，落点是否为出生点、目标身上是否仍有黑洞特效
+
 ## 10. 版本对照
 
 - 游戏：`0.1.14b`
