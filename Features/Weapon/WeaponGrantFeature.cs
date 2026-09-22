@@ -66,16 +66,48 @@ namespace HideAndSeek.Features.Weapon
 
             ItemManager.Instance.CreateAndInsertInven(target, weaponId);
 
+            // 顺手关掉可能已经开启的武器架，避免它在发刀之前就已展开
+            try { Server.Game.DeviceManager.Instance?.CurrentArmory?.RefreshState(EArmoryState.EmptyArmory); }
+            catch { /* 没有可关的就忽略 */ }
+
             Plugin.Log.LogInfo(
                 $"[HS] WeaponGrant：已向随机玩家 #{target.PublicInfo.PlayerId} 发放武器 {weaponId}（开局发刀模式）。");
         }
 
-        [ConfigField(true, "自动发刀后禁止其他人再从地图武器架取刀（否则会出现两个黑方）。")]
+        [ConfigField(true, "自动发刀后让武器架不再开启 —— 刀根本不会出现，因此既看不到也点不了。")]
         public static ConfigEntry<bool> BlockFurtherWeapons;
 
         /// <summary>
-        /// 自动发刀模式下地图仍会刷刀 —— 不拦的话第二个拿到刀的人也会变黑。
-        /// InsertWeapon（:172688）是"变黑"的唯一入口（:172694 设 Color = Black），在这里拒绝即可。
+        /// 自动发刀模式下让武器架永不开启。
+        ///
+        /// 客户端只在 DeviceState == 1（即 OpenArmory）时才 SpawnWeapon 显示刀（:5122），
+        /// 服务端 AcquireWeapon 也要求 State == 1（:161679）。而全游戏只有一处会打开它 ——
+        /// DeviceManager 的"下一把刀"定时逻辑（:164186）。
+        /// 拦住这一处就等于"刀不存在"：看不见、也点不了，而不是"拿了再没收"。
+        /// </summary>
+        [HarmonyPatch(typeof(Server.Game.Armory), nameof(Server.Game.Armory.RefreshState))]
+        internal static class ArmoryLockHook
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(EArmoryState state)
+            {
+                if (ModeRuntime.Bypass)
+                    return true;
+                if (BlockFurtherWeapons == null || !BlockFurtherWeapons.Value)
+                    return true;
+                if (GiveAtStart == null || !GiveAtStart.Value)
+                    return true;                       // 只在自动发刀模式下生效
+                if (state != EArmoryState.OpenArmory)
+                    return true;                       // 关闭/清空的操作照常放行
+
+                Plugin.Log.LogInfo("[HS] WeaponGrant：自动发刀模式，武器架不开启（刀不会出现）。");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 兜底：万一仍有武器绕过武器架锁（迁移恢复、异常状态等）到达玩家手里，
+        /// 也不能让第二个人变黑。主手段是上面的 ArmoryLockHook。
         /// </summary>
         [HarmonyPatch(typeof(ItemManager), nameof(ItemManager.InsertWeapon))]
         internal static class BlockSecondWeaponHook
