@@ -26,6 +26,8 @@ namespace HideAndSeek.Features.Combat
         [ConfigField(9999, "黑方持有武器后的可击杀次数上限。原版为 1~2；设为极大值即等于无限。", Min = 1f)]
         public static ConfigEntry<int> MaxKills;
 
+        private static bool _logged;
+
         [HarmonyPrefix]
         private static bool Prefix(ref int __result)
         {
@@ -35,6 +37,13 @@ namespace HideAndSeek.Features.Combat
 
             int value = MaxKills?.Value ?? 9999;
             __result = value < 1 ? 1 : value;
+
+            // 首次读取时记一次，用于确认本补丁是否真的被游戏调用到
+            if (!_logged)
+            {
+                _logged = true;
+                Plugin.Log.LogInfo($"[HS] KillLimit：BlackKillLimit → {__result}（原版：单人 1 / 多人 2）。");
+            }
             return false;
         }
     }

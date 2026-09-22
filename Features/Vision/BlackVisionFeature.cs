@@ -13,11 +13,13 @@ namespace HideAndSeek.Features.Vision
     /// （客户端 MapManager.ChangeArea 无条件写 Darkness = !IsLight）。因此只需**单独给黑方**
     /// 发一份 IsLight=false 的包：服务端的真实区域光照、其它玩家的视野都不受影响。
     ///
-    /// 三个必须覆盖的时机：
+    /// 四个必须覆盖的时机：
     ///   ① 转为黑方的瞬间 —— set_Color（:175354）
-    ///   ② 进入新区域 —— Area.SendAreaInfo（:173361），否则换房间会重新变亮
+    ///   ② 进入新区域 —— Area.SendAreaInfo（:173361），否则换房间会重新变亮（大厅也属于这种情况）
     ///   ③ 真实光照变化后 —— Area.set_IsLight（:173326），否则真停电恢复时
     ///      向区域内玩家重播的亮灯包会把黑灯一起洗掉
+    ///   ④ **离开对局阶段** —— ChangeGameState（:169991）：假黑灯是灌进客户端的本地状态，
+    ///      不主动还回去的话，回到大厅仍会一直黑着（已实测复现）
     ///
     /// 副作用（与真停电一致，属预期）：黑方在黑暗中部分设备无法交互；
     /// 露娜护盾的客户端判定在 Darkness 下失效 —— 该问题由 LunaImmunityFeature 在服务端兜底。
@@ -25,7 +27,7 @@ namespace HideAndSeek.Features.Vision
     [HarmonyPatch]
     [PatchFeature(
         section: "BlackVision",
-        description: "黑方恒黑灯视野：转为黑方后立刻并持续保持黑灯（等同真停电的视野表现）。",
+        description: "黑方恒黑灯视野：转为黑方后立刻并持续保持黑灯（等同真停电的视野表现），离开对局时自动恢复。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class BlackVisionFeature
@@ -88,6 +90,38 @@ namespace HideAndSeek.Features.Vision
             {
                 if (IsBlack(player))
                     SendDarkArea(player);
+            }
+        }
+
+        // ── ④ 离开对局阶段：把真实光照还回去 ──────────────────────────
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState))]
+        internal static class GameStateHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance, EGameState state)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+                if (state == EGameState.Survive || state == EGameState.Detective)
+                    return;   // 对局内保持黑灯
+
+                int restored = 0;
+                foreach (var player in __instance.Players)
+                {
+                    if (player?.PublicInfo == null)
+                        continue;
+
+                    var area = player.CurrentArea;
+                    if (area == null)
+                        continue;
+
+                    // 重播真实光照：客户端会据此把 Darkness 改回与 IsLight 一致
+                    area.SendAreaInfo(player);
+                    restored++;
+                }
+
+                if (restored > 0)
+                    Plugin.Log.LogInfo($"[HS] BlackVision：已恢复真实光照（切至 {state}，{restored} 人）。");
             }
         }
     }

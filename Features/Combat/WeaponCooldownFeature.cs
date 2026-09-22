@@ -44,6 +44,8 @@ namespace HideAndSeek.Features.Combat
 
             int value = RearmSeconds?.Value ?? VanillaRearmSeconds;
             seconds = value < 1 ? 1 : value;
+
+            Plugin.Log.LogInfo($"[HS] WeaponCooldown：击杀后冷却 {VanillaRearmSeconds} → {seconds} 秒。");
         }
     }
 }
