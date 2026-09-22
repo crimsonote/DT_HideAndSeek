@@ -38,11 +38,17 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(true, "改写传送落点：改为 StartPosList 中离目标最近的出生点。关闭则保持原版（精确落到目标身上）。")]
         public static ConfigEntry<bool> RewriteLanding;
 
-        [ConfigField(true, "拦截暴露目标真实坐标的黑洞特效（仅拦发给非施法者的那一发；关闭则原版表现）。")]
+        [ConfigField(true, "把黑洞特效改写到实际落点（就近出生点），用于提示附近的人它要来了；关闭则保留原版的坐标泄露。")]
         public static ConfigEntry<bool> BlockVfxLeak;
+
+        [ConfigField(true, "仅对黑方生效：白方使用黑洞时完全保持原版（原需求就是限制黑方滥用）。")]
+        public static ConfigEntry<bool> OnlyForBlack;
 
         /// <summary>本次施法的施法者 ID，用于区分"自己脚下那一发"与"目标身上那一发"。</summary>
         private static int _casterId;
+
+        /// <summary>本次施法者是否为黑方。</summary>
+        private static bool _casterIsBlack;
 
         /// <summary>本次黑洞的实际落点（由 LandingHook 写入），供 VfxHook 画特效。</summary>
         private static PosInfo _pendingLanding;
@@ -52,13 +58,17 @@ namespace HideAndSeek.Features.Skill
         internal static class LandingHook
         {
             [HarmonyPrefix]
-            private static bool Prefix(GamePlayer target, out PosInfo landingPos, ref bool __result)
+            private static bool Prefix(GameSkill __instance, GamePlayer target, out PosInfo landingPos, ref bool __result)
             {
                 landingPos = null;
 
                 if (ModeRuntime.Bypass)
                     return true;
                 if (RewriteLanding == null || !RewriteLanding.Value)
+                    return true;
+                // 只限制黑方：白方用黑洞属于正常玩法，落点不应被改写
+                if (OnlyForBlack != null && OnlyForBlack.Value
+                    && __instance?.Owner?.Color != EPlayerColor.Black)
                     return true;
 
                 var spawn = NearestSpawnTo(target);
@@ -127,6 +137,8 @@ namespace HideAndSeek.Features.Skill
                     return;                      // 只关心黑洞，别误伤 FlashVfx/DyingVfx 等一大家族
                 if (deviceId == _casterId)
                     return;                      // 施法者脚下那一发保持原样
+                if (OnlyForBlack != null && OnlyForBlack.Value && !_casterIsBlack)
+                    return;                      // 白方用黑洞 → 特效也保持原版
 
                 deviceId = 0;                    // 让客户端走 effect.Pos 分支，而不是按玩家位置渲染
                 pos = _pendingLanding;           // 画在实际落点（就近出生点）
@@ -141,6 +153,7 @@ namespace HideAndSeek.Features.Skill
             private static void Prefix(GameSkill __instance)
             {
                 _casterId = __instance?.Owner?.PublicInfo?.PlayerId ?? 0;
+                _casterIsBlack = __instance?.Owner?.Color == EPlayerColor.Black;
                 Diagnostics.Hit("TeleportGuard");
             }
         }
