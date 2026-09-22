@@ -5,6 +5,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Weapon;
 using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Broadcast
@@ -161,9 +162,22 @@ namespace HideAndSeek.Features.Broadcast
                 DeathAnnounce?.Value,
                 ("name", name),
                 ("alive", aliveWhites.ToString()),
-                ("total", room.RoundStartPlayerCount.ToString()));
+                ("total", TotalWhites(room).ToString()));
 
             Notice(room, text);
+        }
+
+        /// <summary>
+        /// 开局白方总数。自动发刀模式下开局就有一人被指定为黑方，他不该算进白方基数；
+        /// 自行拿刀模式开局全是白方（黑方是后来抢到刀才产生的），不能减。
+        /// </summary>
+        private static int TotalWhites(GameRoom room)
+        {
+            int total = room.RoundStartPlayerCount;
+            if (WeaponGrantFeature.GiveAtStart != null && WeaponGrantFeature.GiveAtStart.Value)
+                total -= 1;
+
+            return total < 0 ? 0 : total;
         }
 
         // ── 武器被取走的匿名通告 ─────────────────────────────────────

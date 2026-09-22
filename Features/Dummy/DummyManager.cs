@@ -110,8 +110,14 @@ namespace HideAndSeek.Features.Dummy
                 var player = new GamePlayer(id, session, name);
                 session.Player = player;
 
-                player.OwnedCharacterIds = new List<int>(Define.DEFAULT_OWNED_CHARACTER_IDS);
-                player.CharacterId = ResolveCharacter(charaId, SpawnedIds.Count);
+                // 先定角色，再把它并进「已拥有」列表 —— 否则未解锁角色（如露娜 103）
+                // 不在 DEFAULT_OWNED_CHARACTER_IDS 里，会被后续逻辑当作"未拥有"而拒绝。
+                int resolved = ResolveCharacter(charaId, SpawnedIds.Count);
+                var owned = new List<int>(Define.DEFAULT_OWNED_CHARACTER_IDS);
+                if (resolved > 0 && !owned.Contains(resolved))
+                    owned.Add(resolved);
+                player.OwnedCharacterIds = owned;
+                player.CharacterId = resolved;
                 player.Ready = true;                                    // 否则开始键没反应
 
                 room.Players.Add(player);
