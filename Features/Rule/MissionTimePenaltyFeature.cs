@@ -33,7 +33,7 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "启用任务扣时。")]
         public static ConfigEntry<bool> PenaltyOn;
 
-        [ConfigField(1f, "扣时倍率。1 = 与原版加时等量相抵（净效果为扣减等量时间）。", Min = 0.1f, Max = 5f)]
+        [ConfigField(1f, "额外乘数。最终限制时间变化 = (-1) × 原版加时量 × 本乘数；原版加时量已包含大厅设置的时限权重，因此本项只是在其之上再乘一个系数，不替换原始设置。", Min = 0.1f, Max = 5f)]
         public static ConfigEntry<float> Multiplier;
 
         private static bool _inClearMission;

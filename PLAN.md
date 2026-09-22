@@ -336,6 +336,45 @@ WeaponTaken    = 有人拿起了武器……
 - 确定 `[PatchFeature]` 的署名
 - 部署方式：`bin\Release\netstandard2.1\HideAndSeek.dll` 需手动复制到 `BepInEx\plugins\`
 
+## 9.5 v2 计划（进行中）
+
+承接捉迷藏玩法上线后的实测反馈与扩需求。
+
+### A. 假人玩家模块（`HS_Dummy`）
+单人房造出可被刀死的白方靶子，供房主自己拿刀做对抗测试。
+
+| 维度 | 方案 |
+|---|---|
+| 创建 | `ObjectUtils.CreatePlayer(session, name)` + `HostPeerSession(null)`（`Send` 为空实现） |
+| 出生点 | `Managers.Data.MapData.StartPosList` |
+| 角色 | 命令按 ID 指定；缺省或非法则回退随机 |
+| 官方上报 | **必须拦截**（战绩/加星/成就），避免假人污染线上数据 |
+| 命令 | `/hs_dummy add\|del\|list\|clear` |
+| 已知难点 | 假人会抬高 `CompleteWaitCount()`，每次切阶段多等 10s grace / 70s 超时，需规避 |
+
+### B. 全角色技能 × AOI 裁剪 兼容
+先出完整影响矩阵，再逐项修。已点名四类：
+
+| 技能 | 修法方向 |
+|---|---|
+| Kaho 监视 | 被监视目标**豁免裁剪** |
+| Seol 时停 | 如原版忽略裁剪正常工作 |
+| 小熊召唤物视野 | 视野/加载位置跟随召唤物，而非被裁剪错位 |
+| 黑洞传送 | 落点改为"最远玩家所在房间中心"或"最近出生点"；或加前摇；或对黑方使用时加 CD |
+
+### C. 开局灯效 ✅ 已完成
+`Features/Vision/StartFlashFeature.cs`：亮→灭→亮→灭→定态（白方亮、黑方暗），
+"亮"以区域真实光照为基准；两个触发点（有人拿刀 / 进入生存阶段）各自可开关。
+
+### D. 负数任务倍率语义 ✅ 已完成（澄清措辞，行为不变）
+`MissionTimePenalty.Multiplier` 说明改为"最终变化 = (-1) × 原版加时量 × 本乘数"。
+原版加时量本身已含大厅设置的 `TimeLimitIncreaseWeight`，故本项是**叠加其上的额外乘数**，
+不替换房主原始设置。
+
+### 遗留验证
+- `KillLimit` 是否真被游戏调用 → 看 `[HS] KillLimit：BlackKillLimit → N` 日志
+- 离开对局后黑灯是否恢复 → 看 `[HS] BlackVision：已恢复真实光照（切至 ...）` 日志
+
 ## 10. 版本对照
 
 - 游戏：`0.1.14b`

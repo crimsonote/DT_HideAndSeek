@@ -46,6 +46,7 @@
 | `WhiteWinOnTimeout` | 时间归零判白方胜 |
 | `MissionTimePenalty` | 任务扣时开关与倍率 |
 | `BlackVision` | 黑方恒黑灯 |
+| `StartFlash` | 开局灯效：全场亮灭两次（白方终亮 / 黑方终暗），可分别由「有人拿刀」「进入生存阶段」触发 |
 | `WeaponCooldown` | 击杀后冷却秒数（默认 10，原版 20） |
 | `KillLimit` | 击杀次数上限（默认 9999 = 解除） |
 | `LunaImmunity` | 露娜服务端免疫、拦截反馈音效 |
