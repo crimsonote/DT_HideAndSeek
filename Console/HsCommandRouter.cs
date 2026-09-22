@@ -274,7 +274,7 @@ namespace HideAndSeek.Console
             // 允许省略"谁"：hs_tp to 5 表示把房主自己传过去
             GamePlayer mover;
             int index;
-            if (args[0].Equals("to", StringComparison.OrdinalIgnoreCase))
+            if ((args[0].Equals("to", StringComparison.OrdinalIgnoreCase) || args[0].Equals("in", StringComparison.OrdinalIgnoreCase)))
             {
                 mover = FindPlayer(room, 1);
                 if (mover == null)
@@ -297,7 +297,7 @@ namespace HideAndSeek.Console
             PosInfo target;
             string desc;
 
-            if (args[index].Equals("to", StringComparison.OrdinalIgnoreCase))
+            if ((args[index].Equals("to", StringComparison.OrdinalIgnoreCase) || args[index].Equals("in", StringComparison.OrdinalIgnoreCase)))
             {
                 if (args.Length <= index + 1 || !int.TryParse(args[index + 1], out int targetId))
                     return Error("用法: hs_tp <玩家ID> to <目标玩家ID>");

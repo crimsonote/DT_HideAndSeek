@@ -130,7 +130,7 @@ namespace HideAndSeek.Features.Dummy
                     owned.Add(resolved);
                 player.OwnedCharacterIds = owned;
                 player.CharacterId = resolved;                          // 大厅阶段先给个合法值（避免 Trial UI 裸下标）
-                DesiredCharacter[id] = resolved;                        // 记下来，选角阶段再正式选
+                DesiredCharacter[id] = charaId > 0 ? charaId : -2;   // -2 = 游戏内置「随机」选项（:171152），由游戏在选角结束后统一分配，不会重复                        // 记下来，选角阶段再正式选
                 player.Ready = true;                                    // 否则开始键没反应
 
                 room.Players.Add(player);
@@ -262,7 +262,7 @@ namespace HideAndSeek.Features.Dummy
             {
                 int id = kv.Key;
                 int chara = kv.Value;
-                if (chara <= 0)
+                if (chara == 0)
                     continue;
 
                 var player = room.Players.FirstOrDefault(p =>
