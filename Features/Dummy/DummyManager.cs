@@ -248,20 +248,12 @@ namespace HideAndSeek.Features.Dummy
             if (dic == null || dic.Count == 0)
                 return 102;   // Rin
 
-            // 优先用"默认拥有"角色池：它不含 Luna(103)、Liliana(108)、Noel(112)、Lian(113)。
-            // 尤其要避开 Luna —— 露娜系免疫普通刀杀（LunaImmunityFeature），
-            // 假人若随机到露娜，黑方刀不动它，测试就失去意义了。
-            var pool = Define.DEFAULT_OWNED_CHARACTER_IDS?
-                .Where(id => dic.ContainsKey(id))
-                .ToList();
-
-            if (pool != null && pool.Count > 0)
-                return pool[Util.GetRandomNumber(0, pool.Count)];
-
+            // 假人的定位是"模拟真实玩家"，所以要覆盖玩家可能选到的**全部**角色 —— 包含露娜。
+            // 露娜免疫普通刀杀是玩法本身的一部分，黑方刀不动她是正常现象，不该回避；
+            // 回避了反而测不到"只剩露娜系判黑胜"那条路径。
+            // 只排除 Madeline：原版 BuildPickCandidates（:171119）本就不允许选她。
             var ids = dic.Values
-                .Where(c => c != null
-                            && c.Type != ECharacterType.Madeline
-                            && c.Type != ECharacterType.Luna)
+                .Where(c => c != null && c.Type != ECharacterType.Madeline)
                 .Select(c => c.DataId)
                 .ToList();
 
