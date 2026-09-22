@@ -44,6 +44,9 @@ namespace HideAndSeek.Features.Skill
         /// <summary>本次施法的施法者 ID，用于区分"自己脚下那一发"与"目标身上那一发"。</summary>
         private static int _casterId;
 
+        /// <summary>本次黑洞的实际落点（由 LandingHook 写入），供 VfxHook 画特效。</summary>
+        private static PosInfo _pendingLanding;
+
         // ── L3：落点改写 ────────────────────────────────────────────
         [HarmonyPatch(typeof(GameSkill), "TryGetSafeLandingPos")]
         internal static class LandingHook
@@ -63,6 +66,7 @@ namespace HideAndSeek.Features.Skill
                     return true;   // 拿不到出生点表，交还原版
 
                 landingPos = spawn;
+                _pendingLanding = spawn;      // 供 VfxHook 把特效画在真正的落点上
                 __result = true;   // 必须 true：false 会让原版回退成"精确落到目标当前位置"
                 Plugin.Log.LogInfo(
                     $"[HS] TeleportGuard：落点改写为出生点 ({spawn.X:F0},{spawn.Y:F0})（目标 #{target?.PublicInfo?.PlayerId}）。");
@@ -99,23 +103,33 @@ namespace HideAndSeek.Features.Skill
             return best?.Clone();
         }
 
-        // ── L4：黑洞特效坐标泄露 ─────────────────────────────────────
+        // ── L4：把黑洞特效画在真正的落点上 ───────────────────────────
+        /// <summary>
+        /// 原版会为目标发一发 BlackHoleVfx（deviceId = 目标、pos = 目标实时坐标），
+        /// 那既暴露被裁剪目标的真实位置，又会让客户端优先按"玩家当前位置"渲染。
+        ///
+        /// 这里**不拦截** —— 拦掉就没人知道黑洞要来了。改为把它改写到实际落点：
+        ///   deviceId 置 0 → 客户端走 else 分支，改用包里的坐标（PlayBlackHoleEffect :27152）
+        ///   pos 换成本次算出的出生点
+        /// 效果是"在黑洞真正要落下的地方闪一下"，用来提示附近的人它要过来了。
+        /// </summary>
         [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.BroadcastWorldVFX))]
         internal static class VfxHook
         {
             [HarmonyPrefix]
-            private static bool Prefix(EEffectType type, int deviceId)
+            private static void Prefix(EEffectType type, ref int deviceId, ref PosInfo pos)
             {
-                if (ModeRuntime.Bypass)
-                    return true;
+                if (ModeRuntime.Bypass || _pendingLanding == null)
+                    return;
                 if (BlockVfxLeak == null || !BlockVfxLeak.Value)
-                    return true;
+                    return;
                 if (type != EEffectType.BlackHoleVfx)
-                    return true;                 // 只关心黑洞，别误伤 FlashVfx/DyingVfx 等一大家族
+                    return;                      // 只关心黑洞，别误伤 FlashVfx/DyingVfx 等一大家族
                 if (deviceId == _casterId)
-                    return true;                 // 保留施法者脚下那一发
+                    return;                      // 施法者脚下那一发保持原样
 
-                return false;                    // 拦掉"画在目标身上"的那一发
+                deviceId = 0;                    // 让客户端走 effect.Pos 分支，而不是按玩家位置渲染
+                pos = _pendingLanding;           // 画在实际落点（就近出生点）
             }
         }
 
