@@ -226,10 +226,12 @@ namespace HideAndSeek.Features.Vision
             float minVisible = MinVisibleSeconds?.Value ?? 3f;
             int now = TimeManager.Instance.SurviveTime;
 
-            var alive = __instance.AlivePlayers;
-            for (int i = 0; i < alive.Count; i++)
+            // 用 Players 而非 AlivePlayers：假人可能不在 AlivePlayers 里，
+            // 那会让下面的恢复逻辑看不到它。
+            var all = __instance.Players;
+            for (int i = 0; i < all.Count; i++)
             {
-                var black = alive[i];
+                var black = all[i];
                 if (!IsBlack(black))
                     continue;
 
@@ -245,18 +247,36 @@ namespace HideAndSeek.Features.Vision
 
                 float rangeSq = range * range;
 
-                for (int j = 0; j < alive.Count; j++)
+                for (int j = 0; j < all.Count; j++)
                 {
-                    var other = alive[j];
+                    var other = all[j];
                     if (other == null || other == black)
                         continue;
-                    if (DistanceSq(other, cx, cy) <= rangeSq)
+
+                    float dSq = DistanceSq(other, cx, cy);
+
+                    if (dSq <= rangeSq)
+                    {
+                        // 在范围内 → 主动确保可见。
+                        //
+                        // 关键：剔除是单向动作，而原版的"重新可见"依赖**被观察者自己移动**
+                        // （AddPlayer 由 AreaManager.SearchAndUpdatePlayer 在被观察者 Move 时触发）。
+                        // 假人站着不动，所以一旦被剔除就永久消失 —— 这正是
+                        // "白方时能看到、变黑后走到它面前也看不到"的原因。
+                        // AddPlayer 幂等（已在列表则立即返回 false），每秒调用开销可忽略。
+                        other.AddPlayer(black);
                         continue;
+                    }
 
                     long key = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);
                     if (VisibleSince.TryGetValue(key, out int since) && minVisible > 0f
                         && now - since < minVisible)
                         continue;                 // 还在最短可见保护期内
+
+                    // 记录实际距离：用于区分"被裁剪剔除"与"被黑灯遮住"两种看不见
+                    Plugin.Log.LogInfo(
+                        $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 剔除 #{other.PublicInfo.PlayerId}" +
+                        $"（距离 {Math.Sqrt(dSq):F0} > 阈值 {range:F0}，圆心 {cx:F0},{cy:F0}）");
 
                     other.RemovePlayer(black);    // 幂等：不在 SharedPlayers 时直接返回 false
                     VisibleSince.Remove(key);
