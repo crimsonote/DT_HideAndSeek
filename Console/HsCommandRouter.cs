@@ -4,6 +4,7 @@ using System.Text;
 using BepInEx.Configuration;
 using HideAndSeek.Core;
 using HideAndSeek.Features.Combat;
+using HideAndSeek.Features.Dummy;
 using HideAndSeek.Features.Vision;
 
 namespace HideAndSeek.Console
@@ -35,6 +36,7 @@ namespace HideAndSeek.Console
             {
                 case "hs":           return Status();
                 case "hs_check":     return Diagnostics.Report();
+                case "hs_dummy":     return Dummy(args);
                 case "hs_mode":      return SetMode(args);
                 case "hs_aoi":       return SetAoi(args);
                 case "hs_cd":        return SetCooldown(args);
@@ -134,6 +136,46 @@ namespace HideAndSeek.Console
                 return Error("用法: hs_killlimit <n|unlimited>");
 
             return Status();
+        }
+
+        // ── /hs_dummy add [id] [charaId] | del <id> | list | clear ──
+        private static string Dummy(string[] args)
+        {
+            if (args.Length == 0 || args[0].Equals("list", StringComparison.OrdinalIgnoreCase))
+                return DummyManager.ListJson();
+
+            switch (args[0].ToLowerInvariant())
+            {
+                case "add":
+                {
+                    int id = 0, chara = 0;
+                    if (args.Length >= 2 && !int.TryParse(args[1], out id))
+                        return Error("用法: hs_dummy add [座位号] [角色ID]");
+                    if (args.Length >= 3 && !int.TryParse(args[2], out chara))
+                        return Error("用法: hs_dummy add [座位号] [角色ID]");
+
+                    if (!DummyManager.Spawn(id, chara, out int actual, out string err))
+                        return Error("生成失败: " + err);
+
+                    return $"{{\"ok\":true,\"id\":{actual}}}";
+                }
+
+                case "del":
+                {
+                    if (args.Length < 2 || !int.TryParse(args[1], out int id))
+                        return Error("用法: hs_dummy del <座位号>");
+                    if (!DummyManager.Remove(id, out string err))
+                        return Error("移除失败: " + err);
+
+                    return $"{{\"ok\":true,\"id\":{id}}}";
+                }
+
+                case "clear":
+                    return $"{{\"ok\":true,\"removed\":{DummyManager.Clear()}}}";
+
+                default:
+                    return Error("用法: hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>");
+            }
         }
 
         // ── 小工具 ──────────────────────────────────────────────────

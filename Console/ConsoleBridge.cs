@@ -39,6 +39,7 @@ namespace HideAndSeek.Console
             ("hs_aoi",       "hs_aoi [on|off] [enter=600] [exit=900] [min=3]",    "黑方视野裁剪参数"),
             ("hs_cd",        "hs_cd <秒>",                                        "黑方击杀后的冷却秒数"),
             ("hs_killlimit", "hs_killlimit <n|unlimited>",                        "黑方击杀次数上限"),
+            ("hs_dummy",     "hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>", "假人玩家（测试用）：生成 / 移除 / 查看靶子"),
         };
 
         private static Type DtConsoleType() => AccessTools.TypeByName(DtConsoleTypeName);

@@ -56,8 +56,10 @@ namespace HideAndSeek.Features.Rule
             {
                 if (player == null || player.PublicInfo == null)
                     continue;
-                if (player.IsSpectator || player.IsDummy)
+                if (player.IsSpectator)
                     continue;
+                // 注意：假人（IsDummy）也算白方存活。它们是被 ConvertToDummy 标记的靶子，
+                // 若不计数，"非露娜系白方全部淘汰"永远不成立，黑胜条件失效。
                 if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
                     continue;                      // 黑方不计入白方存活
 
