@@ -42,6 +42,12 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "禁止玩家对尸体报警（手动开会）。")]
         public static ConfigEntry<bool> BlockManualReport;
 
+        [ConfigField(true,
+            "把尸体上的『报告』改写成『搬起尸体』。" +
+            "开：白方也能拖尸，且尸体不再抢占交互位（捉迷藏里尸体本就不该是举报按钮）；" +
+            "关：只丢弃报告，尸体仍会挡住它旁边的交互目标。")]
+        public static ConfigEntry<bool> ConvertToCarry;
+
         internal static int DelaySeconds => AutoDetectiveDelay?.Value ?? 1000000;
 
         /// <summary>
@@ -77,11 +83,23 @@ namespace HideAndSeek.Features.Rule
         // 因此删除它 —— 留一个无效补丁只会误导后来的人。
 
         // ── 路径 ②：手动报警 ────────────────────────────────────────────
+        // 报告与搬运是两条独立包路径：E 键 → C_INTERACT_CORPSE → 这里；
+        // Q 键 → C_CARRY_CORPSE → DeviceManager.CarryCorpse。所以拦这里只挡报告，不碰搬运。
+        //
+        // 但客户端对尸体有"绝对交互优先权"（SearchInteractDevice :27333 连距离都不比就抢占），
+        // 且尸体提示文本不读 DiscoverdDone/_isReport —— 报告被丢弃后提示仍在、尸体继续抢占，
+        // 观感就是"按 E 没反应，还挡住了旁边的设备"。
+        //
+        // 因此这里不只丢弃报告，而是把它改写成"搬起尸体"：
+        //   · StartCarry 内部 RemoveDevice(this) → 客户端尸体消失 → 抢占自然解除
+        //   · 白方本没有搬运入口（客户端三重闸门只放 Black/Dark），这里一并放开
+        //   · State / HandItemId 都由 S_MODIFY_PLAYER 下发，客户端能正确渲染拖尸外观
+        //   · 顺序敏感：必须先 State=Carry 再 HandItemId，否则客户端走 EquipItem 分支、不显拖尸
         [HarmonyPatch(typeof(GameCorpse), "Interact", new[] { typeof(GamePlayer), typeof(Packet) })]
         internal static class InteractHook
         {
             [HarmonyPrefix]
-            private static bool Prefix()
+            private static bool Prefix(GameCorpse __instance, GamePlayer player)
             {
                 Diagnostics.Hit("CorpseReport");
                 if (ModeRuntime.Bypass)
@@ -89,7 +107,38 @@ namespace HideAndSeek.Features.Rule
                 if (BlockManualReport == null || !BlockManualReport.Value)
                     return true;
 
-                return false;   // 丢弃该次报警
+                if (ConvertToCarry != null && ConvertToCarry.Value)
+                    TryCarryInstead(__instance, player);
+
+                return false;   // 永不报告
+            }
+
+            /// <summary>把一次"报告"改写成"搬起尸体"。</summary>
+            private static void TryCarryInstead(GameCorpse corpse, GamePlayer player)
+            {
+                try
+                {
+                    var room = GameRoom.Instance;
+                    if (corpse == null || player == null || room == null)
+                        return;
+                    if (room.State != EGameState.Survive || !player.IsAlive)
+                        return;
+                    if (corpse.IsHidden || corpse.IsCarried || corpse.IsBombCorpse || corpse.DiscoverdDone)
+                        return;
+                    if (player.CarryingCorpseId != -1)
+                        return;                                  // 手上已经有尸体了
+
+                    ItemManager.Instance.DropItem(player);       // 复刻 CarryCorpse :164292，仅去掉颜色条件
+                    corpse.StartCarry(player.PublicInfo.PlayerId);
+                    player.CarryingCorpseId = corpse.ID;
+                    player.State = EPlayerState.Carry;           // 先状态：内部广播 ChangePlayerState=12
+                    player.PublicInfo.HandItemId = corpse.ID;
+                    player.BroadcastModifyPlayer(EModifyPlayerEvent.ChangeHandItem, corpse.ID);   // 再手持物
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] CorpseReport：改写为搬运失败 — {ex.Message}");
+                }
             }
         }
     }
