@@ -262,10 +262,19 @@ namespace HideAndSeek.Console
 
         // ── /hs_tp <玩家ID> <x> <y> | <玩家ID> to <目标ID> | to <目标ID> ──
         // 把真人或假人挪到坐标、或挪到另一名玩家身边（测试时最常用后者）。
+        /// <summary>
+        /// 传送命令的用法说明。任何参数错误都返回它 ——
+        /// 只报"参数不对"而不给格式，会让人只能靠猜。
+        /// </summary>
+        private const string TpUsage =
+            "用法: hs_tp <玩家ID> <x> <y> → 传到坐标；" +
+            "hs_tp <玩家ID> to <目标玩家ID> → 传到某人身边；" +
+            "hs_tp to <目标玩家ID> → 省略第一个参数表示操作自己";
+
         private static string Teleport(string[] args)
         {
             if (args.Length < 2)
-                return Error("用法: hs_tp <玩家ID> <x> <y> → 传到坐标；hs_tp <玩家ID> to <目标玩家ID> → 传到某人身边；hs_tp to <目标玩家ID> → 省略第一个参数表示操作自己");
+                return Error(TpUsage);
 
             var room = GameRoom.Instance;
             if (room == null)
@@ -278,18 +287,18 @@ namespace HideAndSeek.Console
             {
                 mover = FindPlayer(room, 1);
                 if (mover == null)
-                    return Error("省略玩家ID时默认操作 #1（房主），但没有找到该玩家
+                    return Error("省略玩家ID时默认操作 #1（房主），但没有找到该玩家。\n" + TpUsage);
 
                 index = 0;
             }
             else
             {
                 if (!int.TryParse(args[0], out int id))
-                    return Error("玩家ID 必须是数字
+                    return Error("玩家ID 必须是数字。\n" + TpUsage);
 
                 mover = FindPlayer(room, id);
                 if (mover == null)
-                    return Error($"没有玩家 #{id}
+                    return Error($"没有玩家 #{id}。\n" + TpUsage);
 
                 index = 1;
             }
@@ -300,11 +309,11 @@ namespace HideAndSeek.Console
             if (args[index].Equals("to", StringComparison.OrdinalIgnoreCase))
             {
                 if (args.Length <= index + 1 || !int.TryParse(args[index + 1], out int targetId))
-                    return Error("用法: hs_tp <玩家ID> <x> <y> → 传到坐标；hs_tp <玩家ID> to <目标玩家ID> → 传到某人身边；hs_tp to <目标玩家ID> → 省略第一个参数表示操作自己");
+                    return Error(TpUsage);
 
                 var other = FindPlayer(room, targetId);
                 if (other == null)
-                    return Error($"没有玩家 #{targetId}
+                    return Error($"没有玩家 #{targetId}。\n" + TpUsage);
 
                 target = other.PublicInfo.Pos;
                 desc = $"#{targetId} 的位置";
@@ -314,7 +323,7 @@ namespace HideAndSeek.Console
                 if (args.Length <= index + 1
                     || !float.TryParse(args[index], out float x)
                     || !float.TryParse(args[index + 1], out float y))
-                    return Error("用法: hs_tp <玩家ID> <x> <y> → 传到坐标；hs_tp <玩家ID> to <目标玩家ID> → 传到某人身边；hs_tp to <目标玩家ID> → 省略第一个参数表示操作自己");
+                    return Error(TpUsage);
 
                 target = new PosInfo { X = x, Y = y };
                 desc = $"({x:F0},{y:F0})";
