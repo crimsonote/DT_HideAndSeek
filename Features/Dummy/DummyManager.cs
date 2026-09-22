@@ -47,6 +47,9 @@ namespace HideAndSeek.Features.Dummy
         private static readonly List<int> SpawnedIds = new List<int>();
         private static int _seq;
 
+        /// <summary>假人 ID → 期望角色 ID。用于在选角阶段替他"选人"。</summary>
+        private static readonly Dictionary<int, int> DesiredCharacter = new Dictionary<int, int>();
+
         public static IReadOnlyList<int> Ids => SpawnedIds;
 
         public static int ActiveCount => SpawnedIds.Count;
@@ -117,7 +120,8 @@ namespace HideAndSeek.Features.Dummy
                 if (resolved > 0 && !owned.Contains(resolved))
                     owned.Add(resolved);
                 player.OwnedCharacterIds = owned;
-                player.CharacterId = resolved;
+                player.CharacterId = resolved;                          // 大厅阶段先给个合法值（避免 Trial UI 裸下标）
+                DesiredCharacter[id] = resolved;                        // 记下来，选角阶段再正式选
                 player.Ready = true;                                    // 否则开始键没反应
 
                 room.Players.Add(player);
@@ -231,6 +235,40 @@ namespace HideAndSeek.Features.Dummy
 
             SpawnedIds.RemoveAll(id =>
                 !room.Players.Any(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id));
+        }
+
+        /// <summary>
+        /// 让假人真正走一遍选角。只设 CharacterId 是不够的 —— 那只是大厅阶段的展示值，
+        /// 对局内实际使用的角色由选角阶段决定，必须调用 GameRoom.PickCharacter（:171136）。
+        /// 顺带满足 CheckPickAllDone（:171188）的人头计数，选角阶段不必空等。
+        /// </summary>
+        public static void ApplyPickedCharacters(GameRoom room)
+        {
+            if (room == null || DesiredCharacter.Count == 0)
+                return;
+
+            foreach (var kv in DesiredCharacter)
+            {
+                int id = kv.Key;
+                int chara = kv.Value;
+                if (chara <= 0)
+                    continue;
+
+                var player = room.Players.FirstOrDefault(p =>
+                    p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
+                if (player == null)
+                    continue;
+
+                try
+                {
+                    room.PickCharacter(player, chara);
+                    Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角失败 — {ex.Message}");
+                }
+            }
         }
 
         /// <summary>按配置或随机解析一个合法角色 ID（绝不留 -1）。</summary>

@@ -81,7 +81,7 @@ namespace HideAndSeek.Features.Weapon
         internal static class BlockSecondWeaponHook
         {
             [HarmonyPrefix]
-            private static bool Prefix(GamePlayer player)
+            private static bool Prefix(GamePlayer player, Server.Game.Item item)
             {
                 if (ModeRuntime.Bypass)
                     return true;
@@ -101,9 +101,30 @@ namespace HideAndSeek.Features.Weapon
                 if (!hasBlack)
                     return true;
 
+                // 不是"拒绝拿刀"——那样他会攥着一把没用的刀。游戏里并不存在"地上刷出的刀"，
+                // 刀来自武器架交互，InsertWeapon（:172688）正是它进入玩家之手的入口，
+                // 所以在这里把这把刀直接从世界移除，等价于"这把刀不存在"。
+                Confiscate(player, item);
                 Plugin.Log.LogInfo(
-                    $"[HS] WeaponGrant：已有黑方，拒绝 #{player.PublicInfo.PlayerId} 再从武器架取刀。");
+                    $"[HS] WeaponGrant：已有黑方，已没收 #{player.PublicInfo.PlayerId} 取到的武器。");
                 return false;
+            }
+
+            /// <summary>把武器从玩家与世界移除。</summary>
+            private static void Confiscate(GamePlayer player, Server.Game.Item item)
+            {
+                try
+                {
+                    if (item != null && ItemManager.Instance != null)
+                        ItemManager.Instance.RemoveItem(item);
+                    else
+                        player.RemoveWeapon();
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] WeaponGrant：没收武器失败 — {ex.Message}");
+                    try { player.RemoveWeapon(); } catch { /* 已尽力 */ }
+                }
             }
         }
     }

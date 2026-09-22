@@ -86,6 +86,20 @@ namespace HideAndSeek.Features.Dummy
 
                 Plugin.Log.LogInfo($"[HS] Dummy：选角前自动生成 {ok}/{want} 个假人。");
             }
+
+            /// <summary>
+            /// 假人也要真正走一遍"选角"：直接设 CharacterId 只在大厅阶段有效，
+            /// 对局里实际使用的角色是选角阶段决定的，必须调用 GameRoom.PickCharacter（:171136）。
+            /// 顺带满足 CheckPickAllDone（:171188）的人头计数，让选角阶段不必空等。
+            /// </summary>
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+
+                DummyManager.ApplyPickedCharacters(__instance);
+            }
         }
 
         // ── 生命周期：vanilla 回大厅会清掉所有 IsDummy 玩家，需要重建 ──────────
