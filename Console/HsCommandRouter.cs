@@ -2,10 +2,13 @@
 using System.Linq;
 using System.Text;
 using BepInEx.Configuration;
+using Protocol;
+using Server.Game;
 using HideAndSeek.Core;
 using HideAndSeek.Features.Combat;
 using HideAndSeek.Features.Dummy;
 using HideAndSeek.Features.Vision;
+using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Console
 {
@@ -43,7 +46,8 @@ namespace HideAndSeek.Console
                 case "hs_aoi":       return SetAoi(args);
                 case "hs_cd":        return SetCooldown(args);
                 case "hs_killlimit": return SetKillLimit(args);
-                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname）");
+                case "hs_tp":        return Teleport(args);
+                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
             }
         }
 
@@ -222,6 +226,81 @@ namespace HideAndSeek.Console
 
             return $"{{\"ok\":true,\"name\":\"{name}\"}}";
         }
+
+        // ── /hs_tp <玩家ID> <x> <y> | <玩家ID> to <目标ID> | to <目标ID> ──
+        // 把真人或假人挪到坐标、或挪到另一名玩家身边（测试时最常用后者）。
+        private static string Teleport(string[] args)
+        {
+            if (args.Length < 2)
+                return Error("用法: hs_tp <玩家ID> <x> <y> | hs_tp <玩家ID> to <目标玩家ID> | hs_tp to <目标玩家ID>（省略=操作自己）");
+
+            var room = GameRoom.Instance;
+            if (room == null)
+                return Error("当前没有活动房间");
+
+            // 允许省略"谁"：hs_tp to 5 表示把房主自己传过去
+            GamePlayer mover;
+            int index;
+            if (args[0].Equals("to", StringComparison.OrdinalIgnoreCase))
+            {
+                mover = FindPlayer(room, 1);
+                if (mover == null)
+                    return Error("省略玩家ID时默认操作 #1（房主），但没有找到该玩家");
+
+                index = 0;
+            }
+            else
+            {
+                if (!int.TryParse(args[0], out int id))
+                    return Error("玩家ID 必须是数字");
+
+                mover = FindPlayer(room, id);
+                if (mover == null)
+                    return Error($"没有玩家 #{id}");
+
+                index = 1;
+            }
+
+            PosInfo target;
+            string desc;
+
+            if (args[index].Equals("to", StringComparison.OrdinalIgnoreCase))
+            {
+                if (args.Length <= index + 1 || !int.TryParse(args[index + 1], out int targetId))
+                    return Error("用法: hs_tp <玩家ID> to <目标玩家ID>");
+
+                var other = FindPlayer(room, targetId);
+                if (other == null)
+                    return Error($"没有玩家 #{targetId}");
+
+                target = other.PublicInfo.Pos;
+                desc = $"#{targetId} 的位置";
+            }
+            else
+            {
+                if (args.Length <= index + 1
+                    || !float.TryParse(args[index], out float x)
+                    || !float.TryParse(args[index + 1], out float y))
+                    return Error("用法: hs_tp <玩家ID> <x> <y>");
+
+                target = new PosInfo { X = x, Y = y };
+                desc = $"({x:F0},{y:F0})";
+            }
+
+            if (target == null)
+                return Error("目标位置无效");
+
+            int moverId = mover.PublicInfo.PlayerId;
+
+            // force=true 会额外广播 S_RESPAWN；否则客户端只靠后续位置包插值，会"滑"过去
+            mover.Move(target, force: true);
+
+            Plugin.Log.LogInfo($"[HS] Teleport：#{moverId} 已传送到 {desc}。");
+            return $"{{\"ok\":true,\"id\":{moverId},\"x\":{target.X},\"y\":{target.Y}}}";
+        }
+
+        private static GamePlayer FindPlayer(GameRoom room, int id)
+            => room?.Players?.FirstOrDefault(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
 
         // ── 小工具 ──────────────────────────────────────────────────
         /// <summary>

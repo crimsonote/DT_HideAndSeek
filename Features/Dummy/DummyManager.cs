@@ -195,6 +195,7 @@ namespace HideAndSeek.Features.Dummy
                     seats[seat - 1] = false;
 
                 SpawnedIds.Remove(id);
+                DesiredCharacter.Remove(id);          // 否则同一座位号复用时，新假人会沿用旧角色
                 Plugin.Log.LogInfo($"[HS] Dummy：已移除假人 #{id}。");
                 return true;
             }
@@ -215,6 +216,7 @@ namespace HideAndSeek.Features.Dummy
                     n++;
             }
             SpawnedIds.Clear();
+            DesiredCharacter.Clear();
             return n;
         }
 
