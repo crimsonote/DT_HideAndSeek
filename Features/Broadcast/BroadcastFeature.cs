@@ -72,7 +72,7 @@ namespace HideAndSeek.Features.Broadcast
             "开局提示：自动发刀模式下发给白方。")]
         public static ConfigEntry<string> StartBodyWhite;
 
-        [ConfigField("{name} 已被淘汰（剩余 {alive}/{total}）",
+        [ConfigField("{name} 已经死亡({alive}/{total})",
             "死亡通告。占位符：{name} 死者名 / {alive} 剩余存活白方数（含露娜）/ {total} 开局白方总数。")]
         public static ConfigEntry<string> DeathAnnounce;
 

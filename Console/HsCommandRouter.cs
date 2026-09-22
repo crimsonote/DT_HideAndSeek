@@ -35,6 +35,21 @@ namespace HideAndSeek.Console
             string name = parts[0].ToLowerInvariant();
             string[] args = parts.Skip(1).ToArray();
 
+            // 兼容 "hs tp ..." 这种带空格的写法：把第二个词并入命令名。
+            // 否则它会被当成无参数的 hs（返回总览），看起来成功其实什么都没做。
+            if (name == "hs" && args.Length > 0)
+            {
+                string sub = "hs_" + args[0].ToLowerInvariant();
+                switch (sub)
+                {
+                    case "hs_check": case "hs_mode": case "hs_aoi": case "hs_cd":
+                    case "hs_killlimit": case "hs_dummy": case "hs_flash":
+                    case "hs_roomname": case "hs_tp":
+                        name = sub;
+                        args = args.Skip(1).ToArray();
+                        break;
+                }
+            }
             switch (name)
             {
                 case "hs":           return Status();
