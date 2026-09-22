@@ -1,4 +1,4 @@
-using BepInEx.Configuration;
+﻿using BepInEx.Configuration;
 using HarmonyLib;
 using Protocol;
 using Server.Game;

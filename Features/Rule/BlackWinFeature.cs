@@ -47,28 +47,30 @@ namespace HideAndSeek.Features.Rule
             room.GameOver();
         }
 
-        /// <summary>存活的白方（排除观战/占位/黑方）是否只剩露娜系，且至少存在一名。</summary>
+        /// <summary>
+        /// 是否已不存在"非露娜系白方"的存活者。
+        ///
+        /// 判据只有一条：活人里还有没有既不是黑方、又不是露娜系的人。
+        /// 不额外要求"至少有一名露娜系存活" —— 露娜系全灭同样满足黑方胜利条件
+        /// （黑方自己一定活着，否则走不到这里）。
+        /// 假人（IsDummy）同样计入白方存活，否则拿它们当靶子时条件永远不成立。
+        /// </summary>
         private static bool OnlyLunaSideAlive(GameRoom room)
         {
-            bool anyWhite = false;
-
             foreach (var player in room.AlivePlayers)
             {
-                if (player == null || player.PublicInfo == null)
+                if (player?.PublicInfo == null)
                     continue;
                 if (player.IsSpectator)
                     continue;
-                // 注意：假人（IsDummy）也算白方存活。它们是被 ConvertToDummy 标记的靶子，
-                // 若不计数，"非露娜系白方全部淘汰"永远不成立，黑胜条件失效。
                 if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
-                    continue;                      // 黑方不计入白方存活
+                    continue;                      // 黑方自己不计入白方存活
 
-                anyWhite = true;
                 if (!GameRefs.IsLunaSide(player))
                     return false;                  // 仍有普通白方存活 → 条件未达成
             }
 
-            return anyWhite;
+            return true;
         }
     }
 }

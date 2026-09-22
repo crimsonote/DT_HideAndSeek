@@ -1,4 +1,4 @@
-using Server.Game;
+﻿using Server.Game;
 
 namespace HideAndSeek.Core
 {

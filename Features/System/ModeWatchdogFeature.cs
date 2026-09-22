@@ -1,4 +1,4 @@
-using HarmonyLib;
+﻿using HarmonyLib;
 using Server.Game;
 using HideAndSeek.Core;
 

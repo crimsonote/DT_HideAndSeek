@@ -1,4 +1,4 @@
-namespace HideAndSeek.Core
+﻿namespace HideAndSeek.Core
 {
     /// <summary>
     /// 功能作用面：影响谁、在什么角色下生效。

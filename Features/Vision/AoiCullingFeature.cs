@@ -203,6 +203,11 @@ namespace HideAndSeek.Features.Vision
                 var other = all[i];
                 if (other == null || other == black)
                     continue;
+                // 跳过 Hide 状态：死亡玩家会被 MakeSpectatorGhost（:175590）置为
+                // State=Hide + IsGhost=true，原版 SearchAndUpdatePlayer 同样跳过他们。
+                // 少了这一条，主动补 AddPlayer 就会把死人的幽灵塞给黑方。
+                if (other.State == EPlayerState.Hide)
+                    continue;
                 if (DistanceSq(other, cx, cy) <= enterSq)
                     other.AddPlayer(black);      // 幂等：不在列表才真正发送 S_SPAWN
             }
@@ -294,6 +299,14 @@ namespace HideAndSeek.Features.Vision
                     var other = all[j];
                     if (other == null || other == black)
                         continue;
+
+                    // Hide 状态（死亡幽灵 / 躲藏者）不该出现在任何观察列表里。
+                    // 它可能从别处进过 SharedPlayers，所以这里要主动移除。
+                    if (other.State == EPlayerState.Hide)
+                    {
+                        other.RemovePlayer(black);
+                        continue;
+                    }
 
                     float dSq = DistanceSq(other, cx, cy);
 

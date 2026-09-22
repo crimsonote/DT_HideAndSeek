@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using BepInEx.Configuration;
 using HarmonyLib;
 using Protocol;

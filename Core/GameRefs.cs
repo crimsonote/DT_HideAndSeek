@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using Protocol;
 using GamePlayer = Server.Game.Player;
 

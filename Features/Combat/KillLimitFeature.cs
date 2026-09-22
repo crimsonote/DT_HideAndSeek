@@ -1,4 +1,4 @@
-using BepInEx.Configuration;
+﻿using BepInEx.Configuration;
 using HarmonyLib;
 using Server.Game;
 using HideAndSeek.Core;

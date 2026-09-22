@@ -1,4 +1,4 @@
-using HarmonyLib;
+﻿using HarmonyLib;
 using Protocol;
 using HideAndSeek.Core;
 using GamePlayer = Server.Game.Player;
