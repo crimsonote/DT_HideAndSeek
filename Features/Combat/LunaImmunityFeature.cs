@@ -53,7 +53,7 @@ namespace HideAndSeek.Features.Combat
                 room.SendSystemSFX(ESoundType.FailedSfx, __instance);
 
             Plugin.Log.LogInfo(
-                $"[HS] LunaImmunity：拦截对露娜系玩家 #{targetId} 的普通刀杀（攻击者 #{__instance.PublicInfo.PlayerId}）。");
+                $"[HS] LunaImmunity：拦截 #{__instance.PublicInfo.PlayerId} → #{targetId}（目标角色={target.CharacterId}，技能={target.SkillComponent?.Data?.Type}）。");
             return false;
         }
     }
