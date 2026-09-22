@@ -4,6 +4,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Weapon
 {
@@ -67,6 +68,43 @@ namespace HideAndSeek.Features.Weapon
 
             Plugin.Log.LogInfo(
                 $"[HS] WeaponGrant：已向随机玩家 #{target.PublicInfo.PlayerId} 发放武器 {weaponId}（开局发刀模式）。");
+        }
+
+        [ConfigField(true, "自动发刀后禁止其他人再从地图武器架取刀（否则会出现两个黑方）。")]
+        public static ConfigEntry<bool> BlockFurtherWeapons;
+
+        /// <summary>
+        /// 自动发刀模式下地图仍会刷刀 —— 不拦的话第二个拿到刀的人也会变黑。
+        /// InsertWeapon（:172688）是"变黑"的唯一入口（:172694 设 Color = Black），在这里拒绝即可。
+        /// </summary>
+        [HarmonyPatch(typeof(ItemManager), nameof(ItemManager.InsertWeapon))]
+        internal static class BlockSecondWeaponHook
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(GamePlayer player)
+            {
+                if (ModeRuntime.Bypass)
+                    return true;
+                if (BlockFurtherWeapons == null || !BlockFurtherWeapons.Value)
+                    return true;
+                if (GiveAtStart == null || !GiveAtStart.Value)
+                    return true;                       // 只在自动发刀模式下生效
+                if (player == null || player.Color == EPlayerColor.Black)
+                    return true;
+
+                var room = GameRoom.Instance;
+                if (room == null)
+                    return true;
+
+                bool hasBlack = room.Players.Any(p => p?.PublicInfo != null
+                    && (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark));
+                if (!hasBlack)
+                    return true;
+
+                Plugin.Log.LogInfo(
+                    $"[HS] WeaponGrant：已有黑方，拒绝 #{player.PublicInfo.PlayerId} 再从武器架取刀。");
+                return false;
+            }
         }
     }
 }
