@@ -185,7 +185,9 @@ namespace HideAndSeek.Console
                     if (!DummyManager.Spawn(id, chara, out int actual, out string err))
                         return Error("生成失败: " + err);
 
-                    return $"{{\"ok\":true,\"id\":{actual},\"characterId\":{chara}}}";
+                    // 回实际角色（随机时 chara 参数是 0，回显它会让用户以为"没角色"）
+                    int actualChara = DummyManager.GetCharacterId(actual);
+                    return $"{{\"ok\":true,\"id\":{actual},\"characterId\":{actualChara},\"specified\":{Bool(chara > 0)}}}";
                 }
 
                 case "del":

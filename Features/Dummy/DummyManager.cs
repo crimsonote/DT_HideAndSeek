@@ -54,6 +54,15 @@ namespace HideAndSeek.Features.Dummy
 
         public static int ActiveCount => SpawnedIds.Count;
 
+        /// <summary>查某假人当前的实际角色 ID（0 = 未知）。</summary>
+        public static int GetCharacterId(int id)
+        {
+            var room = GameRoom.Instance;
+            var p = room?.Players?.FirstOrDefault(x =>
+                x?.PublicInfo != null && x.PublicInfo.PlayerId == id);
+            return p?.CharacterId ?? 0;
+        }
+
         /// <summary>造一个假人。wantedId&lt;=0 时自动取空位；charaId&lt;=0 时按配置或随机。</summary>
         public static bool Spawn(int wantedId, int charaId, out int actualId, out string error)
         {
