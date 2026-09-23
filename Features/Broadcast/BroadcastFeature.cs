@@ -280,6 +280,23 @@ namespace HideAndSeek.Features.Broadcast
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
+            // 通道按阶段自适应：NormalChat 只在 大厅/裁判 渲染，生存阶段等于白发。
+            EChatType ct = (GameRoom.Instance?.State == EGameState.Lobby
+                            || GameRoom.Instance?.State == EGameState.Trial)
+                ? EChatType.NormalChat
+                : EChatType.SecretChat;
+
+            int perMsg = MaxLinesPerMessage?.Value ?? 0;
+            if (perMsg <= 0)
+            {
+                // 不拆条：**原样发送**，不做宽度折行。
+                // 弹泡底层是 TMP_Text，原文里的 \n 会照常渲染，
+                // 人为按字数折行反而会把作者写好的换行结构打乱。
+                player.Session.Send(BuildText(text, ct));
+                return;
+            }
+
+            // 只有需要拆条时才折行 —— 因为要把行按 perMsg 分组，必须先有"行"的概念。
             int width = (int)(MaxLineWidth?.Value ?? 52f);
             var lines = new List<string>();
             foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
@@ -291,22 +308,7 @@ namespace HideAndSeek.Features.Broadcast
                 }
             }
 
-            // 聊天栏的显示单位是"一条消息最多 3 行"，而不是"一行一条"。
-            // 早先每行发一条，十几条消息把前面全顶出了可见区（实测"前面都被隐藏了"）。
-            // 按阶段选自适应通道：NormalChat 只在 大厅/裁判 渲染，生存阶段等于白发。
-            EChatType ct = (GameRoom.Instance?.State == EGameState.Lobby
-                            || GameRoom.Instance?.State == EGameState.Trial)
-                ? EChatType.NormalChat
-                : EChatType.SecretChat;
-
-            // 是否分条慢发由**调用方**决定（见 EnterHook / StartLobby）：
-            // 大厅引导传 MessageIntervalMs，局内播报不传（0 = 立即发完）。
-            // 通用函数不猜调用者意图。
             int interval = intervalMs;
-            int perMsg = MaxLinesPerMessage?.Value ?? 0;
-            if (perMsg <= 0)
-                perMsg = lines.Count;              // 0 = 不拆，整段一颗气泡
-
             int index = 0;
             for (int i = 0; i < lines.Count; i += perMsg)
             {
@@ -320,7 +322,6 @@ namespace HideAndSeek.Features.Broadcast
                 }
                 else
                 {
-                    // 闭包捕获局部副本，避免所有回调引用同一个 chunk
                     string payload = chunk;
                     GameRoom.Instance?.PushAfter(delay, delegate
                     {
