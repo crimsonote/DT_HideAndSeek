@@ -199,7 +199,10 @@ namespace HideAndSeek.Features.Vision
             if (isBlack)
             {
                 Unlocking.Add(pid);
-                UnlockUntil[pid] = now + (UnlockSeconds?.Value ?? 1);
+                // 解封时长用 MarkerSeconds（默认 3 秒），不是 UnlockSeconds(1)。
+                // 黑方没有 pin 通道，"地图上能看到人"完全依赖 AOI 解封；
+                // 用 1 秒的话解封一结束人就消失，观感就是"只有一瞬间"。
+                UnlockUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
 
                 // 主动把所有人介绍给黑方：AoiCullingFeature 的闸门此刻已放行
                 var all = room.Players;
@@ -217,7 +220,12 @@ namespace HideAndSeek.Features.Vision
             // 黑方不发 pin：AOI 解封后原版黑方地图本来就会显示所有人，
             // 再叠我们那套会多出白色方块徽章（TurnComplyRules 的副产品）。
             // 白方没有 AOI 通道，只能靠 pin 显示。
-            LiveUntil[pid] = now + (UnlockSeconds?.Value ?? 1);   // 实时段长度：1 秒
+            // 实时段 = "持续把所有人介绍给美幸"的窗口。黑方必须覆盖整个解封期，
+            // 否则中途站定不动的人会因为没有新的 Move 事件而不再被刷新。
+            // 白方靠 pin 维持，实时段保持 UnlockSeconds 即可。
+            LiveUntil[pid] = now + (isBlack
+                ? (MarkerSeconds?.Value ?? 3)
+                : (UnlockSeconds?.Value ?? 1));
 
             if (!isBlack)
             {
