@@ -44,7 +44,7 @@ namespace HideAndSeek.Console
                 {
                     case "hs_check": case "hs_mode": case "hs_aoi": case "hs_cd":
                     case "hs_killlimit": case "hs_dummy": case "hs_flash":
-                    case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar":
+                    case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar": case "hs_debug":
                         name = sub;
                         args = args.Skip(1).ToArray();
                         break;
@@ -64,6 +64,7 @@ namespace HideAndSeek.Console
                 case "hs_tp":        return Teleport(args);
                 case "hs_grant":     return Grant(args);
                 case "hs_radar":     return Radar(args);
+                case "hs_debug":     return Debug(args);
                 default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
             }
         }
@@ -415,6 +416,64 @@ namespace HideAndSeek.Console
         private static void AnnounceRule(string change)
             => HideAndSeek.Features.Broadcast.BroadcastFeature.AnnounceRule(change);
 
+        // ── /hs_debug <black|exec|list> ... ─────────────────────────
+        // 常规游戏不该执行的操作收拢在这里，避免污染正式命令表。
+        //   black <玩家ID>              立即把该玩家设为黑方（允许同时多个）
+        //   exec  <玩家ID> <命令文本>    以该玩家身份执行一条密聊命令（走真实 Handle 路径）
+        //   list                        列出玩家与状态
+        private static string Debug(string[] args)
+        {
+            var room = Server.Game.GameRoom.Instance;
+            if (room == null)
+                return Error("不在房间中");
+
+            if (args.Length == 0)
+                return Error("用法: hs_debug <black|exec|list> ...");
+
+            string sub = args[0].ToLowerInvariant();
+
+            if (sub == "list")
+            {
+                var parts = new global::System.Collections.Generic.List<string>();
+                foreach (var p in room.Players)
+                {
+                    if (p?.PublicInfo == null)
+                        continue;
+                    parts.Add($"#{p.PublicInfo.PlayerId} {p.Name} {p.Color} char={p.PublicInfo.CharacterId} alive={p.IsAlive}");
+                }
+                return "{\"ok\":true,\"players\":[" +
+                       string.Join(",", parts.ConvertAll(x => "\"" + x.Replace("\"", "'") + "\"")) + "]}";
+            }
+
+            if (args.Length < 2 || !int.TryParse(args[1], out int pid))
+                return Error($"用法: hs_debug {sub} <玩家ID> ...");
+
+            Server.Game.Player target = null;
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == pid) { target = p; break; }
+            }
+            if (target == null)
+                return Error($"找不到玩家 #{pid}（用 hs_debug list 查看）");
+
+            if (sub == "black")
+            {
+                target.Color = EPlayerColor.Black;
+                return $"{{\"ok\":true,\"player\":{pid},\"color\":\"{target.Color}\"}}";
+            }
+
+            if (sub == "exec")
+            {
+                if (args.Length < 3)
+                    return Error("用法: hs_debug exec <玩家ID> <命令文本>");
+
+                string cmd = string.Join(" ", args, 2, args.Length - 2);
+                HideAndSeek.Features.Rule.BreakCommandFeature.ExecForDebug(room, target, cmd);
+                return $"{{\"ok\":true,\"player\":{pid},\"exec\":\"{cmd.Replace("\"", "'")}\"}}";
+            }
+
+            return Error($"未知子命令 {sub}");
+        }
         // ── /hs_radar [on|off] ──────────────────────────────────────
         // 白方全图雷达：白方小地图显示所有存活玩家位置（不区分阵营）。
         // 只能在 Survive 阶段生效 —— 审判阶段下发 S_PIN_MOVE 会让客户端 NRE。

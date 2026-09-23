@@ -143,6 +143,31 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 调试入口：以指定玩家身份执行一条密聊命令（hs_debug exec 用）。
+        /// 走的是与真实密聊完全相同的 Handle 路径，因此 CD / 条件 / 效果都会真实触发。
+        /// </summary>
+        internal static void ExecForDebug(GameRoom room, GamePlayer player, string text)
+        {
+            if (room == null || player == null || string.IsNullOrWhiteSpace(text))
+                return;
+
+            string body = text.Trim();
+            if (body.StartsWith("/"))
+                body = body.Substring(1);
+
+            string[] parts = body.Split(new[] { ' ', '\t' }, global::System.StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+                return;
+
+            string name = parts[0].ToLowerInvariant();
+            string arg = parts.Length > 1
+                ? string.Join(" ", parts, 1, parts.Length - 1)
+                : "";
+
+            Plugin.Log.LogInfo($"[HS] Debug：以玩家 #{player.PublicInfo?.PlayerId} 身份执行 /{name} {arg}");
+            Handle(room, player, 0, name, arg);
+        }
         private static void Handle(GameRoom room, GamePlayer player, int deviceId, string name, string arg)
         {
             var defs = GetCommands();
