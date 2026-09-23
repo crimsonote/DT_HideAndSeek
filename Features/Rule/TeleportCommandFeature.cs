@@ -231,11 +231,35 @@ namespace HideAndSeek.Features.Rule
                 if (!string.IsNullOrEmpty(vfxName)
                     && !vfxName.Equals("none", global::System.StringComparison.OrdinalIgnoreCase))
                 {
-                    if (global::System.Enum.TryParse(vfxName, true, out EEffectType vfx))
+                    // 旧 .cfg 里可能是 TeleportVfx —— 它在客户端**没有任何世界坐标渲染分支**
+    // （落到 PlayCommonEffect，完全不使用 effect.Pos），deviceId=0 时只打一条
+    // Log.Assert。这里是唯一支持"按包里坐标渲染"的类型，故对旧值做一次纠正。
+                if (vfxName.Equals("TeleportVfx", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    Plugin.Log.LogWarning("[HS] Teleport：LandingVfxType 为 TeleportVfx（无世界坐标渲染分支），已自动改用 BlackHoleVfx。");
+                    vfxName = "BlackHoleVfx";
+                }
+
+                if (global::System.Enum.TryParse(vfxName, true, out EEffectType vfx))
+                {
+                    // 我们自己发的这一发必须屏蔽 TeleportGuardFeature.VfxHook：
+                    // 它拦的是"黑洞技能的两发特效"，而 _casterId 是上次施法者 id（≥1）、
+                    // 我们传 0 ⇒ 不相等 ⇒ 不会被跳过，pos 会被改写到上一次技能的旧落点。
+                    HideAndSeek.Features.Skill.TeleportGuardFeature.Suppress++;
+                    try
                     {
-                        try { room.BroadcastWorldVFX(vfx, 0, dest, 99999f); }
-                        catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Teleport：落点特效失败 — {ex.Message}"); }
+                        room.BroadcastWorldVFX(vfx, 0, dest, 99999f);
+                        Plugin.Log.LogInfo($"[HS] Teleport：落点特效 {vfx} @ ({dest.X:F0},{dest.Y:F0})。");
                     }
+                    catch (global::System.Exception ex)
+                    {
+                        Plugin.Log.LogWarning($"[HS] Teleport：落点特效失败 — {ex.Message}");
+                    }
+                    finally
+                    {
+                        HideAndSeek.Features.Skill.TeleportGuardFeature.Suppress--;
+                    }
+                }
                     else
                     {
                         Plugin.Log.LogWarning($"[HS] Teleport：未知特效名 {vfxName}");

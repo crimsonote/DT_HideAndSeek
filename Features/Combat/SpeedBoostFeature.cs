@@ -42,7 +42,9 @@ namespace HideAndSeek.Features.Combat
                     return;
 
                 float mul = Mul;
-                if (mul <= 0f || global::System.Math.Abs(mul - 1f) < 0.001f)
+                // 只在"确实是默认值"时放行。原先写成 mul <= 0f 也 return，
+// 导致有人把 BlackSpeedMul 设为 0 想减速时会静默失效（时停第一版就踩了这个坑）。
+            if (global::System.Math.Abs(mul - 1f) < 0.001f)
                     return;                       // 1.0 不动，省一次广播
 
                 var player = __instance?.Owner;

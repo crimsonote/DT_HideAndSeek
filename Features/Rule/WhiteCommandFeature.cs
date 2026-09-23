@@ -285,19 +285,24 @@ namespace HideAndSeek.Features.Rule
                 var curProp = AccessTools.Property(mmType, "CurrentPoint");
                 var goalProp = AccessTools.Property(mmType, "GoalPoint");
                 if (curProp == null || goalProp == null)
-                {
-                    Plugin.Log.LogWarning("[HS] WhiteCommand：找不到任务进度字段，跳过广播。");
                     return;
-                }
 
-                var pkt = new Protocol.S_MISSION_STATE
+                float cur = global::System.Convert.ToSingle(curProp.GetValue(inst));
+                float goal = global::System.Convert.ToSingle(goalProp.GetValue(inst));
+                if (goal <= 0f)
+                    return;
+
+                // 唯一能驱动进度条的包是 S_MISSION_PROGRESS_PERCENT：
+                //   客户端 Handle_S_MISSION_PROGRESS_PERCENT(:42889)
+                //     → BroadcastSceneEvent(ChangeMissionPercent)
+                //     → UI_GameScene.ChangeMissionPercent(:75129) → DOValue
+                // 而 S_MISSION_STATE 第一行就是 `if (!Managers.Host.IsHost) return;`，
+                // **房主机直接丢弃**（我们就是房主），且它会清空客户端的任务列表镜像。
+                GameRoom.Instance?.Broadcast(new Protocol.S_MISSION_PROGRESS_PERCENT
                 {
-                    CurrentPoint = global::System.Convert.ToSingle(curProp.GetValue(inst)),
-                    GoalPoint = global::System.Convert.ToSingle(goalProp.GetValue(inst))
-                };
-
-                GameRoom.Instance?.Broadcast(pkt);
-                Plugin.Log.LogInfo($"[HS] WhiteCommand：已广播任务进度 {pkt.CurrentPoint:F0}/{pkt.GoalPoint:F0}。");
+                    Percent = (int)(cur / goal * 100f)
+                });
+                Plugin.Log.LogInfo($"[HS] WhiteCommand：已广播任务进度 {cur:F0}/{goal:F0} = {(int)(cur / goal * 100f)}%。");
             }
             catch (global::System.Exception ex)
             {

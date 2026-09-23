@@ -63,6 +63,12 @@ namespace HideAndSeek.Features.Skill
         /// </summary>
         private static float _pendingAt = -999f;
 
+        /// <summary>
+        /// 抑制计数：TeleportCommandFeature 在自己播落点特效前后增减，
+        /// 避免那一发被 VfxHook 误判为"黑洞技能的特效"而改写到旧落点。
+        /// </summary>
+        internal static int Suppress;
+
         private const float PendingTtl = 5f;
 
         // ── L3：落点改写 ────────────────────────────────────────────
