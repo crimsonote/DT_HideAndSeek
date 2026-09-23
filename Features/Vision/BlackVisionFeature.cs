@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+﻿using BepInEx.Configuration;
+using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
@@ -37,6 +38,17 @@ namespace HideAndSeek.Features.Vision
     internal static class BlackVisionFeature
     {
         /// <summary>
+        /// 运行时开关。与段级 [PatchFeature] 开关不同，本项**热更新** ——
+        /// 改 .cfg 后立即生效，不需要重载插件或重启游戏。
+        /// 名字刻意不叫 Enabled（段级已占用该键名，同名会绑定到同一个 ConfigEntry）。
+        /// </summary>
+        [ConfigField(true, "启用黑方恒黑灯。改本项即时生效（无需重启）。")]
+        public static ConfigEntry<bool> BlackVisionEnabled;
+
+        /// <summary>上一轮本功能是否开启，用于检测"运行中被关掉"。</summary>
+        private static bool _wasOn = true;
+
+        /// <summary>
         /// 是否需要维持黑灯：仅限"该玩家是黑方"且"房间处于生存阶段"。
         /// 生存阶段之外一律不干预 —— 原版会自己把 Darkness 复位。
         /// </summary>
@@ -44,6 +56,8 @@ namespace HideAndSeek.Features.Vision
         {
             if (ModeRuntime.Bypass || player == null)
                 return false;
+            if (BlackVisionEnabled != null && !BlackVisionEnabled.Value)
+                return false;                      // 运行时开关（热更新）
             if (player.Color != EPlayerColor.Black)
                 return false;
 
@@ -51,6 +65,57 @@ namespace HideAndSeek.Features.Vision
             return room != null && room.State == EGameState.Survive;
         }
 
+        /// <summary>
+        /// 把该玩家所在区域的**真实**光照发回去（用于运行中关闭本功能时收尾）。
+        /// 直接读 Area 的当前光照状态，而不是假定为亮 —— 场上可能真的在停电。
+        /// </summary>
+        private static void RestoreAreaLight(GamePlayer player)
+        {
+            var area = player?.CurrentArea;
+            if (area == null || player.Session == null)
+                return;
+
+            player.Session.Send(new S_AREA_PUBLIC
+            {
+                RoomId = area.Info.RoomId,
+                CameraTargetId = player.CameraTargetId,
+                IsLight = area.IsLight
+            });
+        }
+
+        /// <summary>
+        /// 每秒检查一次运行时开关是否被改。若从"开"变"关"，立即给所有黑方恢复真实光照 ——
+        /// 否则他们会在里面一直黑着，直到下一次换区域或复电才恢复。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class ToggleWatchHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                bool on = BlackVisionEnabled == null || BlackVisionEnabled.Value;
+                if (on == _wasOn)
+                    return;
+
+                _wasOn = on;
+                if (on)
+                {
+                    Plugin.Log.LogInfo("[HS] BlackVision：运行中已开启，下一次区域/光照事件起生效。");
+                    return;
+                }
+
+                // 刚被关掉 → 收尾
+                if (__instance?.Players == null)
+                    return;
+                foreach (var p in __instance.Players)
+                {
+                    if (p?.PublicInfo == null || p.Color != EPlayerColor.Black)
+                        continue;
+                    RestoreAreaLight(p);
+                }
+                Plugin.Log.LogInfo("[HS] BlackVision：运行中已关闭，已恢复黑方的真实光照。");
+            }
+        }
         /// <summary>向该黑方单独下发"你所在区域不亮"。</summary>
         private static void SendDarkArea(GamePlayer player)
         {
