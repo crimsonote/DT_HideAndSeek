@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using BepInEx.Configuration;
 using HarmonyLib;
 using Protocol;
@@ -9,71 +9,99 @@ using GamePlayer = Server.Game.Player;
 namespace HideAndSeek.Features.Vision
 {
     /// <summary>
-    /// 白方全图雷达：开启后，存活白方的小地图上会显示**场上所有存活玩家**的位置。
+    /// 白方全图雷达：让指定白方在地图上看到"这里有人"。
     ///
-    /// 通道是协议 S_PIN_MOVE（1018）——服务端已有公开原语可直接用：
-    ///     Player.SendTraceTarget(Player target, bool isForce, bool isRemove = false)   (:175923)
-    /// 客户端 Handle_S_PIN_MOVE（:42242）→ RefreshComplyRulesPin（:74731）→ TurnComplyRules（:85961），
-    /// **全程不看 Player.Color、不看 KnownBlackIds**，贴图恒为 CharData.Type + "_Map_Black.sprite"，
-    /// 所以所有人外观同构 —— "不区分阵营"是严格成立的，不是近似。
+    /// 需求侧的硬约束：**只要位置，不要红、不要暴露是谁**。这决定了通道选择 ——
+    /// 先搞清两种 pin 是什么：
+    ///     白点 = minimap_player.sprite（13×13，纯白 #FFFFFF）
+    ///     红点 = minimap_black.sprite（同几何，填 #FF2E70）
+    /// 二者由 RefreshPlayerPin（UI_GameScene :74704）绘制，而它前面有硬门控：
+    ///     :74673  if (myPlayer.Color == EPlayerColor.White) return;
+    /// 即**白方永远进不到这段循环**，服务端也没有"下发白点"的包。
     ///
-    /// 为什么不用其它通道：
-    ///   · RefreshPlayerPin 的玩家 pin 被客户端早退挡死（UI_GameScene.LateUpdate :74673
-    ///     `if (Color == White) return;`），房主端无法绕过
-    ///   · AddPlayer 放开 AOI 只决定"模型是否 spawn"，pin 渲染仍被同一处早退挡住
-    ///   · S_NOTIFY_ARROW 是屏幕边缘箭头而非地图 pin，且移除要求坐标精确相等，目标一动就撤不掉
+    /// 于是只有两条路，本功能把两者做成可热切换的 Mode：
+    ///
+    /// 【Badge】走 S_PIN_MOVE，但用**非玩家 id**（90000+pid）
+    ///     客户端 GetPlayerCache(id) 必然为 null → TurnComplyRules 不设头像
+    ///     → 徽章保留预制体默认贴图 Louis_Map_White（绿环，非粉红）
+    ///     → 且 SetComplyRulesArrow 直接 return，不生成世界箭头、不抢 Kaho 的槽位
+    ///     外观 = 白点 + 绿环徽章 + 镜像小箭头。零副作用，不暴露身份。
+    ///
+    /// 【PureDot】发 S_MODIFY_MY_PLAYER{ChangeColor, 3} 让客户端"以为自己不是白方"
+    ///     门控放行 → 原生 RefreshPlayerPin 画出纯净白点；
+    ///     且不主动发 S_NOTIFY_BLACK → KnownBlackIds 恒空 → 结构上不可能出现红点。
+    ///     ⚠️ 代价（客户端硬编码，绕不开）：StatusWhite 面板消失、目标文本空白、
+    ///     **雷达期间无法与武器库交互取武器**；结算前必须复原，否则胜负不记录。
+    ///     因此配合 DurationSeconds 做限时脉冲。
     ///
     /// 两个必须守住的边界：
-    ///   1) **只在 Survive 下发**：GetSceneUI&lt;UI_GameScene&gt;() 是 as 转换，审判阶段返回 null → NRE
-    ///   2) **阵亡瞬间必须立即撤 pin**：白方 OnDead（:175968）会收到全量 S_NOTIFY_BLACK，
-    ///      RefreshBlackPin 命中同 id 的 pin 后会 TurnBlack —— 那就把阵营泄露了
+    ///   1) 只在 Survive 下发 —— GetSceneUI&lt;UI_GameScene&gt;() 是 as 转换，审判阶段返回 null → NRE
+    ///   2) 阵亡/躲藏/旁观必须**撤销**而不是跳过 —— 白方阵亡瞬间会收到全量 S_NOTIFY_BLACK，
+    ///      若 pin 还在就会被 RefreshBlackPin 命中并 TurnBlack（那就成红点了）
     /// </summary>
     [PatchFeature(
         section: "WhiteRadar",
-        description: "白方全图雷达：白方小地图显示所有存活玩家位置（不区分阵营，仅 Survive 阶段）。",
+        description: "白方全图雷达：白方地图显示所有存活玩家的位置（不区分阵营，可热切换两种外观方案）。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class WhiteRadarFeature
     {
         // 字段名不能叫 Enabled —— 会与 PatchLoader 生成的段级 Enabled 冲突
-        [ConfigField(false, "是否启用白方全图雷达。可用控制台 hs_radar on|off 或规则引擎的 Radar 动作改写。")]
+        [ConfigField(false, "是否启用白方全图雷达。可用控制台 hs_radar on|off，或规则引擎的 Radar 动作改写。")]
         public static ConfigEntry<bool> RadarOn;
 
-        [ConfigField(0, "自动关闭的秒数（0 = 一直开启）。用于做「短暂的情报窗口」。", Min = 0f, Max = 600f)]
+        [ConfigField("Badge",
+            "外观方案（可热切换，改后下一 tick 生效）：\n" +
+            "Badge   = 白点 + 绿环徽章（用非玩家 id 走 S_PIN_MOVE，零副作用，不暴露身份）\n" +
+            "PureDot = 纯净白点（发 ChangeColor=3 放行客户端原生绘制；" +
+            "副作用：状态面板消失、目标文本空白、雷达期间无法从武器库取武器）")]
+        public static ConfigEntry<string> Mode;
+
+        [ConfigField(30, "自动关闭的秒数（0 = 一直开启）。PureDot 模式强烈建议保持限时。", Min = 0f, Max = 600f)]
         public static ConfigEntry<int> DurationSeconds;
 
-        [ConfigField(true, "对持有 Kaho 监视（ComplyRules）技能的白方跳过 —— 那套 pin 与技能箭头复用同一 id，会互相破坏。")]
-        public static ConfigEntry<bool> SkipComplyRulesHolders;
-
-        [ConfigField(true, "跳过假人（它们不会动，标出来也没意义）。")]
+        [ConfigField(true, "跳过假人（它们不会动，标出来没意义）。")]
         public static ConfigEntry<bool> SkipDummies;
 
+        /// <summary>非玩家 pin id 的基数：避开真实 PlayerId，让客户端查不到 PlayerCache。</summary>
+        private const int PinIdBase = 90000;
+
+        /// <summary>PureDot 模式使用的"非白方"枚举值。取未定义的 3，避开 Black(1)/Dark(2) 分支。</summary>
+        private const int FakeColorValue = 3;
+
         private static float _endAt;
+        private static bool _pureDotApplied;
 
         internal static bool IsActive => RadarOn != null && RadarOn.Value;
 
-        /// <summary>开关雷达。开启时按配置计算自动关闭时间。</summary>
+        private static bool UsePureDot =>
+            string.Equals(Mode?.Value?.Trim(), "PureDot", global::System.StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>开关雷达。</summary>
         internal static void SetActive(bool on)
         {
             if (RadarOn == null)
                 return;
 
-            RadarOn.Value = on;
+            if (!on)
+            {
+                RestorePureDot();
+                ClearAllPins();
+                RadarOn.Value = false;
+                Plugin.Log.LogInfo("[HS] WhiteRadar：已关闭。");
+                return;
+            }
+
+            RadarOn.Value = true;
 
             int seconds = DurationSeconds?.Value ?? 0;
-            _endAt = (on && seconds > 0)
-                ? (TimeManager.Instance?.SurviveTime ?? 0f) + seconds
-                : 0f;
+            _endAt = seconds > 0 ? (TimeManager.Instance?.SurviveTime ?? 0f) + seconds : 0f;
 
-            if (!on)
-                ClearAllPins();
-
-            Plugin.Log.LogInfo(on
-                ? $"[HS] WhiteRadar：已开启{(seconds > 0 ? $"（{seconds} 秒后自动关闭）" : "")}。"
-                : "[HS] WhiteRadar：已关闭。");
+            Plugin.Log.LogInfo(
+                $"[HS] WhiteRadar：已开启（模式 {Mode?.Value}）{(seconds > 0 ? $"，{seconds} 秒后自动关闭" : "")}。");
         }
 
-        /// <summary>撤掉所有白方身上的追踪 pin。</summary>
+        /// <summary>撤销所有已下发的 pin（两种模式都要清）。</summary>
         internal static void ClearAllPins()
         {
             var room = GameRoom.Instance;
@@ -82,33 +110,93 @@ namespace HideAndSeek.Features.Vision
 
             foreach (var white in room.Players)
             {
-                if (white?.PublicInfo == null || white.Color != EPlayerColor.White)
+                if (white?.PublicInfo == null || white.Color != EPlayerColor.White || white.Session == null)
                     continue;
 
                 foreach (var other in room.Players)
                 {
                     if (other?.PublicInfo == null)
                         continue;
-                    white.SendTraceTarget(other, isForce: false, isRemove: true);
+                    SendPin(white, PinIdBase + other.PublicInfo.PlayerId, null);   // Pos=null → 删除哨兵
                 }
             }
         }
 
-        /// <summary>每秒重推。重推而非一次性建立，是为了自愈（pin 会随 Despawn/迁移丢失）。</summary>
+        /// <summary>把 PureDot 的假颜色还原成真值。结算/离开对局前必须调用。</summary>
+        internal static void RestorePureDot()
+        {
+            if (!_pureDotApplied)
+                return;
+
+            var room = GameRoom.Instance;
+            if (room?.Players != null)
+            {
+                foreach (var white in room.Players)
+                {
+                    if (white?.Session == null)
+                        continue;
+                    if (white.Color != EPlayerColor.White && !WasFaked(white))
+                        continue;
+
+                    SendColor(white, (int)white.Color);
+                }
+            }
+
+            _pureDotApplied = false;
+            Plugin.Log.LogInfo("[HS] WhiteRadar：PureDot 假颜色已还原。");
+        }
+
+        private static readonly HashSet<int> Faked = new HashSet<int>();
+
+        private static bool WasFaked(GamePlayer p)
+            => p?.PublicInfo != null && Faked.Contains(p.PublicInfo.PlayerId);
+
+        private static void SendColor(GamePlayer player, int value)
+        {
+            try
+            {
+                player.Session?.Send(new S_MODIFY_MY_PLAYER
+                {
+                    Type = EModifyMyPlayerEvent.ChangeColor,
+                    Value = value
+                });
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] WhiteRadar：发送颜色失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>下发或撤销一个 pin。pos 为 null 表示撤销（(0,0) 是客户端的删除哨兵）。</summary>
+        private static void SendPin(GamePlayer to, int pinId, PosInfo pos)
+        {
+            try
+            {
+                to.Session?.Send(new S_PIN_MOVE
+                {
+                    Type = pinId,
+                    Pos = pos ?? new PosInfo()          // (0,0) = 删除
+                });
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] WhiteRadar：发送 pin 失败 — {ex.Message}");
+            }
+        }
+
         [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
         internal static class TickHook
         {
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
-                if (ModeRuntime.Bypass || __instance == null)
-                    return;
-                if (!IsActive)
+                if (ModeRuntime.Bypass || __instance == null || !IsActive)
                     return;
 
-                // 审判/大厅阶段下发会 NRE（见类注释），必须停手并清干净
+                // 非 Survive 阶段下发会让客户端 NRE，必须停手并清干净
                 if (__instance.State != EGameState.Survive)
                 {
+                    RestorePureDot();
                     ClearAllPins();
                     return;
                 }
@@ -119,69 +207,75 @@ namespace HideAndSeek.Features.Vision
                     return;
                 }
 
-                Filter = __instance;
                 Refresh(__instance);
             }
+        }
 
-            private static GameRoom Filter;
+        private static void Refresh(GameRoom room)
+        {
+            bool skipDummy = SkipDummies?.Value ?? true;
+            bool pureDot = UsePureDot;
 
-            private static void Refresh(GameRoom room)
+            foreach (var white in room.Players)
             {
-                bool skipKaho = SkipComplyRulesHolders?.Value ?? true;
-                bool skipDummy = SkipDummies?.Value ?? true;
+                if (white?.PublicInfo == null || white.Session == null)
+                    continue;
+                if (white.Color != EPlayerColor.White || !white.IsAlive || white.IsSpectator)
+                    continue;
 
-                foreach (var white in room.Players)
+                if (pureDot)
                 {
-                    if (white?.PublicInfo == null)
+                    // 让客户端"以为自己不是白方"，放行原生白点绘制
+                    if (Faked.Add(white.PublicInfo.PlayerId))
+                        SendColor(white, FakeColorValue);
+                    _pureDotApplied = true;
+                    continue;                             // PureDot 不需要下发 pin
+                }
+
+                foreach (var other in room.Players)
+                {
+                    if (other?.PublicInfo == null)
                         continue;
-                    if (white.Color != EPlayerColor.White || !white.IsAlive || white.IsSpectator)
-                        continue;
-                    if (skipKaho && HasComplyRules(white))
-                        continue;                        // Kaho 的监视复用同一套 pin，跳过以免互踩
 
-                    foreach (var other in room.Players)
-                    {
-                        if (other?.PublicInfo == null)
-                            continue;
+                    // 死人/躲藏/旁观要**撤销**而不是跳过：尤其阵亡瞬间会收到 S_NOTIFY_BLACK，
+                    // pin 若还在就会被 RefreshBlackPin 命中并 TurnBlack
+                    bool visible = other.IsAlive
+                        && other.State != EPlayerState.Hide
+                        && !other.IsSpectator
+                        && !(skipDummy && other.IsDummy);
 
-                        // 死人/躲藏/旁观必须**撤销**而不是跳过：
-                        // 尤其是阵亡瞬间 —— 他会收到 S_NOTIFY_BLACK，若 pin 还在就会被染成黑点
-                        bool visible = other.IsAlive
-                            && other.State != EPlayerState.Hide
-                            && !other.IsSpectator
-                            && !(skipDummy && other.IsDummy);
-
-                        if (visible)
-                            white.SendTraceTarget(other, isForce: false);
-                        else
-                            white.SendTraceTarget(other, isForce: false, isRemove: true);
-                    }
+                    SendPin(white, PinIdBase + other.PublicInfo.PlayerId,
+                        visible ? other.PublicInfo.Pos : null);
                 }
             }
+
+            // 关掉 PureDot 或人已离开时，把假颜色收回来
+            if (!pureDot)
+                RestorePureDot();
         }
 
-        /// <summary>是否持有 Kaho 的监视技能（ComplyRules）。</summary>
-        private static bool HasComplyRules(GamePlayer player)
-        {
-            try
-            {
-                return player?.SkillComponent?.Data?.Type == ESkillType.ComplyRules;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        // ── 生命周期：离开对局时清干净 ────────────────────────────────
+        // ── 生命周期：任何离开对局的时机都必须复原 ────────────────────
         [HarmonyPatch(typeof(GameRoom), "StartLobby")]
         internal static class LobbyHook
         {
             [HarmonyPostfix]
             private static void Postfix()
             {
+                RestorePureDot();
+                Faked.Clear();
                 if (IsActive)
                     ClearAllPins();
+            }
+        }
+
+        [HarmonyPatch(typeof(GameRoom), "StartDetective")]
+        internal static class DetectiveHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                RestorePureDot();
+                ClearAllPins();
             }
         }
     }
