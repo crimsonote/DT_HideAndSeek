@@ -90,7 +90,7 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(52f, "聊天栏单行宽度上限（半角单位，中文按 2 计，52 = 26 个汉字）。超出会另起一行；设 0 关闭自动折行。",
             Min = 0f, Max = 200f)]
         public static ConfigEntry<float> MaxLineWidth;
-        [ConfigField(2500, "进房介绍每条消息之间的间隔（毫秒）。0 = 一次性发完。分条慢发是为了每条都能被看到，不必点开记录。", Min = 0f, Max = 15000f)]
+        [ConfigField(0, "进房介绍每条消息之间的间隔（毫秒）。0 = 一次性发完。仅在 MaxLinesPerMessage > 0（会拆条）时才有意义。", Min = 0f, Max = 15000f)]
         public static ConfigEntry<int> MessageIntervalMs;
 
         [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
@@ -266,7 +266,14 @@ namespace HideAndSeek.Features.Broadcast
         /// 而每行 26 汉字 → 3 行 = 78 字（≤84，安全），4 行 = 104 字（超了）。
         /// 原文里的换行与自动折行都计入行数，所以限定总行数即可保证视觉高度不超标。
         /// </summary>
-        private const int MaxLinesPerMessage = 3;
+        /// <summary>
+        /// 一条消息最多合并几行。0 = 不拆（整段放进同一颗气泡）。
+        ///
+        /// 弹泡底层是 TMP_Text，支持 \n 多行 —— 一颗气泡能完整承载整段文本；
+        /// 拆成多颗反而互相顶掉（UI_SecretChatOverlay.Spawn 会先 KillImmediate 上一条）。
+        /// </summary>
+        [ConfigField(0, "一条消息最多合并几行。0 = 不拆（整段一颗气泡）。", Min = 0f, Max = 20f)]
+        public static ConfigEntry<int> MaxLinesPerMessage;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
         private static void NoticeToWrapped(GamePlayer player, string text, int intervalMs = 0)
         {
@@ -296,10 +303,14 @@ namespace HideAndSeek.Features.Broadcast
             // 大厅引导传 MessageIntervalMs，局内播报不传（0 = 立即发完）。
             // 通用函数不猜调用者意图。
             int interval = intervalMs;
+            int perMsg = MaxLinesPerMessage?.Value ?? 0;
+            if (perMsg <= 0)
+                perMsg = lines.Count;              // 0 = 不拆，整段一颗气泡
+
             int index = 0;
-            for (int i = 0; i < lines.Count; i += MaxLinesPerMessage)
+            for (int i = 0; i < lines.Count; i += perMsg)
             {
-                int take = global::System.Math.Min(MaxLinesPerMessage, lines.Count - i);
+                int take = global::System.Math.Min(perMsg, lines.Count - i);
                 string chunk = string.Join("\n", lines.GetRange(i, take));
                 int delay = interval > 0 ? index * interval : 0;
 
