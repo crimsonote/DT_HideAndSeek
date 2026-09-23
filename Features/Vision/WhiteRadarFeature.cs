@@ -175,16 +175,15 @@ namespace HideAndSeek.Features.Vision
         {
             try
             {
-                // 用 S_SABOTAGE_MISSION 而不是 S_PIN_MOVE：
-                // 后者的 RefreshComplyRulesPin 必然执行 TurnComplyRules，点亮 ComplyRules 容器，
-                // 而 Target 的 sprite 在预制体里就是 null → Unity 画成白色实心方块，Host 无法消除。
-                // 前者走 Map.AddSabotageMission → AddCommonPin，SetInfo 会主动把 ComplyRules 隐藏。
-                to.Session?.Send(new S_SABOTAGE_MISSION
+                // IsForce = true 是关键：客户端 RefreshComplyRulesPin 在 isForce 时走
+                // SetLocalPosition（立即定位），否则走 SetTargetPosition（平滑补间）——
+                // 而补间靠 LateUpdate 驱动，白方的 LateUpdate 在 :74673（小地图）与
+                // :53579（平板）都提前 return，补间永远不会执行，pin 就停在初始位置看不见。
+                to.Session?.Send(new S_PIN_MOVE
                 {
-                    MissionType = (ESchoolMission)RadarMissionType,
-                    DeviceId = pinId,
-                    Pos = pos ?? new PosInfo(),
-                    IsAdd = pos != null                 // IsAdd=false → 按 DeviceId 精确删除
+                    Type = pinId,
+                    Pos = pos ?? new PosInfo(),          // (0,0) = 删除哨兵
+                    IsForce = true
                 });
             }
             catch (global::System.Exception ex)
