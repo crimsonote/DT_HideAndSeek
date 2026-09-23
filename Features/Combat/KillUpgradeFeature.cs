@@ -47,7 +47,7 @@ namespace HideAndSeek.Features.Combat
         [ConfigField(3, "每个方向的最大等级。", Min = 0f, Max = 9f)]
         public static ConfigEntry<int> MaxLevelPerItem;
 
-        [ConfigField(0.5f, "【视野】每级扩大比例。0.5 = 每级 +50%（连升三级 ≈ 3.4 倍）。",
+        [ConfigField(0.6f, "【视野】每级扩大比例。0.6 = 每级 +60%（连升三级 = 2.8 倍）。",
             Min = 0f, Max = 5f)]
         public static ConfigEntry<float> VisionBonusPerLevel;
 

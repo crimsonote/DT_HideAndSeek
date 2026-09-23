@@ -45,11 +45,11 @@ namespace HideAndSeek.Features.Vision
         side: FeatureSide.Host)]
     internal static class AoiCullingFeature
     {
-        [ConfigField(900f, "进入可见范围的距离。建议不小于客户端攻击距离 224；调大能让靠近时更早被识别。",
+        [ConfigField(700f, "进入可见范围的距离。建议不小于客户端攻击距离 224；调大能让靠近时更早被识别。",
             Min = 200f, Max = 5000f)]
         public static ConfigEntry<float> EnterRange;
 
-        [ConfigField(1100f, "离开可见范围的距离。须明显大于进入距离（滞回），否则边界会抖动。",
+        [ConfigField(900f, "离开可见范围的距离。须明显大于进入距离（滞回），否则边界会抖动。",
             Min = 200f, Max = 5000f)]
         public static ConfigEntry<float> ExitRange;
 

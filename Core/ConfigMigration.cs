@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 5;
+        private const int CurrentVersion = 6;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,22 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v5 → v6
+            if (from < 6)
+            {
+                // AOI 内圈缩小到 700（外圈同比缩到 900，滞回仍为 200）：
+                // 900 的进入距离让黑方太早发现白方，白方几乎没有周旋空间。
+                // 注意必须按顺序：先把仍是 900/1100 的旧默认推进，再处理已迁移到 900 的 EnterRange。
+                MigrateFloat(config, log, "AoiCulling", "ExitRange", 1100f, 900f);
+                MigrateFloat(config, log, "AoiCulling", "EnterRange", 900f, 700f);
+
+                // 内圈缩小后，视野升级的相对价值提高，倍率 0.5 → 0.6 作为补偿：
+                // 3 级时 700 × 2.8 = 1960，接近原来 900 × 2.5 = 2250 的水平。
+                MigrateFloat(config, log, "KillUpgrade", "VisionBonusPerLevel", 0.5f, 0.6f);
+            }
+
             // v4 → v5
+
             if (from < 5)
             {
                 // EnterRange 旧默认 750 只覆盖小地图可视半径(约1223)的 61%，
