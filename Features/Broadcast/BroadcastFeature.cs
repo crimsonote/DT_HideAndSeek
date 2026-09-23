@@ -292,7 +292,11 @@ namespace HideAndSeek.Features.Broadcast
                 ? EChatType.NormalChat
                 : EChatType.SecretChat;
 
-            int interval = MessageIntervalMs?.Value ?? 2500;
+            // 间隔只用于**大厅引导**（进房介绍 / 回大厅补发）—— 那时玩家在等待，逐条出现便于阅读。
+            // 局内播报（开局提示等）不能拖：走 SecretChat 时一律立即发出。
+            int interval = (ct == EChatType.NormalChat)
+                ? (MessageIntervalMs?.Value ?? 2500)
+                : 0;
             int index = 0;
             for (int i = 0; i < lines.Count; i += MaxLinesPerMessage)
             {
