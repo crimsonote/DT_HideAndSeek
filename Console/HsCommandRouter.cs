@@ -44,7 +44,7 @@ namespace HideAndSeek.Console
                 {
                     case "hs_check": case "hs_mode": case "hs_aoi": case "hs_cd":
                     case "hs_killlimit": case "hs_dummy": case "hs_flash":
-                    case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar": case "hs_debug":
+                    case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar": case "hs_debug": case "hs_upgrade":
                         name = sub;
                         args = args.Skip(1).ToArray();
                         break;
@@ -65,6 +65,7 @@ namespace HideAndSeek.Console
                 case "hs_grant":     return Grant(args);
                 case "hs_radar":     return Radar(args);
                 case "hs_debug":     return Debug(args);
+                case "hs_upgrade":   return Upgrade(args);
                 default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
             }
         }
@@ -416,6 +417,33 @@ namespace HideAndSeek.Console
         private static void AnnounceRule(string change)
             => HideAndSeek.Features.Broadcast.BroadcastFeature.AnnounceRule(change);
 
+        // ── /hs_upgrade [vision|speed|task] ─────────────────────────
+        // 黑学分：无参查看余额与等级，带方向则升级。
+        private static string Upgrade(string[] args)
+        {
+            var room = Server.Game.GameRoom.Instance;
+            if (room == null)
+                return Error("不在房间中");
+
+            if (args.Length == 0)
+                return "{\"ok\":true,\"status\":\"" +
+                       HideAndSeek.Features.Combat.KillUpgradeFeature.Status().Replace("\n", " / ") + "\"}";
+
+            string dir = args[0].ToLowerInvariant();
+            int idx;
+            switch (dir)
+            {
+                case "vision": case "视野": idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirVision; break;
+                case "speed":  case "移速": idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirSpeed; break;
+                case "task":   case "任务": idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirTask; break;
+                default: return Error("用法: hs_upgrade <vision|speed|task>");
+            }
+
+            if (!HideAndSeek.Features.Combat.KillUpgradeFeature.TryUpgrade(room, idx, out string msg))
+                return Error(msg);
+
+            return "{\"ok\":true,\"result\":\"" + msg.Replace("\"", "'") + "\"}";
+        }
         // ── /hs_debug <black|exec|list> ... ─────────────────────────
         // 常规游戏不该执行的操作收拢在这里，避免污染正式命令表。
         //   black <玩家ID>              立即把该玩家设为黑方（允许同时多个）
