@@ -217,7 +217,7 @@ namespace HideAndSeek.Console
         /// <summary>角色参数：数字 ID 或角色名（luna / 露娜 / seol …）。</summary>
         private static bool TryParseCharacter(string text, out int charaId)
         {
-            if (int.TryParse(text, out charaId) && charaId > 0)
+            if (int.TryParse(text, out charaId) && charaId >= 0)   // 0 是合法值：表示随机
                 return true;
 
             return DummyManager.TryParseCharacterName(text, out charaId);
