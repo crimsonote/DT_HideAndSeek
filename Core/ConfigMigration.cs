@@ -1,0 +1,98 @@
+﻿using BepInEx.Configuration;
+using BepInEx.Logging;
+
+namespace HideAndSeek.Core
+{
+    /// <summary>
+    /// 配置迁移。
+    ///
+    /// 存在的理由：BepInEx 只在**新建** .cfg 时写入默认值，之后无论代码里的默认值怎么改，
+    /// 老配置文件都保持原样。这已经造成过两次"功能看起来完全无效"的误判 ——
+    /// 最近一次是 [WhiteRadar] SkipDummies 停在旧默认值 true，导致假人全被跳过、
+    /// 雷达没有任何可显示目标。
+    ///
+    /// 做法：用一个 ConfigVersion 计数，每次针对**已确认会导致功能静默失效**的项做定向修正。
+    /// 只处理白名单里的键，不碰其它任何用户设置；每项迁移都在日志里留痕。
+    ///
+    /// 注意：这里无法区分"用户故意设成旧值"与"从未改过"，所以白名单要足够克制 ——
+    /// 只在"旧默认值必然导致功能失效"时才纳入。
+    /// </summary>
+    internal static class ConfigMigration
+    {
+        /// <summary>当前配置版本。新增迁移时 +1。</summary>
+        private const int CurrentVersion = 2;
+
+        public static void Run(ConfigFile config, ManualLogSource log)
+        {
+            if (config == null)
+                return;
+
+            var version = config.Bind(
+                ModeRuntime.Section, "ConfigVersion", 1,
+                "内部：配置迁移版本，请勿手动修改。");
+
+            if (version.Value >= CurrentVersion)
+                return;
+
+            int from = version.Value;
+            log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
+
+            // v1 → v2
+            if (from < 2)
+            {
+                // SkipDummies 旧默认值 true 会让雷达在"只有假人"的测试房里完全无效。
+                // 这是纯测试向开关，覆盖无风险。
+                FixBool(config, log, "WhiteRadar", "SkipDummies", false);
+
+                // RepairThreshold 已改名为 RepairCount（语义也从"剩余阈值"改为"已修数"），
+                // 旧键无法自动搬运，这里只确保新键存在且为期望默认值。
+                EnsureInt(config, log, "PowerRepair", "RepairCount", 1);
+            }
+
+            version.Value = CurrentVersion;
+            log.LogInfo($"[HS] 配置迁移完成（当前 v{CurrentVersion}）。");
+        }
+
+        /// <summary>把已存在的布尔键修正为指定值；键不存在则不动（交给正常的默认值绑定）。</summary>
+        private static void FixBool(ConfigFile config, ManualLogSource log,
+            string section, string key, bool expected)
+        {
+            try
+            {
+                ConfigDefinition def = new ConfigDefinition(section, key);
+                if (!config.ContainsKey(def))
+                    return;
+
+                var entry = config.Bind(section, key, expected);
+                if (entry.Value == expected)
+                    return;
+
+                entry.Value = expected;
+                log.LogInfo($"[HS]   修正 {section}.{key}：{!expected} → {expected}");
+            }
+            catch (global::System.Exception ex)
+            {
+                log.LogWarning($"[HS]   迁移 {section}.{key} 失败：{ex.Message}");
+            }
+        }
+
+        /// <summary>确保整型键存在且不小于期望值（新键名场景用它兜底）。</summary>
+        private static void EnsureInt(ConfigFile config, ManualLogSource log,
+            string section, string key, int expected)
+        {
+            try
+            {
+                ConfigDefinition def = new ConfigDefinition(section, key);
+                if (config.ContainsKey(def))
+                    return;                       // 已存在（可能来自默认值绑定）→ 不动
+
+                config.Bind(section, key, expected);
+                log.LogInfo($"[HS]   补齐 {section}.{key} = {expected}");
+            }
+            catch (global::System.Exception ex)
+            {
+                log.LogWarning($"[HS]   迁移 {section}.{key} 失败：{ex.Message}");
+            }
+        }
+    }
+}

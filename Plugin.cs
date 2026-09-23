@@ -37,6 +37,11 @@ namespace HideAndSeek
                 Logger,
                 extraSections: new[] { (ModeRuntime.Section, ModeRuntime.BindAction(config)) });
 
+            // 配置迁移：BepInEx 不会更新已存在 .cfg 里的旧默认值，
+            // 必须在这里定向修正那些"旧值必然导致功能失效"的项（详见 ConfigMigration）。
+            // 放在 Load 之后 —— 此时全部配置项都已绑定。
+            ConfigMigration.Run(config, Logger);
+
             // 把当前全部配置段落盘：首次运行生成完整 .cfg，
             // 已存在时也只写入内存中的值（来自读取该文件），不会丢用户设置。
             // 之后运行期的修改仍遵循"内存优先、显式保存才落盘"的语义。
