@@ -236,7 +236,7 @@ namespace HideAndSeek.Features.Combat
                 case DirSpeed:
                     return $"黑方速度提升 {((SpeedBonusPerLevel?.Value ?? 0.1f) * level * 100f):F0}%";
                 case DirTask:
-                    return $"最低任务完成量提高至 {(TaskBonusPerLevel?.Value ?? 10f) * level:F0}%";
+                    return $"最低任务完成需求提高至 {(TaskBonusPerLevel?.Value ?? 10f) * level:F0}%";
                 default:
                     return "强化完成";
             }
