@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 7;
+        private const int CurrentVersion = 8;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,16 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v7 → v8
+            if (from < 8)
+            {
+                // 视野倍率曾在"AOI 缩圈"时被顺手改成 0.6 作为补偿，但那是两件事，
+                // 混在一起会让升级曲线难以预期。改回原设计 0.5。
+                MigrateFloat(config, log, "KillUpgrade", "VisionBonusPerLevel", 0.6f, 0.5f);
+            }
+
             // v6 → v7
+
             if (from < 7)
             {
                 // MiyukiScan.BlackPinRange 上一版默认是硬编码 900，现在默认 -1 = 跟随视野。

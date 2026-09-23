@@ -47,7 +47,7 @@ namespace HideAndSeek.Features.Combat
         [ConfigField(3, "每个方向的最大等级。", Min = 0f, Max = 9f)]
         public static ConfigEntry<int> MaxLevelPerItem;
 
-        [ConfigField(0.6f, "【视野】每级扩大比例。0.6 = 每级 +60%（连升三级 = 2.8 倍）。",
+        [ConfigField(0.5f, "【视野】每级扩大比例。0.5 = 每级 +50%（连升三级 = 2.5 倍）。",
             Min = 0f, Max = 5f)]
         public static ConfigEntry<float> VisionBonusPerLevel;
 
@@ -74,7 +74,10 @@ namespace HideAndSeek.Features.Combat
         /// <summary>已被我们改写过的基础值快照，用于"先还原再套用"避免叠加。</summary>
         /// <summary>开局时的白方总数（学分分母基准，整局固定）。0 = 尚未记录。</summary>
         private static int _totalWhitesAtStart;
+        /// <summary>上一次套用后的黑方移速，用于判断是否需要推给客户端（避免每秒空推）。</summary>
+        private static float _lastAppliedSpeed = float.NaN;
         private static float _baseEnter = -1f;
+
 
         private static float _baseExit = -1f;
         private static float _baseSpeed = -1f;
@@ -348,6 +351,36 @@ namespace HideAndSeek.Features.Combat
             }
         }
 
+        /// <summary>
+        /// 周期性重算三项加成。ApplyUpgrades 本身幂等（基础值只快照一次），
+        /// 所以可以放心反复调用 —— 这样房主改 .cfg 里的每级加成后，
+        /// 已经升过级的黑方也会立即跟上，而不用重开一局。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class ReapplyHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (ModeRuntime.Bypass || __instance == null)
+                    return;
+                if (__instance.State != EGameState.Survive)
+                    return;
+                if (Levels[DirVision] == 0 && Levels[DirSpeed] == 0 && Levels[DirTask] == 0)
+                    return;                        // 没升过级，无需重算
+
+                ApplyUpgrades();
+
+                // 移速变了才推给客户端 —— 每 tick 都推会让客户端反复重算
+                float cur = SpeedBoostFeature.BlackSpeedMul?.Value ?? 1f;
+                if (!float.IsNaN(_lastAppliedSpeed)
+                    && global::System.Math.Abs(cur - _lastAppliedSpeed) > 0.001f)
+                {
+                    RefreshBlackSpeed(__instance);
+                }
+                _lastAppliedSpeed = cur;
+            }
+        }
         /// <summary>开局时记录白方总数，作为学分分母基准（整局固定）。</summary>
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         internal static class CountWhitesHook
@@ -404,6 +437,7 @@ namespace HideAndSeek.Features.Combat
 
             _baseEnter = _baseExit = _baseSpeed = _baseTask = -1f;
             _totalWhitesAtStart = 0;
+            _lastAppliedSpeed = float.NaN;
         }
     }
 }
