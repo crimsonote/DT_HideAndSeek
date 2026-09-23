@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 8;
+        private const int CurrentVersion = 9;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,40 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v8 → v9
+            if (from < 9)
+            {
+                // ① 行宽：28 是本项很早的默认值（14 个汉字），改成 52（26 个汉字）。
+                //    截图实测每行只有 14 字，说明 .cfg 里一直没跟上。
+                MigrateFloat(config, log, "Broadcast", "MaxLineWidth", 28f, 52f);
+
+                // ② 文案：这几项在 .cfg 里一旦写入就不会被新默认值覆盖，
+                //    导致"改了代码但玩家看到的还是旧话术"。
+                MigrateString(config, log, "Broadcast", "JoinBody",
+                    "此房间已启用捉迷藏",
+                    "此房间已启用捉迷藏，具有特殊胜负条件\\n" +
+                    "黑方：在倒计时结束前杀死所有可以杀死的人，视野缩小，刀CD缩短\\n" +
+                    "白方：在倒计时结束前，避免死亡。通过完成任务可以缩短倒计时，倒计时结束后白方胜利。\\n" +
+                    "{knife}\\n" +
+                    "报告功能被禁用，不分配黑幕角色，部分角色的技能效果会有改变。\\n" +
+                    "除此之外，可以在发信站输入/help来获得与使用部分指令以进行某些操作。");
+
+                MigrateString(config, log, "Broadcast", "StartBodySelfServe",
+                    "在倒计时结束之前，寻找刀具",
+                    "在倒计时结束之前，寻找凶器开始追捕，或者完成任务逃离追捕~\\n" +
+                    "或许也可以前往发信站使用/help来获得一些帮助。两个频道不一样呢~");
+
+                MigrateString(config, log, "Broadcast", "StartBodyBlack",
+                    "开始杀戮、开始搜索吧",
+                    "开始杀戮、开始搜索吧~或许也可以在发信站获得帮助(/help)在倒计时结束之前。");
+
+                MigrateString(config, log, "Broadcast", "StartBodyWhite",
+                    "躲避杀手，完成任务，",
+                    "躲避杀手，完成任务，或许也可以在发信站获得帮助(/help)。在倒计时结束之前。祝你好运~");
+            }
+
             // v7 → v8
+
             if (from < 8)
             {
                 // 视野倍率曾在"AOI 缩圈"时被顺手改成 0.6 作为补偿，但那是两件事，
@@ -195,6 +228,32 @@ namespace HideAndSeek.Core
             }
         }
 
+        /// <summary>
+        /// 把仍是旧默认值的**文本**配置推进到新默认值。
+        /// 用前缀匹配而不是全等 —— 旧值里可能含 \n，且历史上文本次序有过调整，
+        /// 前缀足以识别"用户没改过这一项"。用户改过的内容不会被覆盖。
+        /// </summary>
+        private static void MigrateString(ConfigFile config, ManualLogSource log,
+            string section, string key, string oldPrefix, string newValue)
+        {
+            try
+            {
+                ConfigDefinition def = new ConfigDefinition(section, key);
+                if (!config.ContainsKey(def))
+                    return;
+
+                var entry = config.Bind(section, key, newValue);
+                if (entry.Value == null || !entry.Value.StartsWith(oldPrefix))
+                    return;                        // 用户改过 → 不动
+
+                entry.Value = newValue;
+                log.LogInfo($"[HS]   更新 {section}.{key}（文案）");
+            }
+            catch (global::System.Exception ex)
+            {
+                log.LogWarning($"[HS]   迁移 {section}.{key} 失败：{ex.Message}");
+            }
+        }
         private static void EnsureInt(ConfigFile config, ManualLogSource log,
             string section, string key, int expected)
         {
