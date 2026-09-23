@@ -75,8 +75,8 @@ namespace HideAndSeek.Features.Rule
         /// <summary>单条回执最多 3 行（聊天框上限）。</summary>
         private const int MaxLinesPerMessage = 3;
 
-        /// <summary>单行最大显示宽度（半角单位，中文按 2 计）。超了客户端会自动折行。</summary>
-        private const int MaxWidthPerLine = 28;
+        /// <summary>单行最大显示宽度（半角单位，中文按 2 计，40 = 20 个汉字）。超了客户端会自动折行。</summary>
+        private const int MaxWidthPerLine = 40;
 
         private static List<string> WrapByWidth(string line)
         {
@@ -120,9 +120,9 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> RepairCostPercent;
         private const string WhiteHelp =
             "【白方】" +
-            "\n/radar  扫描15s 2次/局 CD75" +
-            "\n/stasis 停黑5s 耗5% CD90" +
-            "\n/repair 修电 耗10%（仅断电）";
+            "\n/radar — 全图扫描 15 秒（2 次/局）CD75" +
+            "\n/stasis — 时停黑方 5 秒，耗 5% 进度 CD90" +
+            "\n/repair — 立即恢复供电，耗 10% 进度（仅断电）";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook

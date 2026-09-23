@@ -635,11 +635,11 @@ namespace HideAndSeek.Features.Rule
             // 分隔一律用符号，不写「用法：」「条件：」「冷却」这类词。
             switch (name)
             {
-                case "break":  return "拆电断电 ⏱{cd}";
-                case "lock":   return "锁门 ⏱{cd}";
-                case "tp":     return "3s后传送 [ID] ⏱{cd}";
-                case "list":   return "玩家列表";
-                case "credit": return "黑学分 升[v|s|t]";
+                case "break":  return "拆电断电（默认随机两个电箱） CD{cd}";
+                case "lock":   return "锁住附近的门 CD{cd}";
+                case "tp":     return "3 秒后传送到目标处 [玩家ID] CD{cd}";
+                case "list":   return "列出玩家 ID 与昵称";
+                case "credit": return "查看/消耗黑学分升级 v|s|t";
                 default:       return null;
             }
         }
@@ -674,11 +674,11 @@ namespace HideAndSeek.Features.Rule
         private const int MaxLinesPerMessage = 3;
 
         /// <summary>
-        /// 单行最大显示宽度（半角单位；中文按 2 计）。
+        /// 单行最大显示宽度（半角单位；中文按 2 计，40 = 20 个汉字）。
         /// 聊天框一行放不下会自动折行，那样实际渲染行数就超过 3 行了 ——
         /// 所以发送前必须自己按宽度再折一次。
         /// </summary>
-        private const int MaxWidthPerLine = 28;
+        private const int MaxWidthPerLine = 40;
 
         /// <summary>按显示宽度把一个逻辑行切成不超过 MaxWidthPerLine 的若干行。</summary>
         internal static List<string> WrapByWidth(string line)
