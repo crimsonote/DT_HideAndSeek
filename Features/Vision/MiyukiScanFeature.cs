@@ -40,10 +40,11 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(15, "扫描间隔（秒）。", Min = 5f, Max = 300f)]
         public static ConfigEntry<int> ScanIntervalSeconds;
 
-        [ConfigField(1, "AOI 解封持续（秒）。到点后收回超范围玩家的可见性。", Min = 0f, Max = 10f)]
+        [ConfigField(1, "实时跟随时长（秒）：标记跟随真实位置；同时也是 AOI 解封时长。", Min = 0f, Max = 10f)]
         public static ConfigEntry<int> UnlockSeconds;
 
-        [ConfigField(3, "地图标记总持续（秒）。其中前 1 秒实时跟随，之后静止，到点消失。", Min = 1f, Max = 30f)]
+
+        [ConfigField(3, "地图标记总持续（秒）。前 UnlockSeconds 秒实时跟随，其余时间静止在原地。", Min = 1f, Max = 30f)]
         public static ConfigEntry<int> MarkerSeconds;
 
         /// <summary>
@@ -55,6 +56,14 @@ namespace HideAndSeek.Features.Vision
             Min = 0f, Max = 3000f)]
         public static ConfigEntry<float> BlackPinRange;
 
+        /// <summary>实时跟随时长（秒）。</summary>
+        private static float LiveSecs() => UnlockSeconds?.Value ?? 1;
+
+        /// <summary>
+        /// 标记总时长（秒）。静止时长 = 本值 − 实时跟随时长（UnlockSeconds），无需单独配置。
+        /// 想"2 秒跟随 + 1 秒静止"就设 UnlockSeconds=2、MarkerSeconds=3。
+        /// </summary>
+        private static float TotalSecs() => MarkerSeconds?.Value ?? 3;
         /// <summary>解析实际生效的判据距离。&lt;0 表示跟随视野配置（热更新）。</summary>
         private static float ResolveBlackPinRange()
         {
@@ -220,7 +229,7 @@ namespace HideAndSeek.Features.Vision
                 // 解封时长用 MarkerSeconds（默认 3 秒），不是 UnlockSeconds(1)。
                 // 黑方没有 pin 通道，"地图上能看到人"完全依赖 AOI 解封；
                 // 用 1 秒的话解封一结束人就消失，观感就是"只有一瞬间"。
-                UnlockUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
+                UnlockUntil[pid] = now + TotalSecs();
 
                 // 主动把所有人介绍给黑方：AoiCullingFeature 的闸门此刻已放行
                 var all = room.Players;
@@ -238,13 +247,13 @@ namespace HideAndSeek.Features.Vision
             // 实时段 = "持续把所有人介绍给美幸"的窗口。黑方必须覆盖整个解封期，
             // 否则中途站定不动的人会因为没有新的 Move 事件而不再被刷新。
             // 白方靠 pin 维持，实时段保持 UnlockSeconds 即可。
-            LiveUntil[pid] = now + (isBlack
-                ? (MarkerSeconds?.Value ?? 3)
-                : (UnlockSeconds?.Value ?? 1));
+            // 黑方需覆盖整个解封期持续重发 AddPlayer（否则站定不动的人会被剔除）；
+            // 白方只需覆盖"跟随段"，之后靠快照重发维持静止。
+            LiveUntil[pid] = now + (isBlack ? TotalSecs() : LiveSecs());
 
             // 双方都发 pin；黑方只发 AOI 范围外的（范围内原版地图已经会显示）
             SendAllPins(room, miyuki, onlyOutsideAoi: isBlack);
-            MarkerUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
+            MarkerUntil[pid] = now + TotalSecs();
 
             Plugin.Log.LogInfo(
                 $"[HS] MiyukiScan：美幸 #{pid} 扫描（{(isBlack ? "黑方：解封 AOI" : "白方：仅地图")}）。");

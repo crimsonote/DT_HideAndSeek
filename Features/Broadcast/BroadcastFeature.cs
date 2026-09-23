@@ -256,8 +256,12 @@ namespace HideAndSeek.Features.Broadcast
             return result;
         }
 
-        /// <summary>聊天栏一条消息最多可显示的行数。</summary>
-        private const int MaxLinesPerMessage = 3;
+        /// <summary>
+        /// 一条消息最多合并几行。聊天栏会**自动换行**，实际能塞的比预想的多
+        /// （实测约 100 个汉字仍可完整显示），所以这里给足余量，尽量少切消息 ——
+        /// 每条消息都会占聊天栏一个条目，切太碎会把前面的顶出可见区。
+        /// </summary>
+        private const int MaxLinesPerMessage = 6;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
         private static void NoticeToWrapped(GamePlayer player, string text)
         {
