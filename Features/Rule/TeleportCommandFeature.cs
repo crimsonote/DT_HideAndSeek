@@ -33,6 +33,12 @@ namespace HideAndSeek.Features.Rule
 
         [ConfigField(false, "传送落地时播放原版的 TeleportVfx（黑洞状特效）。默认关闭 —— 观感突兀。")]
         public static ConfigEntry<bool> ShowTeleportVfx;
+        /// <summary>
+        /// 落点提示的广播半径。原版黑洞技能用的是 1792f —— 只覆盖现场附近的人，
+        /// 而不是全图（此前传 99999f，等于全房都能听到/看到）。
+        /// </summary>
+        private const float RadarDistance = 1792f;
+
         [ConfigField("BlackHoleVfx",
             "落点特效（EEffectType 名）：TeleportVfx / BlackHoleVfx / MineBombVfx / FlashVfx / ScopeVfx / none")]
         public static ConfigEntry<string> LandingVfxType;
@@ -210,7 +216,7 @@ namespace HideAndSeek.Features.Rule
             {
                 if (global::System.Enum.TryParse(sfxName, true, out ESoundType sfx))
                 {
-                    try { room.BroadcastWorldSFX(sfx, dest, 99999f); }
+                    try { room.BroadcastWorldSFX(sfx, dest, RadarDistance); }
                     catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Teleport：落点音效失败 — {ex.Message}"); }
                 }
                 else
@@ -248,7 +254,7 @@ namespace HideAndSeek.Features.Rule
                     HideAndSeek.Features.Skill.TeleportGuardFeature.Suppress++;
                     try
                     {
-                        room.BroadcastWorldVFX(vfx, 0, dest, 99999f);
+                        room.BroadcastWorldVFX(vfx, 0, dest, RadarDistance);
                         Plugin.Log.LogInfo($"[HS] Teleport：落点特效 {vfx} @ ({dest.X:F0},{dest.Y:F0})。");
                     }
                     catch (global::System.Exception ex)
