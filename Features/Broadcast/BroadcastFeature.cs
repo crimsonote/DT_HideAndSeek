@@ -210,6 +210,17 @@ namespace HideAndSeek.Features.Broadcast
         /// 关于长度：SanitizeChat 的 100 字截断只发生在原版 Handle_C_CHAT_MESSAGE 内部；
         /// 我们直接构造包，不经过那个入口，因此不受 100 字限制。
         /// </summary>
+        /// <summary>
+        /// 只发密聊通道（SecretChat）的全房通知，**不进普通聊天栏**。
+        /// 死亡通告用它 —— 黑方需要知道还剩几人，白方不需要看到这条。
+        /// </summary>
+        private static void NoticeSecret(GameRoom room, string text)
+        {
+            if (room == null || string.IsNullOrEmpty(text))
+                return;
+
+            room.Broadcast(BuildText(text, EChatType.SecretChat));
+        }
         private static void NoticeTo(GamePlayer player, string text)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))
@@ -386,7 +397,8 @@ namespace HideAndSeek.Features.Broadcast
                 && p.Color != EPlayerColor.Dark);
 
             string name = __instance?.Name ?? "某人";
-            Notice(room, TextService.Format(
+            // 死亡通告只走密聊通道：黑方据此判断剩余人数，白方不必看到。
+            NoticeSecret(room, TextService.Format(
                 DeathAnnounce?.Value,
                 ("name", name),
                 ("alive", aliveWhites.ToString()),
