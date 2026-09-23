@@ -36,6 +36,7 @@ namespace HideAndSeek.Features.Dummy
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
+                Diagnostics.Hit("DummyPick");
                 if (ModeRuntime.Bypass)
                     return;
 
@@ -49,6 +50,7 @@ namespace HideAndSeek.Features.Dummy
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
+                Diagnostics.Hit("DummyPick");
                 if (ModeRuntime.Bypass)
                     return;
 

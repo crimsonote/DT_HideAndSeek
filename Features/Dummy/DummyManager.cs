@@ -253,6 +253,40 @@ namespace HideAndSeek.Features.Dummy
         /// 对局内实际使用的角色由选角阶段决定，必须调用 GameRoom.PickCharacter（:171136）。
         /// 顺带满足 CheckPickAllDone（:171188）的人头计数，选角阶段不必空等。
         /// </summary>
+        /// <summary>
+        /// 随机挑一个尚未被占用、且在候选区间内的角色 DataId。
+        /// 用途：把「随机」从"交给游戏延后到 40 秒分配"变成"立刻登记"，实现真正的秒选。
+        /// </summary>
+        private static int PickRandomFreeCharacter(GameRoom room)
+        {
+            try
+            {
+                var taken = new HashSet<int>();
+                foreach (var p in room.Players)
+                {
+                    if (p?.PublicInfo != null && p.PublicInfo.CharacterId > 0)
+                        taken.Add(p.PublicInfo.CharacterId);
+                }
+
+                var pool = new List<int>();
+                foreach (var kv in Managers.Data.CharacterDic)
+                {
+                    int dataId = kv.Value?.DataId ?? 0;
+                    if (dataId >= 101 && dataId <= 113 && !taken.Contains(dataId))
+                        pool.Add(dataId);
+                }
+
+                if (pool.Count == 0)
+                    return 0;
+
+                return pool[Util.GetRandomNumber(0, pool.Count)];
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] Dummy：随机挑角色失败 — {ex.Message}");
+                return 0;
+            }
+        }
         public static void ApplyPickedCharacters(GameRoom room)
         {
             // 诊断：确认本方法是否真的被 PickCharacterTick 调到（此前日志里没有任何
@@ -265,6 +299,15 @@ namespace HideAndSeek.Features.Dummy
             // 只在选角阶段动手：本方法挂在 PickCharacterTick（每秒回调），
             // 不设这道闸的话，进入 Survive 后仍会每秒重试，把日志刷满。
             if (room.State != EGameState.PickCharacter)
+                return;
+
+            // StartPick 的 Postfix 跑在 _pickReady 还是 false 的窗口里：
+            // StartPick 先置 false，真正置 true 的是它内部 SyncAllPlayer 的 delegate，
+            // 而那个 delegate 要等客户端 ACK 才执行（CompleteWaitCount 在单人房 =1）。
+            // 此窗口内 PickCharacter 会静默 return，若把它当失败也还好，
+            // 但按 StopWatch 判成功就会错误出队 —— 所以这里直接不放行。
+            var readyField = AccessTools.Field(typeof(GameRoom), "_pickReady");
+            if (readyField != null && !(bool)readyField.GetValue(room))
                 return;
 
             var handled = new List<int>();
@@ -289,14 +332,20 @@ namespace HideAndSeek.Features.Dummy
                     // 是**静默 return** 的，必须自己判定是否真的生效 ——
                     // 这里曾把"调用过一次"当成成功就直接出队（f6823c7），
                     // 结果第一次失败后再也不重试，选角永远不生效。
+                    // -2 表示"随机"：原版把它登记进 _randomPickPlayers，留到 40 秒倒计时
+                    // 结束时才分配角色 —— 那就不是"秒选"。这里自己挑一个未被占用的角色
+                    // 直接走具体角色分支，效果等同随机但立刻生效。
+                    if (chara == -2)
+                    {
+                        chara = PickRandomFreeCharacter(room);
+                        if (chara == 0)
+                            continue;                     // 没有可用角色，下个 tick 再试
+                    }
+
                     bool ok;
                     if (chara == -2)
                     {
-                        // -2（游戏内置随机）不会改动 CharacterId，无法用角色值判定；
-                        // 只要未超过 40 秒时限，PickCharacter 的随机分支就会登记成功。
                         ok = (TimeManager.Instance?.StopWatch ?? 40) < 40;
-                        if (ok)
-                            Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选择「随机」，交由游戏在选角结束后分配。");
                     }
                     else
                     {
