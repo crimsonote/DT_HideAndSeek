@@ -44,7 +44,7 @@ namespace HideAndSeek.Console
                 {
                     case "hs_check": case "hs_mode": case "hs_aoi": case "hs_cd":
                     case "hs_killlimit": case "hs_dummy": case "hs_flash":
-                    case "hs_roomname": case "hs_tp": case "hs_grant":
+                    case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar":
                         name = sub;
                         args = args.Skip(1).ToArray();
                         break;
@@ -63,6 +63,7 @@ namespace HideAndSeek.Console
                 case "hs_killlimit": return SetKillLimit(args);
                 case "hs_tp":        return Teleport(args);
                 case "hs_grant":     return Grant(args);
+                case "hs_radar":     return Radar(args);
                 default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
             }
         }
@@ -414,6 +415,25 @@ namespace HideAndSeek.Console
         private static void AnnounceRule(string change)
             => HideAndSeek.Features.Broadcast.BroadcastFeature.AnnounceRule(change);
 
+        // ── /hs_radar [on|off] ──────────────────────────────────────
+        // 白方全图雷达：白方小地图显示所有存活玩家位置（不区分阵营）。
+        // 只能在 Survive 阶段生效 —— 审判阶段下发 S_PIN_MOVE 会让客户端 NRE。
+        private static string Radar(string[] args)
+        {
+            var cfg = HideAndSeek.Features.Vision.WhiteRadarFeature.RadarOn;
+            if (cfg == null)
+                return Error("雷达功能未加载");
+
+            if (args.Length == 0)
+                return $"{{\"ok\":true,\"radar\":{Bool(cfg.Value)}}}";
+
+            bool? on = ParseBool(args[0]);
+            if (on == null)
+                return Error("用法: hs_radar <on|off>（开启后白方小地图显示所有存活玩家）");
+
+            HideAndSeek.Features.Vision.WhiteRadarFeature.SetActive(on.Value);
+            return $"{{\"ok\":true,\"radar\":{Bool(cfg.Value)}}}";
+        }
         // ── 小工具 ──────────────────────────────────────────────────
         /// <summary>
         /// 段级 Enabled 不在功能类字段里（由 PatchLoader 生成），
