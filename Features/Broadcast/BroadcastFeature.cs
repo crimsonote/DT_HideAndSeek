@@ -174,13 +174,34 @@ namespace HideAndSeek.Features.Broadcast
                 PendingRuleChanges.Clear();
             }
         }
+        /// <summary>
+        /// 单独发给某人的提示（进房介绍走这里）。
+        ///
+        /// 必须用 **NormalChat** 而不是 SecretChat：
+        /// 客户端 UI_SecretChatOverlay.OnSecretChatReceived 有 `State != Survive → skip`，
+        /// 而进房介绍是在大厅发的，走 SecretChat 的话弹泡会被直接丢弃，新人什么都看不到。
+        /// NormalChat 则进聊天栏，任何阶段都显示。
+        ///
+        /// 关于长度：SanitizeChat 的 100 字截断只发生在原版 Handle_C_CHAT_MESSAGE 内部；
+        /// 我们直接构造包，不经过那个入口，因此不受 100 字限制。
+        /// </summary>
         private static void NoticeTo(GamePlayer player, string text)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
-            player.Session.Send(BuildChat(text));
+            player.Session.Send(BuildText(text, EChatType.NormalChat));
         }
+
+        /// <summary>构造文字包。chatType 决定显示位置（NormalChat→聊天栏，SecretChat→弹泡/发信机）。</summary>
+        private static S_CHAT_MESSAGE BuildText(string text, EChatType chatType) => new S_CHAT_MESSAGE
+        {
+            Type = chatType,
+            Text = text,
+            PlayerId = 0,
+            DeviceId = chatType == EChatType.SecretChat ? MagicDeviceId : 0,
+            Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
+        };
 
         private static string Titled(string body)
         {
