@@ -323,7 +323,7 @@ namespace HideAndSeek.Features.Combat
         {
             try
             {
-                string body = "【黑学分】" + text;
+                string body = text;   // 不带前缀：文案本身已含「黑方…」，前缀属冗余
 
                 // 两条通道：SecretChat → 弹泡 + 密聊记录；DeviceChat → 公共发信机记录。
                 // 不能用 NormalChat —— 客户端只在 大厅/裁判 渲染它，生存阶段等于白发。
