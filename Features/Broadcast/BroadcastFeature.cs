@@ -87,7 +87,7 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(true, "有玩家进入房间时，单独向他播报玩法规则。")]
         public static ConfigEntry<bool> WelcomeOnJoin;
 
-        [ConfigField(28f, "聊天栏单行宽度上限（半角单位，中文按 2 计）。超出会另起一行；设 0 关闭自动折行。",
+        [ConfigField(26f, "聊天栏单行宽度上限（半角单位，中文按 2 计）。超出会另起一行；设 0 关闭自动折行。",
             Min = 0f, Max = 200f)]
         public static ConfigEntry<float> MaxLineWidth;
         [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
@@ -256,22 +256,32 @@ namespace HideAndSeek.Features.Broadcast
             return result;
         }
 
+        /// <summary>聊天栏一条消息最多可显示的行数。</summary>
+        private const int MaxLinesPerMessage = 3;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
         private static void NoticeToWrapped(GamePlayer player, string text)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
-            int width = (int)(MaxLineWidth?.Value ?? 28f);
+            int width = (int)(MaxLineWidth?.Value ?? 26f);
             var lines = new List<string>();
             foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
-                lines.AddRange(WrapLine(raw, width));
-
-            foreach (var line in lines)
             {
-                if (string.IsNullOrEmpty(line))
-                    continue;
-                player.Session.Send(BuildText(line, EChatType.NormalChat));
+                foreach (var w in WrapLine(raw, width))
+                {
+                    if (!string.IsNullOrEmpty(w))
+                        lines.Add(w);
+                }
+            }
+
+            // 聊天栏的显示单位是"一条消息最多 3 行"，而不是"一行一条"。
+            // 早先每行发一条，十几条消息把前面全顶出了可见区（实测"前面都被隐藏了"）。
+            for (int i = 0; i < lines.Count; i += MaxLinesPerMessage)
+            {
+                int take = global::System.Math.Min(MaxLinesPerMessage, lines.Count - i);
+                string chunk = string.Join("\n", lines.GetRange(i, take));
+                player.Session.Send(BuildText(chunk, EChatType.NormalChat));
             }
         }
         /// <summary>构造文字包。chatType 决定显示位置（NormalChat→聊天栏，SecretChat→弹泡/发信机）。</summary>
