@@ -56,6 +56,15 @@ namespace HideAndSeek.Features.Skill
         /// <summary>本次黑洞的实际落点（由 LandingHook 写入），供 VfxHook 画特效。</summary>
         private static PosInfo _pendingLanding;
 
+        /// <summary>
+        /// _pendingLanding 的登记时刻。它是静态字段、只写不清，
+        /// 若不设失效窗口，之后任何一次非施法者的 BlackHoleVfx 广播
+        /// 都会被改写到**很久以前那次**的落点上（黑洞技能以外的场景也会被污染）。
+        /// </summary>
+        private static float _pendingAt = -999f;
+
+        private const float PendingTtl = 5f;
+
         // ── L3：落点改写 ────────────────────────────────────────────
         [HarmonyPatch(typeof(GameSkill), "TryGetSafeLandingPos")]
         internal static class LandingHook
@@ -80,6 +89,7 @@ namespace HideAndSeek.Features.Skill
 
                 landingPos = spawn;
                 _pendingLanding = spawn;      // 供 VfxHook 把特效画在真正的落点上
+            _pendingAt = TimeManager.Instance?.SurviveTime ?? 0f;
                 __result = true;   // 必须 true：false 会让原版回退成"精确落到目标当前位置"
                 Plugin.Log.LogInfo(
                     $"[HS] TeleportGuard：落点改写为出生点 ({spawn.X:F0},{spawn.Y:F0})（目标 #{target?.PublicInfo?.PlayerId}）。");
@@ -134,6 +144,14 @@ namespace HideAndSeek.Features.Skill
             {
                 if (ModeRuntime.Bypass || _pendingLanding == null)
                     return;
+
+                    // 过期即作废：该字段只写不清，没有窗口会一直影响后续所有黑洞广播
+                    float now = TimeManager.Instance?.SurviveTime ?? 0f;
+                    if (now - _pendingAt > PendingTtl)
+                    {
+                        _pendingLanding = null;
+                        return;
+                    }
                 if (BlockVfxLeak == null || !BlockVfxLeak.Value)
                     return;
                 if (type != EEffectType.BlackHoleVfx)

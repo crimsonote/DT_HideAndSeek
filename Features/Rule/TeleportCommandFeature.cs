@@ -33,7 +33,7 @@ namespace HideAndSeek.Features.Rule
 
         [ConfigField(false, "传送落地时播放原版的 TeleportVfx（黑洞状特效）。默认关闭 —— 观感突兀。")]
         public static ConfigEntry<bool> ShowTeleportVfx;
-        [ConfigField("TeleportVfx",
+        [ConfigField("BlackHoleVfx",
             "落点特效（EEffectType 名）：TeleportVfx / BlackHoleVfx / MineBombVfx / FlashVfx / ScopeVfx / none")]
         public static ConfigEntry<string> LandingVfxType;
 
@@ -48,15 +48,6 @@ namespace HideAndSeek.Features.Rule
         [ConfigField("黑方即将传送到标记处",
             "预警时发给目标的一行文字（出现在其聊天栏）。留空则不发。")]
         public static ConfigEntry<string> LandingText;
-        [ConfigField(300f, "目标在预警期间移动超过这个距离，就取消本次传送（0 = 不取消）。",
-            Min = 0f, Max = 5000f)]
-        public static ConfigEntry<float> CancelMoveDistance;
-        [ConfigField(true, "预警时给目标播放警示音效（原版警示用的 WarningSfx）。")]
-        public static ConfigEntry<bool> PlayWarningSfx;
-
-        [ConfigField(false, "预警时给目标一个指向传送者的箭头，便于判断该往哪躲。")]
-        public static ConfigEntry<bool> ShowWarningArrow;
-
         /// <summary>
         /// 发起一次传送。targetId &lt;= 0 表示随机挑一个存活玩家。
         /// 返回 false 时 error 给出原因，调用方不应计次数与冷却。
@@ -209,8 +200,6 @@ namespace HideAndSeek.Features.Rule
                 dest = areas.ClampToMapBounds(dest);
 
             int targetPid = target.PublicInfo.PlayerId;
-            var arrowPos = caster.PublicInfo?.Pos?.Clone();
-            bool showArrow = ShowWarningArrow?.Value ?? true;
 
             // ① 立刻预警
             // 注意：SendSystemSFX(type, player) 会把效果挂在**玩家身上** —— 那不是落点指示。
@@ -275,14 +264,6 @@ namespace HideAndSeek.Features.Rule
                 }
             }
 
-            if (showArrow && arrowPos != null && target.Session != null)
-            {
-                target.Session.Send(new S_NOTIFY_ARROW
-                {
-                    Type = EArrowType.CharacterArrow,
-                    Pos = arrowPos
-                });
-            }
 
             Plugin.Log.LogInfo(
                 $"[HS] Teleport：黑方 #{caster.PublicInfo?.PlayerId} 锁定 #{targetPid}，" +
@@ -296,8 +277,6 @@ namespace HideAndSeek.Features.Rule
                 if (room.State != EGameState.Survive || !caster.IsAlive)
                 {
                     Plugin.Log.LogInfo("[HS] Teleport：阶段已变化或传送者已死亡，取消落地。");
-                    if (showArrow && arrowPos != null && target.Session != null)
-                        target.Session.Send(new S_REMOVE_ARROW { Type = EArrowType.CharacterArrow, Pos = arrowPos });
                     return;
                 }
 
@@ -306,8 +285,6 @@ namespace HideAndSeek.Features.Rule
                 if (ShowTeleportVfx != null && ShowTeleportVfx.Value)
                     room.BroadcastWorldVFX(EEffectType.TeleportVfx, caster.PublicInfo?.PlayerId ?? 0, caster.PublicInfo?.Pos);
 
-                if (showArrow && arrowPos != null && target.Session != null)
-                    target.Session.Send(new S_REMOVE_ARROW { Type = EArrowType.CharacterArrow, Pos = arrowPos });
 
                 Plugin.Log.LogInfo($"[HS] Teleport：已落地到 #{targetPid} 的位置。");
             });
