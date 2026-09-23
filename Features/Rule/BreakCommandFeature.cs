@@ -44,13 +44,16 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "启用黑方密聊命令通道。关闭后以 / 开头的密聊也会被当作普通聊天。")]
         public static ConfigEntry<bool> AllowBreakBySecretChat;
 
-        [ConfigField("break = fusebox -> Disconnect ; cd=0",
+        [ConfigField("break = fusebox -> Disconnect ; cd=0\n" +
+                     "lock  = -> Lock ; cd=60\n" +
+                     "tp    = -> Teleport ; cd=60",
             "命令注册表。每条一行，格式：\n" +
             "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数>\n" +
             "条件可留空（= 无条件）；可用 fusebox（地图上有可拆电箱）\n" +
             "      time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
             "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairThreshold/MinProgress），\n" +
-            "      或特殊动作 Disconnect（拆离自己最近的可拆电箱）。多个动作用 , 连接。\n" +
+            "      或特殊动作：Disconnect（拆最近可拆电箱）/ Lock（锁住附近的门）/\n" +
+            "      Teleport（预警数秒后传送到目标位置，可跟玩家 ID 参数）。多个动作用 , 连接。\n" +
             "cd / uses 可省略，0 或省略 = 不限。行首 # 为注释。\n" +
             "默认的 fusebox 条件已隐含原版派发节奏（断电归零后 60 秒才重新派发目标），通常不必再设 cd。")]
         public static ConfigEntry<string> Commands;
@@ -214,6 +217,27 @@ namespace HideAndSeek.Features.Rule
                     if (a.Length == 0)
                         continue;
 
+                    if (a.Equals("Lock", global::System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        special = true;
+                        if (!LockNearby(player, deviceId))
+                            return;                      // 附近没门就不计次数、不写冷却
+                        continue;
+                    }
+
+                    if (a.Equals("Teleport", global::System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        special = true;
+                        int wantPid = 0;
+                        if (!string.IsNullOrEmpty(arg))
+                            int.TryParse(arg, out wantPid);
+                        if (!TeleportCommandFeature.Begin(room, player, wantPid, out string tpErr))
+                        {
+                            Reply(player, deviceId, "传送失败：" + tpErr);
+                            return;
+                        }
+                        continue;
+                    }
                     if (a.Equals("Disconnect", global::System.StringComparison.OrdinalIgnoreCase))
                     {
                         special = true;
@@ -253,6 +277,21 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>拆离自己最近的可拆电箱；地图上没有则拒绝。返回是否真的拆了。</summary>
+        /// <summary>以黑方为圆心锁住附近的门。返回是否真的锁到了门。</summary>
+        private static bool LockNearby(GamePlayer player, int deviceId)
+        {
+            float radius = LockDoorFeature.GetRadius();
+            int count = LockDoorFeature.LockAround(player.PublicInfo?.Pos, radius, player);
+
+            if (count == 0)
+            {
+                Reply(player, deviceId, "附近没有可锁的门。");
+                return false;
+            }
+
+            Reply(player, deviceId, $"已锁住 {count} 扇门（半径 {radius:F0}）。");
+            return true;
+        }
         private static bool Disconnect(GameRoom room, GamePlayer player, int deviceId, string arg)
         {
             int wantId = 0;
