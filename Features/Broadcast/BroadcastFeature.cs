@@ -87,7 +87,11 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(true, "有玩家进入房间时，单独向他播报玩法规则。")]
         public static ConfigEntry<bool> WelcomeOnJoin;
 
+        [ConfigField(28f, "聊天栏单行宽度上限（半角单位，中文按 2 计）。超出会另起一行；设 0 关闭自动折行。",
+            Min = 0f, Max = 200f)]
+        public static ConfigEntry<float> MaxLineWidth;
         [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
+
         public static ConfigEntry<int> WelcomeDelayMs;
 
         [ConfigField(3200, "开局提示的延迟毫秒数（须晚于自动发刀，才能分出黑方）。", Min = 0f, Max = 30000f)]
@@ -178,7 +182,7 @@ namespace HideAndSeek.Features.Broadcast
                         {
                             var p = GameRoom.Instance?.Players?.Find(x => x?.PublicInfo?.PlayerId == pid);
                             if (p != null)
-                                NoticeTo(p, joinText);
+                                NoticeToWrapped(p, joinText);
                         }
                     });
                 }
@@ -214,6 +218,52 @@ namespace HideAndSeek.Features.Broadcast
             player.Session.Send(BuildText(text, EChatType.NormalChat));
         }
 
+        /// <summary>
+        /// 按显示宽度把一行切成多行。中文按 2 个半角单位计。
+        /// 聊天栏放不下时会**直接截断**（不是折行），所以长文本必须自己先切开。
+        /// </summary>
+        private static List<string> WrapLine(string line, int maxWidth)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(line)) { result.Add(""); return result; }
+            if (maxWidth <= 0) { result.Add(line); return result; }
+
+            var sb = new global::System.Text.StringBuilder();
+            int w = 0;
+            foreach (char c in line)
+            {
+                int cw = c > 0x7F ? 2 : 1;
+                if (w + cw > maxWidth && sb.Length > 0)
+                {
+                    result.Add(sb.ToString());
+                    sb.Clear();
+                    w = 0;
+                }
+                sb.Append(c);
+                w += cw;
+            }
+            if (sb.Length > 0) result.Add(sb.ToString());
+            return result;
+        }
+
+        /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
+        private static void NoticeToWrapped(GamePlayer player, string text)
+        {
+            if (player?.Session == null || string.IsNullOrEmpty(text))
+                return;
+
+            int width = (int)(MaxLineWidth?.Value ?? 28f);
+            var lines = new List<string>();
+            foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+                lines.AddRange(WrapLine(raw, width));
+
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrEmpty(line))
+                    continue;
+                player.Session.Send(BuildText(line, EChatType.NormalChat));
+            }
+        }
         /// <summary>构造文字包。chatType 决定显示位置（NormalChat→聊天栏，SecretChat→弹泡/发信机）。</summary>
         private static S_CHAT_MESSAGE BuildText(string text, EChatType chatType) => new S_CHAT_MESSAGE
         {
@@ -263,7 +313,7 @@ namespace HideAndSeek.Features.Broadcast
                 if (__instance.State == EGameState.Lobby)
                 {
                     int delay = WelcomeDelayMs?.Value ?? 10000;
-                    __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeTo(player, text));
+                    __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeToWrapped(player, text));
                 }
                 else
                 {
@@ -313,7 +363,7 @@ namespace HideAndSeek.Features.Broadcast
                 else
                     body = StartBodyWhite?.Value;
 
-                NoticeTo(player, Titled(TextService.Format(body)));
+                NoticeToWrapped(player, Titled(TextService.Format(body)));
             }
         }
 
