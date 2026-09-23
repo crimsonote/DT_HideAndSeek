@@ -59,6 +59,9 @@ namespace HideAndSeek.Features.Vision
         private static readonly Dictionary<int, float> UnlockUntil = new Dictionary<int, float>();
         private static readonly Dictionary<int, float> MarkerUntil = new Dictionary<int, float>();
 
+        /// <summary>PlayerId → 实时段结束时刻（此前每秒重发 pin 以跟随真实位置）。</summary>
+        private static readonly Dictionary<int, float> LiveUntil = new Dictionary<int, float>();
+
         /// <summary>该黑方是否正处于扫描解封期（AOI 闸门据此放行）。</summary>
         private static bool _skillResolved;
         private static ESkillType _miyukiSkill;
@@ -159,8 +162,10 @@ namespace HideAndSeek.Features.Vision
 
                     // ②b 实时段：解封/标记开始后的前 UnlockSeconds 秒内每秒重发 pin，
                     //     让地图标记跟随真实位置；之后停止发包，标记就静止在原地（需求里的"停留两秒"）。
-                    float liveUntil = UnlockUntil.TryGetValue(pid, out float live) ? live : 0f;
-                    if (liveUntil > 0f && now < liveUntil && MarkerUntil.ContainsKey(pid))
+                    // 实时段：仅白方需要重发 pin（黑方靠 AOI 解封由原版刷新）。
+                    // 只在 LiveUntil 之前重发 → 之后停止发包，标记静止在原地（需求里的"停留两秒"）。
+                    if (MarkerUntil.ContainsKey(pid)
+                        && LiveUntil.TryGetValue(pid, out float live) && now < live)
                         SendAllPins(__instance, p);
 
                     // ③ 到点触发下一轮扫描
@@ -196,8 +201,16 @@ namespace HideAndSeek.Features.Vision
                 }
             }
 
-            SendAllPins(room, miyuki);
-            MarkerUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
+            // 黑方不发 pin：AOI 解封后原版黑方地图本来就会显示所有人，
+            // 再叠我们那套会多出白色方块徽章（TurnComplyRules 的副产品）。
+            // 白方没有 AOI 通道，只能靠 pin 显示。
+            LiveUntil[pid] = now + (UnlockSeconds?.Value ?? 1);   // 实时段长度：1 秒
+
+            if (!isBlack)
+            {
+                SendAllPins(room, miyuki);
+                MarkerUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
+            }
 
             Plugin.Log.LogInfo(
                 $"[HS] MiyukiScan：美幸 #{pid} 扫描（{(isBlack ? "黑方：解封 AOI" : "白方：仅地图")}）。");
@@ -292,6 +305,7 @@ namespace HideAndSeek.Features.Vision
             NextScanAt.Clear();
             UnlockUntil.Clear();
             MarkerUntil.Clear();
+            LiveUntil.Clear();
         }
     }
 }

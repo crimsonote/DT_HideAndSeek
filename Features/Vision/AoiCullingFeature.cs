@@ -294,6 +294,11 @@ namespace HideAndSeek.Features.Vision
                 if (!IsBlack(black))
                     continue;
 
+                // 美幸扫描解封期：本轮不做任何裁剪（既不剔除也不补加），
+                // 由 MiyukiScanFeature 自己在解封结束时把超范围的人收回。
+                // 之前只在 PrefixAddPlayer 加后门是不够的 —— 剔除走的是这里的循环。
+                if (MiyukiScanFeature.IsUnlocking(black))
+                    continue;
                 Resolve(black, out float cx, out float cy, out float enter, out float exit);
                 float enterSq = enter * enter;
                 float exitSq = exit * exit;
