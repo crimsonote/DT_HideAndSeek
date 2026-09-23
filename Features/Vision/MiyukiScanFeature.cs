@@ -46,7 +46,16 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(3, "地图标记总持续（秒）。其中前 1 秒实时跟随，之后静止，到点消失。", Min = 1f, Max = 30f)]
         public static ConfigEntry<int> MarkerSeconds;
 
+        /// <summary>
+        /// 黑美幸 pin 的"范围内"判据：距离 ≤ 本值的人不发 pin（原版地图已经会显示他们，
+        /// 再发会多叠一个白色方块）。0 = 关闭该过滤，所有人都发。
+        /// 默认 900 对应 AoiCulling.ExitRange —— 想更严格可改为 700（EnterRange）。
+        /// </summary>
+        [ConfigField(900f, "黑美幸只标记该距离之外的人（0 = 全部标记）。",
+            Min = 0f, Max = 3000f)]
+        public static ConfigEntry<float> BlackPinRange;
         [ConfigField(true, "对美幸启用该被动。")]
+
         public static ConfigEntry<bool> EnableForMiyuki;
 
         /// <summary>美幸的角色 DataId（CharacterData.json / CharacterDic）。</summary>
@@ -248,8 +257,9 @@ namespace HideAndSeek.Features.Vision
                 // 再发 pin 会在那些人身上多叠一个白色方块。
                 if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
                 {
-                    float __exit = AoiCullingFeature.ExitRange?.Value ?? 900f;
-                    if (Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __exit * __exit)
+                    float __range = BlackPinRange?.Value ?? 900f;   // 0 = 不过滤，全部发 pin
+                    if (__range > 0f
+                        && Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __range * __range)
                         continue;
                 }
                 WhiteRadarFeature.SendPin(miyuki,
@@ -284,8 +294,9 @@ namespace HideAndSeek.Features.Vision
                 if (visible)
                 if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
                 {
-                    float __exit = AoiCullingFeature.ExitRange?.Value ?? 900f;
-                    if (Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __exit * __exit)
+                    float __range = BlackPinRange?.Value ?? 900f;   // 0 = 不过滤，全部发 pin
+                    if (__range > 0f
+                        && Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __range * __range)
                         continue;
                 }
                     snap[other.PublicInfo.PlayerId] = other.PublicInfo.Pos?.Clone();
