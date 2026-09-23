@@ -62,16 +62,15 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField("当前，黑方角色将会自动指定。", "自动发刀模式下 {knife} 的内容。")]
         public static ConfigEntry<string> JoinKnifeAuto;
 
-        [ConfigField("在倒计时结束之前，寻找凶器开始追捕，或者完成任务逃离追捕~\n" +
-            "或许也可以前往发信站使用/help来获得一些帮助。两个频道不一样呢~",
+        [ConfigField("倒计时结束前：寻找凶器追捕，或去发信站用/help求助~",
             "开局提示：自行拿刀模式（所有人同一句）。")]
         public static ConfigEntry<string> StartBodySelfServe;
 
-        [ConfigField("开始杀戮、开始搜索吧~或许也可以在发信站获得帮助(/help)在倒计时结束之前。",
+        [ConfigField("倒计时结束前：开始杀戮、开始搜索吧~（/help 可查指令）",
             "开局提示：自动发刀模式下发给黑方。")]
         public static ConfigEntry<string> StartBodyBlack;
 
-        [ConfigField("躲避杀手，完成任务，或许也可以在发信站获得帮助(/help)。在倒计时结束之前。祝你好运~",
+        [ConfigField("倒计时结束前：躲避杀手、完成任务。祝你好运~（/help 可查指令）",
             "开局提示：自动发刀模式下发给白方。")]
         public static ConfigEntry<string> StartBodyWhite;
 

@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 9;
+        private const int CurrentVersion = 10;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,30 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v9 → v10
+            if (from < 10)
+            {
+                // 开局提示原先带 \n（两行），但密聊浮层一次只显示一条，后一行会顶掉前一行。
+                // 压成单行，保证那句话能被看到。
+                MigrateString(config, log, "Broadcast", "StartBodySelfServe",
+                    "在倒计时结束之前，寻找凶器",
+                    "倒计时结束前：寻找凶器追捕，或去发信站用/help求助~");
+
+                MigrateString(config, log, "Broadcast", "StartBodySelfServe",
+                    "或许也可以前往发信站",
+                    "倒计时结束前：寻找凶器追捕，或去发信站用/help求助~");
+
+                MigrateString(config, log, "Broadcast", "StartBodyBlack",
+                    "开始杀戮、开始搜索吧",
+                    "倒计时结束前：开始杀戮、开始搜索吧~（/help 可查指令）");
+
+                MigrateString(config, log, "Broadcast", "StartBodyWhite",
+                    "躲避杀手，完成任务，",
+                    "倒计时结束前：躲避杀手、完成任务。祝你好运~（/help 可查指令）");
+            }
+
             // v8 → v9
+
             if (from < 9)
             {
                 // ① 行宽：28 是本项很早的默认值（14 个汉字），改成 52（26 个汉字）。
