@@ -180,7 +180,7 @@ namespace HideAndSeek.Features.Broadcast
                         {
                             var p = GameRoom.Instance?.Players?.Find(x => x?.PublicInfo?.PlayerId == pid);
                             if (p != null)
-                                NoticeToWrapped(p, joinText, MessageIntervalMs?.Value ?? 2500);
+                                SendWrappedTo(p, EChatType.NormalChat, joinText, MessageIntervalMs?.Value ?? 0);
                         }
                     });
                 }
@@ -275,29 +275,28 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(0, "一条消息最多合并几行。0 = 不拆（整段一颗气泡）。", Min = 0f, Max = 20f)]
         public static ConfigEntry<int> MaxLinesPerMessage;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
-        private static void NoticeToWrapped(GamePlayer player, string text, int intervalMs = 0)
+        /// <summary>
+        /// 原样发给该玩家：不做任何折行与拆分。
+        /// 用于**气泡**（SecretChat）—— 底层 TMP_Text 自带换行，
+        /// 原文里的 \n 就是作者的分行意图，再折一次反而打乱结构。
+        /// </summary>
+        private static void SendRawTo(GamePlayer player, EChatType chatType, string text)
+        {
+            if (player?.Session == null || string.IsNullOrEmpty(text))
+                return;
+            player.Session.Send(BuildText(text, chatType));
+        }
+
+        /// <summary>
+        /// 折行后发给该玩家：按 MaxLineWidth 折、按 MaxLinesPerMessage 分组、按 intervalMs 分条。
+        /// 用于**聊天栏**（NormalChat）—— 它放不下时是直接截断，不是折行，必须先切好。
+        /// 通道、是否间隔都由调用方给定，本函数不做任何场景判断。
+        /// </summary>
+        private static void SendWrappedTo(GamePlayer player, EChatType chatType, string text, int intervalMs = 0)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
-            // 通道按阶段自适应：NormalChat 只在 大厅/裁判 渲染，生存阶段等于白发。
-            EChatType ct = (GameRoom.Instance?.State == EGameState.Lobby
-                            || GameRoom.Instance?.State == EGameState.Trial)
-                ? EChatType.NormalChat
-                : EChatType.SecretChat;
-
-            // 气泡（SecretChat）原样发送，不折行 —— TMP_Text 自带换行，
-            // 原文的 \n 就是作者的分行意图，再按字数折一次反而打乱结构。
-            // 聊天栏（NormalChat）必须折行：它放不下时是**直接截断**，不是折行。
-            if (ct == EChatType.SecretChat)
-            {
-                player.Session.Send(BuildText(text, ct));
-                return;
-            }
-
-            int perMsg = MaxLinesPerMessage?.Value ?? 0;
-
-            // 只有需要拆条时才折行 —— 因为要把行按 perMsg 分组，必须先有"行"的概念。
             int width = (int)(MaxLineWidth?.Value ?? 52f);
             var lines = new List<string>();
             foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
@@ -309,27 +308,27 @@ namespace HideAndSeek.Features.Broadcast
                 }
             }
 
+            int perMsg = MaxLinesPerMessage?.Value ?? 0;
             if (perMsg <= 0)
-                perMsg = lines.Count;              // 聊天栏：折行后一次发完
+                perMsg = lines.Count;              // 0 = 折行后一次发完
 
-            int interval = intervalMs;
             int index = 0;
             for (int i = 0; i < lines.Count; i += perMsg)
             {
                 int take = global::System.Math.Min(perMsg, lines.Count - i);
                 string chunk = string.Join("\n", lines.GetRange(i, take));
-                int delay = interval > 0 ? index * interval : 0;
+                int delay = intervalMs > 0 ? index * intervalMs : 0;
 
                 if (delay <= 0)
                 {
-                    player.Session.Send(BuildText(chunk, ct));
+                    player.Session.Send(BuildText(chunk, chatType));
                 }
                 else
                 {
                     string payload = chunk;
                     GameRoom.Instance?.PushAfter(delay, delegate
                     {
-                        try { player?.Session?.Send(BuildText(payload, ct)); }
+                        try { player?.Session?.Send(BuildText(payload, chatType)); }
                         catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Broadcast：分段发送失败 — {ex.Message}"); }
                     });
                 }
@@ -385,7 +384,7 @@ namespace HideAndSeek.Features.Broadcast
                 if (__instance.State == EGameState.Lobby)
                 {
                     int delay = WelcomeDelayMs?.Value ?? 10000;
-                    __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeToWrapped(player, text, MessageIntervalMs?.Value ?? 2500));
+                    __instance.PushAfter(delay < 0 ? 0 : delay, () => SendWrappedTo(player, EChatType.NormalChat, text, MessageIntervalMs?.Value ?? 0));
                 }
                 else
                 {
@@ -435,7 +434,7 @@ namespace HideAndSeek.Features.Broadcast
                 else
                     body = StartBodyWhite?.Value;
 
-                NoticeToWrapped(player, Titled(TextService.Format(body)), 0);   // 局内：立即发出，不拖
+                SendRawTo(player, EChatType.SecretChat, Titled(TextService.Format(body)));   // 局内气泡：原样，不折行
             }
         }
 
