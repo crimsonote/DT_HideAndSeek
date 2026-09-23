@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 10;
+        private const int CurrentVersion = 11;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,26 +37,45 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v10 → v11
+            if (from < 11)
+            {
+                // v10 曾把开局提示压成短句，丢掉了"第二胜利途径"与"两个频道不同"等规则说明。
+                // 这里把短版纠正回原文；已是原文的不会被动。
+                MigrateString(config, log, "Broadcast", "StartBodySelfServe",
+                    "倒计时结束前：寻找凶器",
+                    "在倒计时结束之前，寻找凶器开始追捕，或者完成任务逃离追捕~\\n或许也可以前往发信站使用/help来获得一些帮助。两个频道不一样呢~");
+
+                MigrateString(config, log, "Broadcast", "StartBodyBlack",
+                    "倒计时结束前：开始杀戮",
+                    "开始杀戮、开始搜索吧~或许也可以在发信站获得帮助(/help)在倒计时结束之前。");
+
+                MigrateString(config, log, "Broadcast", "StartBodyWhite",
+                    "倒计时结束前：躲避杀手",
+                    "躲避杀手，完成任务，或许也可以在发信站获得帮助(/help)。在倒计时结束之前。祝你好运~");
+            }
+
             // v9 → v10
+
             if (from < 10)
             {
                 // 开局提示原先带 \n（两行），但密聊浮层一次只显示一条，后一行会顶掉前一行。
                 // 压成单行，保证那句话能被看到。
                 MigrateString(config, log, "Broadcast", "StartBodySelfServe",
                     "在倒计时结束之前，寻找凶器",
-                    "倒计时结束前：寻找凶器追捕，或去发信站用/help求助~");
+                    "在倒计时结束之前，寻找凶器开始追捕，或者完成任务逃离追捕~\\n或许也可以前往发信站使用/help来获得一些帮助。两个频道不一样呢~");
 
                 MigrateString(config, log, "Broadcast", "StartBodySelfServe",
                     "或许也可以前往发信站",
-                    "倒计时结束前：寻找凶器追捕，或去发信站用/help求助~");
+                    "在倒计时结束之前，寻找凶器开始追捕，或者完成任务逃离追捕~\\n或许也可以前往发信站使用/help来获得一些帮助。两个频道不一样呢~");
 
                 MigrateString(config, log, "Broadcast", "StartBodyBlack",
                     "开始杀戮、开始搜索吧",
-                    "倒计时结束前：开始杀戮、开始搜索吧~（/help 可查指令）");
+                    "开始杀戮、开始搜索吧~或许也可以在发信站获得帮助(/help)在倒计时结束之前。");
 
                 MigrateString(config, log, "Broadcast", "StartBodyWhite",
                     "躲避杀手，完成任务，",
-                    "倒计时结束前：躲避杀手、完成任务。祝你好运~（/help 可查指令）");
+                    "躲避杀手，完成任务，或许也可以在发信站获得帮助(/help)。在倒计时结束之前。祝你好运~");
             }
 
             // v8 → v9
