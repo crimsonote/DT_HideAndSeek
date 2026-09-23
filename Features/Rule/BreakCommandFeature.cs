@@ -186,6 +186,8 @@ namespace HideAndSeek.Features.Rule
                     return new CommandDef { Name = "break", Condition = "fusebox", Action = "Disconnect", Cooldown = 0 };
                 case "lock":
                     return new CommandDef { Name = "lock", Condition = "", Action = "Lock", Cooldown = 60 };
+                case "list":
+                    return new CommandDef { Name = "list", Condition = "", Action = "ListPlayers", Cooldown = 0 };
                 case "tp":
                     return new CommandDef { Name = "tp", Condition = "", Action = "Teleport", Cooldown = 60 };
                 default:
@@ -243,6 +245,13 @@ namespace HideAndSeek.Features.Rule
                         special = true;
                         if (!LockNearby(player, deviceId))
                             return;                      // 附近没门就不计次数、不写冷却
+                        continue;
+                    }
+
+                    if (a.Equals("ListPlayers", global::System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        special = true;
+                        Reply(player, deviceId, BuildPlayerList(room));
                         continue;
                     }
 
@@ -305,6 +314,28 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>拆离自己最近的可拆电箱；地图上没有则拒绝。返回是否真的拆了。</summary>
+        /// <summary>列出全部玩家（ID + 昵称 + 状态），便于 /tp 指定目标。</summary>
+        private static string BuildPlayerList(GameRoom room)
+        {
+            if (room?.Players == null)
+                return "当前没有玩家";
+
+            var sb = new global::System.Text.StringBuilder("玩家列表（/tp 可用 ID）：");
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo == null)
+                    continue;
+
+                sb.Append('\n');
+                sb.Append('#').Append(p.PublicInfo.PlayerId);
+                sb.Append(' ').Append(p.Name ?? "?");
+                if (p.IsDummy) sb.Append(" [假人]");
+                if (p.IsSpectator) sb.Append(" [观战]");
+                else if (!p.IsAlive) sb.Append(" [已死亡]");
+            }
+
+            return sb.ToString();
+        }
         /// <summary>以黑方为圆心锁住附近的门。返回是否真的锁到了门。</summary>
         private static bool LockNearby(GamePlayer player, int deviceId)
         {
