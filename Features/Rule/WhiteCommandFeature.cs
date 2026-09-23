@@ -72,6 +72,35 @@ namespace HideAndSeek.Features.Rule
 
         private const float CdNoticeInterval = 10f;
 
+        /// <summary>单条回执最多 3 行（聊天框上限）。</summary>
+        private const int MaxLinesPerMessage = 3;
+
+        /// <summary>单行最大显示宽度（半角单位，中文按 2 计）。超了客户端会自动折行。</summary>
+        private const int MaxWidthPerLine = 28;
+
+        private static List<string> WrapByWidth(string line)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(line)) { result.Add(""); return result; }
+
+            var sb = new global::System.Text.StringBuilder();
+            int w = 0;
+            foreach (char c in line)
+            {
+                int cw = c > 0x7F ? 2 : 1;
+                if (w + cw > MaxWidthPerLine && sb.Length > 0)
+                {
+                    result.Add(sb.ToString());
+                    sb.Clear();
+                    w = 0;
+                }
+                sb.Append(c);
+                w += cw;
+            }
+            if (sb.Length > 0) result.Add(sb.ToString());
+            return result;
+        }
+
         [ConfigField(true, "允许白方用 /stasis 消耗任务进度时停黑方。")]
         public static ConfigEntry<bool> AllowStasis;
 
@@ -91,9 +120,9 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> RepairCostPercent;
         private const string WhiteHelp =
             "【白方】" +
-            "\n/radar  全图扫描 15s 2次/局 CD75" +
-            "\n/stasis 停黑5s 耗5%进度 CD90" +
-            "\n/repair 立即修电 耗10%进度（仅断电）";
+            "\n/radar  扫描15s 2次/局 CD75" +
+            "\n/stasis 停黑5s 耗5% CD90" +
+            "\n/repair 修电 耗10%（仅断电）";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
@@ -379,15 +408,29 @@ namespace HideAndSeek.Features.Rule
         {
             try
             {
-                player?.Session?.Send(new S_CHAT_MESSAGE
+                // 先按宽度折行，再每 3 行发一条 —— 否则长行会被客户端自动折行、
+// 实际渲染超过 3 行，超出部分被截掉（白方帮助此前就是这样显示不全的）。
+                var wrapped = new List<string>();
+                foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+                    wrapped.AddRange(WrapByWidth(raw));
+
+                for (int start = 0; start < wrapped.Count; start += MaxLinesPerMessage)
                 {
-                    Type = deviceId > 0 ? EChatType.DeviceChat : EChatType.NormalChat,
-                    DeviceId = deviceId,
-                    Text = text,
-                    PlayerId = player.PublicInfo?.PlayerId ?? 0,
-                    Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
-                    IsDead = false
-                });
+                    int count = wrapped.Count - start < MaxLinesPerMessage
+                        ? wrapped.Count - start
+                        : MaxLinesPerMessage;
+                    string chunk = string.Join("\n", wrapped.GetRange(start, count));
+
+                    player.Session.Send(new S_CHAT_MESSAGE
+                    {
+                        Type = deviceId > 0 ? EChatType.DeviceChat : EChatType.NormalChat,
+                        DeviceId = deviceId,
+                        Text = chunk,
+                        PlayerId = player.PublicInfo?.PlayerId ?? 0,
+                        Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+                        IsDead = false
+                    });
+                }
             }
             catch (global::System.Exception ex)
             {

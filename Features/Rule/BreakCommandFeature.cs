@@ -670,12 +670,49 @@ namespace HideAndSeek.Features.Rule
         /// <summary>游戏内聊天框一次最多显示 3 行，超出的部分必须分段发送。</summary>
         private const int MaxLinesPerMessage = 3;
 
+        /// <summary>
+        /// 单行最大显示宽度（半角单位；中文按 2 计）。
+        /// 聊天框一行放不下会自动折行，那样实际渲染行数就超过 3 行了 ——
+        /// 所以发送前必须自己按宽度再折一次。
+        /// </summary>
+        private const int MaxWidthPerLine = 28;
+
+        /// <summary>按显示宽度把一个逻辑行切成不超过 MaxWidthPerLine 的若干行。</summary>
+        internal static List<string> WrapByWidth(string line)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(line)) { result.Add(""); return result; }
+
+            var sb = new global::System.Text.StringBuilder();
+            int w = 0;
+            foreach (char c in line)
+            {
+                int cw = c > 0x7F ? 2 : 1;
+                if (w + cw > MaxWidthPerLine && sb.Length > 0)
+                {
+                    result.Add(sb.ToString());
+                    sb.Clear();
+                    w = 0;
+                }
+                sb.Append(c);
+                w += cw;
+            }
+            if (sb.Length > 0) result.Add(sb.ToString());
+            return result;
+        }
+
         private static void Reply(GamePlayer player, int deviceId, string text)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
-            string[] lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            // 先按宽度折行，再按 3 行分段 —— 否则一行过长会被客户端自动折行，
+            // 实际渲染行数超出 3 行，超出部分直接被截掉。
+            var wrapped = new List<string>();
+            string[] raw = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            foreach (var one in raw)
+                wrapped.AddRange(WrapByWidth(one));
+            string[] lines = wrapped.ToArray();
 
             for (int start = 0; start < lines.Length; start += MaxLinesPerMessage)
             {

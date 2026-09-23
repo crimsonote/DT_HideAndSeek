@@ -36,7 +36,7 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "预警期间在落点播一个世界特效（闪光），让目标看清黑方将从哪里出现。")]
         public static ConfigEntry<bool> ShowLandingVfx;
 
-        [ConfigField("黑方即将传送到标记位置！",
+        [ConfigField("黑方即将传送到标记处",
             "预警时发给目标的一行文字（出现在其聊天栏）。留空则不发。")]
         public static ConfigEntry<string> LandingText;
         [ConfigField(300f, "目标在预警期间移动超过这个距离，就取消本次传送（0 = 不取消）。",
