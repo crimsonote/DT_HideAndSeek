@@ -180,7 +180,7 @@ namespace HideAndSeek.Features.Broadcast
                         {
                             var p = GameRoom.Instance?.Players?.Find(x => x?.PublicInfo?.PlayerId == pid);
                             if (p != null)
-                                NoticeToWrapped(p, joinText);
+                                NoticeToWrapped(p, joinText, MessageIntervalMs?.Value ?? 2500);
                         }
                     });
                 }
@@ -268,7 +268,7 @@ namespace HideAndSeek.Features.Broadcast
         /// </summary>
         private const int MaxLinesPerMessage = 3;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
-        private static void NoticeToWrapped(GamePlayer player, string text)
+        private static void NoticeToWrapped(GamePlayer player, string text, int intervalMs = 0)
         {
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
@@ -292,11 +292,10 @@ namespace HideAndSeek.Features.Broadcast
                 ? EChatType.NormalChat
                 : EChatType.SecretChat;
 
-            // 间隔只用于**大厅引导**（进房介绍 / 回大厅补发）—— 那时玩家在等待，逐条出现便于阅读。
-            // 局内播报（开局提示等）不能拖：走 SecretChat 时一律立即发出。
-            int interval = (ct == EChatType.NormalChat)
-                ? (MessageIntervalMs?.Value ?? 2500)
-                : 0;
+            // 是否分条慢发由**调用方**决定（见 EnterHook / StartLobby）：
+            // 大厅引导传 MessageIntervalMs，局内播报不传（0 = 立即发完）。
+            // 通用函数不猜调用者意图。
+            int interval = intervalMs;
             int index = 0;
             for (int i = 0; i < lines.Count; i += MaxLinesPerMessage)
             {
@@ -370,7 +369,7 @@ namespace HideAndSeek.Features.Broadcast
                 if (__instance.State == EGameState.Lobby)
                 {
                     int delay = WelcomeDelayMs?.Value ?? 10000;
-                    __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeToWrapped(player, text));
+                    __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeToWrapped(player, text, MessageIntervalMs?.Value ?? 2500));
                 }
                 else
                 {
@@ -420,7 +419,7 @@ namespace HideAndSeek.Features.Broadcast
                 else
                     body = StartBodyWhite?.Value;
 
-                NoticeToWrapped(player, Titled(TextService.Format(body)));
+                NoticeToWrapped(player, Titled(TextService.Format(body)), 0);   // 局内：立即发出，不拖
             }
         }
 
