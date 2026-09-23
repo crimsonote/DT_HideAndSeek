@@ -393,11 +393,14 @@ namespace HideAndSeek.Features.Rule
             int idx;
             switch (dir)
             {
-                case "vision": idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirVision; break;
-                case "speed":  idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirSpeed; break;
-                case "task":   idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirTask; break;
+                case "v": case "vision": case "视野":
+                    idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirVision; break;
+                case "s": case "speed": case "移速":
+                    idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirSpeed; break;
+                case "t": case "task": case "任务":
+                    idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirTask; break;
                 default:
-                    Reply(player, deviceId, "用法：/credit [vision|speed|task]");
+                    Reply(player, deviceId, "用法 /credit v|s|t");
                     return;
             }
 

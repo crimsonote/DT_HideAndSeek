@@ -168,13 +168,35 @@ namespace HideAndSeek.Features.Combat
             }
         }
 
+        /// <summary>当前额度与三项加成概览。</summary>
         internal static string Status()
         {
             float cost = (PoolTotal?.Value ?? 100f) * (CostPercentPerLevel?.Value ?? 18f) / 100f;
-            return $"黑学分 {_credits:F1}（每级消耗 {cost:F1}）\n" +
-                   $"视野 {Levels[DirVision]}/{MaxLevelPerItem?.Value}｜" +
-                   $"移速 {Levels[DirSpeed]}/{MaxLevelPerItem?.Value}｜" +
-                   $"任务 {Levels[DirTask]}/{MaxLevelPerItem?.Value}";
+            int max = MaxLevelPerItem?.Value ?? 3;
+
+            float vK = 1f + (VisionBonusPerLevel?.Value ?? 0.5f) * Levels[DirVision];
+            float sB = (SpeedBonusPerLevel?.Value ?? 0.1f) * Levels[DirSpeed];
+            float tB = (TaskBonusPerLevel?.Value ?? 10f) * Levels[DirTask];
+
+            var sb = new global::System.Text.StringBuilder();
+            sb.Append("学分 ").Append(_credits.ToString("F1"))
+              .Append(" 每级").Append(cost.ToString("F0"));
+            sb.Append('\n').Append("视野 ").Append(Levels[DirVision]).Append('/').Append(max)
+              .Append(" x").Append(vK.ToString("F1"));
+            sb.Append(" 移速 ").Append(Levels[DirSpeed]).Append('/').Append(max)
+              .Append(" +").Append(sB.ToString("F1"));
+            sb.Append('\n').Append("任务 ").Append(Levels[DirTask]).Append('/').Append(max)
+              .Append(" +").Append(tB.ToString("F0"))
+              .Append("  用法 /credit v|s|t");
+            return sb.ToString();
+        }
+
+        /// <summary>调试用：直接增减学分（不参与游戏逻辑，仅测试）。</summary>
+        internal static void AddCredits(float amount)
+        {
+            _credits += amount;
+            if (_credits < 0f)
+                _credits = 0f;
         }
 
         /// <summary>把三项等级套用到既有功能的配置项上（先还原基础值，避免叠加）。</summary>

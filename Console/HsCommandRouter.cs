@@ -456,7 +456,7 @@ namespace HideAndSeek.Console
                 return Error("不在房间中");
 
             if (args.Length == 0)
-                return Error("用法: hs_debug <black|exec|list> ...");
+                return Error("用法: hs_debug <black|exec|list|credit> ...");
 
             string sub = args[0].ToLowerInvariant();
 
@@ -484,7 +484,19 @@ namespace HideAndSeek.Console
             if (target == null)
                 return Error($"找不到玩家 #{pid}（用 hs_debug list 查看）");
 
+            if (sub == "credit")
+            {
+                // hs_debug credit <数量>   直接增减黑学分（调试用）
+                if (args.Length < 2 || !float.TryParse(args[1], out float amount))
+                    return Error("用法: hs_debug credit <数量>（可为负）");
+
+                HideAndSeek.Features.Combat.KillUpgradeFeature.AddCredits(amount);
+                return "{\"ok\":true,\"credit\":" +
+                       HideAndSeek.Features.Combat.KillUpgradeFeature.Credits.ToString("F1") + "}";
+            }
+
             if (sub == "black")
+
             {
                 target.Color = EPlayerColor.Black;
                 return $"{{\"ok\":true,\"player\":{pid},\"color\":\"{target.Color}\"}}";
