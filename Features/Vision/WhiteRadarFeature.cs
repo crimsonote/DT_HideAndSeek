@@ -189,7 +189,7 @@ namespace HideAndSeek.Features.Vision
                 {
                     Type = pinId,
                     Pos = pos ?? new PosInfo(),          // (0,0) = 删除哨兵
-                    IsForce = false
+                    IsForce = true                      // SetLocalPosition：换算与 SetTargetPosition 完全相同（Util.GetMinimapPosition），且无 0.1s 补间 → 不会飘
                 });
             }
             catch (global::System.Exception ex)

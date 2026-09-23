@@ -81,8 +81,14 @@ namespace HideAndSeek.Features.Rule
                 try
                 {
                     var msg = packet?.Pkt as C_CHAT_MESSAGE;
-                    if (msg == null || msg.Type != EChatType.NormalChat)
-                        return true;                     // 只管公开聊天；密聊交给 BreakCommandFeature
+                    if (msg == null)
+                        return true;
+
+                    // 诊断：确认白方到底发的是哪种 Type（NormalChat / DeviceChat）
+                    Plugin.Log.LogInfo($"[HS] WhiteCommand：收到聊天 Type={msg.Type} Text=\"{msg.Text}\"");
+
+                    if (msg.Type != EChatType.NormalChat && msg.Type != EChatType.DeviceChat)
+                        return true;                     // 只管公开/设备聊天；密聊交给 BreakCommandFeature
 
                     string text = (msg.Text ?? "").Trim();
                     if (string.IsNullOrEmpty(text) || text[0] != '/')
