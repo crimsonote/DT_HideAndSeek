@@ -320,18 +320,32 @@ namespace HideAndSeek.Features.Rule
             if (room?.Players == null)
                 return "当前没有玩家";
 
-            var sb = new global::System.Text.StringBuilder("玩家列表（/tp 可用 ID）：");
+            // 一行并排两个：聊天框每行字符有限，而昵称假定不超过 12 字母 / 6 汉字，
+            // 两个并排正好用满一行，条目多时能省一半行数。
+            var items = new global::System.Collections.Generic.List<string>();
             foreach (var p in room.Players)
             {
                 if (p?.PublicInfo == null)
                     continue;
 
-                sb.Append('\n');
-                sb.Append('#').Append(p.PublicInfo.PlayerId);
-                sb.Append(' ').Append(p.Name ?? "?");
-                if (p.IsDummy) sb.Append(" [假人]");
-                if (p.IsSpectator) sb.Append(" [观战]");
-                else if (!p.IsAlive) sb.Append(" [已死亡]");
+                var one = new global::System.Text.StringBuilder();
+                one.Append('#').Append(p.PublicInfo.PlayerId);
+                one.Append(' ').Append(p.Name ?? "?");
+                if (p.IsDummy) one.Append("[假人]");
+                if (p.IsSpectator) one.Append("[观战]");
+                else if (!p.IsAlive) one.Append("[死亡]");
+
+                items.Add(one.ToString());
+            }
+
+            // 一行并排两个：聊天框每行字符有限，昵称假定不超过 12 字母 / 6 汉字，
+            // 两个并排正好用满一行，条目多时省一半行数。
+            var sb = new global::System.Text.StringBuilder("玩家列表（/tp 可用 ID）：");
+            for (int i = 0; i < items.Count; i += 2)
+            {
+                sb.Append('\n').Append(items[i]);
+                if (i + 1 < items.Count)
+                    sb.Append("  |  ").Append(items[i + 1]);
             }
 
             return sb.ToString();

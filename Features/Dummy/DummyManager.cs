@@ -255,6 +255,10 @@ namespace HideAndSeek.Features.Dummy
         /// </summary>
         public static void ApplyPickedCharacters(GameRoom room)
         {
+            // 诊断：确认本方法是否真的被 PickCharacterTick 调到（此前日志里没有任何
+            //「已选择随机」输出，需要先排除"根本没进来"这一种可能）
+            Plugin.Log.LogInfo($"[HS] Dummy：选角回调 State={room?.State} 待处理={DesiredCharacter.Count}");
+
             if (room == null || DesiredCharacter.Count == 0)
                 return;
 
