@@ -54,6 +54,15 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(900f, "黑美幸只标记该距离之外的人（0 = 全部标记）。",
             Min = 0f, Max = 3000f)]
         public static ConfigEntry<float> BlackPinRange;
+
+        /// <summary>解析实际生效的判据距离。&lt;0 表示跟随视野配置（热更新）。</summary>
+        private static float ResolveBlackPinRange()
+        {
+            float v = BlackPinRange?.Value ?? -1f;
+            if (v < 0f)
+                v = AoiCullingFeature.ExitRange?.Value ?? 900f;   // 跟随视野配置
+            return v;
+        }
         [ConfigField(true, "对美幸启用该被动。")]
 
         public static ConfigEntry<bool> EnableForMiyuki;
@@ -257,7 +266,7 @@ namespace HideAndSeek.Features.Vision
                 // 再发 pin 会在那些人身上多叠一个白色方块。
                 if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
                 {
-                    float __range = BlackPinRange?.Value ?? 900f;   // 0 = 不过滤，全部发 pin
+                    float __range = ResolveBlackPinRange();   // <0 跟随视野；0 不过滤
                     if (__range > 0f
                         && Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __range * __range)
                         continue;
@@ -294,7 +303,7 @@ namespace HideAndSeek.Features.Vision
                 if (visible)
                 if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
                 {
-                    float __range = BlackPinRange?.Value ?? 900f;   // 0 = 不过滤，全部发 pin
+                    float __range = ResolveBlackPinRange();   // <0 跟随视野；0 不过滤
                     if (__range > 0f
                         && Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __range * __range)
                         continue;
