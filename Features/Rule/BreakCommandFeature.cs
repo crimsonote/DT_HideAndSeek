@@ -44,15 +44,15 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "启用黑方密聊命令通道。关闭后以 / 开头的密聊也会被当作普通聊天。")]
         public static ConfigEntry<bool> AllowBreakBySecretChat;
 
-        [ConfigField("break = -> Disconnect ; cd=30",
+        [ConfigField("break = fusebox -> Disconnect ; cd=0",
             "命令注册表。每条一行，格式：\n" +
             "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数>\n" +
-            "条件可留空（= 无条件）；可用 time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
+            "条件可留空（= 无条件）；可用 fusebox（地图上有可拆电箱）\n" +
+            "      time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
             "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairThreshold/MinProgress），\n" +
             "      或特殊动作 Disconnect（拆离自己最近的可拆电箱）。多个动作用 , 连接。\n" +
             "cd / uses 可省略，0 或省略 = 不限。行首 # 为注释。\n" +
-            "例：break = -> Disconnect ; cd=30\n" +
-            "    boost = kills>=2 & time<=120 -> SpeedMul=1.5 ; cd=60 ; uses=1")]
+            "默认的 fusebox 条件已隐含原版派发节奏（断电归零后 60 秒才重新派发目标），通常不必再设 cd。")]
         public static ConfigEntry<string> Commands;
 
         private sealed class CommandDef
