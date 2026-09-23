@@ -87,13 +87,16 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(true, "有玩家进入房间时，单独向他播报玩法规则。")]
         public static ConfigEntry<bool> WelcomeOnJoin;
 
-        [ConfigField(2500, "进房介绍的延迟毫秒数（等客户端就绪）。", Min = 0f, Max = 30000f)]
+        [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> WelcomeDelayMs;
 
         [ConfigField(3200, "开局提示的延迟毫秒数（须晚于自动发刀，才能分出黑方）。", Min = 0f, Max = 30000f)]
         public static ConfigEntry<int> StartDelayMs;
 
         /// <summary>对局期间改动过、待回大厅播报的规则（以文本自身为键，天然去重）。</summary>
+        /// <summary>对局中加入（旁观）的人，等回到大厅再补发进房介绍。</summary>
+        private static readonly HashSet<int> PendingWelcome = new HashSet<int>();
+
         private static readonly Dictionary<string, string> PendingRuleChanges = new Dictionary<string, string>();
         private static bool Ready => !ModeRuntime.Bypass && Enabled != null && Enabled.Value;
 
@@ -162,6 +165,24 @@ namespace HideAndSeek.Features.Broadcast
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
+                // 补发进房介绍：给"对局中以旁观身份加入"的人。
+                // 回大厅后客户端又要在场景间切换，所以仍留一点延迟。
+                if (PendingWelcome.Count > 0)
+                {
+                    string joinText = JoinText();
+                    var ids = new List<int>(PendingWelcome);
+                    PendingWelcome.Clear();
+                    __instance.PushAfter(1000, delegate
+                    {
+                        foreach (int pid in ids)
+                        {
+                            var p = GameRoom.Instance?.Players?.Find(x => x?.PublicInfo?.PlayerId == pid);
+                            if (p != null)
+                                NoticeTo(p, joinText);
+                        }
+                    });
+                }
+
                 if (PendingRuleChanges.Count == 0)
                     return;
 
@@ -238,8 +259,23 @@ namespace HideAndSeek.Features.Broadcast
                 if (string.IsNullOrEmpty(text))
                     return;
 
-                int delay = WelcomeDelayMs?.Value ?? 2500;
-                __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeTo(player, text));
+                // 大厅里进房 → 延迟发送（等客户端把场景加载完）
+                if (__instance.State == EGameState.Lobby)
+                {
+                    int delay = WelcomeDelayMs?.Value ?? 10000;
+                    __instance.PushAfter(delay < 0 ? 0 : delay, () => NoticeTo(player, text));
+                }
+                else
+                {
+                    // 对局进行中以旁观身份加入：此刻发介绍没有显示链路（客户端弹泡要求 Survive，
+                    // 聊天栏在旁观界面也不保证可见），记下来等回到大厅再补发。
+                    int pid = player.PublicInfo?.PlayerId ?? 0;
+                    if (pid != 0)
+                    {
+                        PendingWelcome.Add(pid);
+                        Plugin.Log.LogInfo($"[HS] Broadcast：#{pid} 在对局中加入，进房介绍延后到回大厅补发。");
+                    }
+                }
             }
         }
 

@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 3;
+        private const int CurrentVersion = 4;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,16 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v3 → v4
+            if (from < 4)
+            {
+                // WelcomeDelayMs 旧默认 2500 太短：客户端场景未加载完就发送会丢消息，
+                // 用户实测要求改到 10 秒。
+                EnsureInt(config, log, "Broadcast", "WelcomeDelayMs", 10000);
+            }
+
             // v2 → v3
+
             if (from < 3)
             {
                 // ShowWarningArrow 旧默认值 true 会在目标身上留一个 CharacterArrow 图标
