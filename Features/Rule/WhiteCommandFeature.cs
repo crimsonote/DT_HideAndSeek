@@ -65,7 +65,10 @@ namespace HideAndSeek.Features.Rule
         private const float CdNoticeInterval = 10f;
 
         private const string WhiteHelp =
-            "白方命令：/radar 开启全图瞭望、/help 查看本列表";
+            "【捉迷藏 · 白方命令】\n" +
+            "/radar — 开启全图扫描，15 秒内地图标记所有存活玩家。\n" +
+            "        条件：存活且本局剩余次数 > 0。每人每局 2 次，CD 75s\n" +
+            "/help — 显示本列表";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
