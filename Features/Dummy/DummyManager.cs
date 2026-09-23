@@ -268,6 +268,7 @@ namespace HideAndSeek.Features.Dummy
                 return;
 
             var handled = new List<int>();
+            var warned = new HashSet<int>();
 
             foreach (var kv in DesiredCharacter)
             {
@@ -277,33 +278,45 @@ namespace HideAndSeek.Features.Dummy
                 var player = room.Players.FirstOrDefault(p =>
                     p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
 
-                // 人还没进来就先搁置，等他真的进房再处理
                 if (player == null)
                     continue;
-
-                handled.Add(id);
 
                 try
                 {
                     room.PickCharacter(player, chara);
 
-                    // -2 是游戏的「随机」选项，它**不会**改动 player.CharacterId
-                    // （实际角色要等所有人选完后才分配），所以不能拿它判定成败。
+                    // PickCharacter 对不满足前置（phase not ready / 超时 / 角色被占）
+                    // 是**静默 return** 的，必须自己判定是否真的生效 ——
+                    // 这里曾把"调用过一次"当成成功就直接出队（f6823c7），
+                    // 结果第一次失败后再也不重试，选角永远不生效。
+                    bool ok;
                     if (chara == -2)
-                        Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选择「随机」，交由游戏在选角结束后分配。");
-                    else if (player.CharacterId == chara)
-                        Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
+                    {
+                        // -2（游戏内置随机）不会改动 CharacterId，无法用角色值判定；
+                        // 只要未超过 40 秒时限，PickCharacter 的随机分支就会登记成功。
+                        ok = (TimeManager.Instance?.StopWatch ?? 40) < 40;
+                        if (ok)
+                            Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选择「随机」，交由游戏在选角结束后分配。");
+                    }
                     else
-                        Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角 {chara} 未生效（State={room.State}，当前角色={player.CharacterId}）。");
+                    {
+                        ok = player.CharacterId == chara;
+                        if (ok)
+                            Plugin.Log.LogInfo($"[HS] Dummy：假人 #{id} 已选角 {chara}。");
+                        else if (warned.Add(id))
+                            Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角 {chara} 尚未生效（当前 {player.CharacterId}），下个 tick 重试。");
+                    }
+
+                    if (ok)
+                        handled.Add(id);          // 只有真正成功才出队
                 }
                 catch (global::System.Exception ex)
                 {
-                    Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角失败 — {ex.Message}");
+                    if (warned.Add(id))
+                        Plugin.Log.LogWarning($"[HS] Dummy：假人 #{id} 选角异常 — {ex.Message}");
                 }
             }
 
-            // 处理过的一次即出队：PickCharacter 对重复调用是幂等的，重试没有意义，
-            // 只会让日志每秒重复一条，把控制台里的命令返回值冲掉。
             foreach (int id in handled)
                 DesiredCharacter.Remove(id);
         }
