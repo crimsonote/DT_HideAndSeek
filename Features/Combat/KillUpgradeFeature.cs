@@ -288,11 +288,22 @@ namespace HideAndSeek.Features.Combat
         {
             try
             {
+                string body = "【黑学分】" + text;
+
+                // 与 BroadcastFeature.Notice 一致：SecretChat 进发信机记录 + 弹泡，
+                // NormalChat 进聊天栏长期可回看（升级会通知白方，需要能事后查）。
                 room?.Broadcast(new S_CHAT_MESSAGE
                 {
                     Type = EChatType.SecretChat,
-                    Text = "【黑学分】" + text,
+                    Text = body,
                     DeviceId = 999999,
+                    Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
+                });
+                room?.Broadcast(new S_CHAT_MESSAGE
+                {
+                    Type = EChatType.NormalChat,
+                    Text = body,
+                    PlayerId = 0,
                     Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
                 });
             }

@@ -112,7 +112,18 @@ namespace HideAndSeek.Features.Broadcast
             if (room == null || string.IsNullOrEmpty(text))
                 return;
 
+            // 双通道：
+            //   SecretChat → 进 SecretLog（发信机可回看）+ 触发弹泡，但弹泡一闪而过
+            //   NormalChat → 进聊天栏，长期可滚动回看。死亡/升级这类"需要事后查"的信息，
+            //                只有弹泡是不够的（用户反馈：要在那个位置长期记录）。
             room.Broadcast(BuildChat(text));
+            room.Broadcast(new S_CHAT_MESSAGE
+            {
+                Type = EChatType.NormalChat,
+                Text = text,
+                PlayerId = 0,
+                Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
+            });
         }
 
         /// <summary>

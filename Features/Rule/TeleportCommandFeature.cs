@@ -211,6 +211,13 @@ namespace HideAndSeek.Features.Rule
             // 注意：SendSystemSFX(type, player) 会把效果挂在**玩家身上** —— 那不是落点指示。
             // 落点相关的视听提示一律走 BroadcastWorld*（带 Pos 的那几个重载）。
             string sfxName = LandingSfxType?.Value;
+
+            // 旧 .cfg 里可能仍是 TeleportSfx；按需求统一用 WarningSfx（原版警告音）。
+            if (!string.IsNullOrEmpty(sfxName)
+                && sfxName.Equals("TeleportSfx", global::System.StringComparison.OrdinalIgnoreCase))
+            {
+                sfxName = "WarningSfx";
+            }
             if (!string.IsNullOrEmpty(sfxName)
                 && !sfxName.Equals("none", global::System.StringComparison.OrdinalIgnoreCase))
             {
