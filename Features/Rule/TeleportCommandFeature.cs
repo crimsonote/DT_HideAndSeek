@@ -31,6 +31,8 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(3000, "预警到落地之间的毫秒数（留给目标的逃跑时间）。", Min = 0f, Max = 15000f)]
         public static ConfigEntry<int> WarnDelayMs;
 
+        [ConfigField(false, "传送落地时播放原版的 TeleportVfx（黑洞状特效）。默认关闭 —— 观感突兀。")]
+        public static ConfigEntry<bool> ShowTeleportVfx;
         [ConfigField(true, "预警期间在落点播一个世界特效（闪光），让目标看清黑方将从哪里出现。")]
         public static ConfigEntry<bool> ShowLandingVfx;
 
@@ -269,7 +271,8 @@ namespace HideAndSeek.Features.Rule
 
                 caster.Move(dest, force: true);
 
-                room.BroadcastWorldVFX(EEffectType.TeleportVfx, caster.PublicInfo?.PlayerId ?? 0, caster.PublicInfo?.Pos);
+                if (ShowTeleportVfx != null && ShowTeleportVfx.Value)
+                    room.BroadcastWorldVFX(EEffectType.TeleportVfx, caster.PublicInfo?.PlayerId ?? 0, caster.PublicInfo?.Pos);
 
                 if (showArrow && arrowPos != null && target.Session != null)
                     target.Session.Send(new S_REMOVE_ARROW { Type = EArrowType.CharacterArrow, Pos = arrowPos });

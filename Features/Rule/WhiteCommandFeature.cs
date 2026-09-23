@@ -246,15 +246,17 @@ namespace HideAndSeek.Features.Rule
                 var curProp = AccessTools.Property(mmType, "CurrentPoint");
                 if (curProp == null) { why = "读不到任务进度字段"; return false; }
 
-                int cur = (int)curProp.GetValue(inst);
-                if (cur <= 0) { why = "当前任务进度为 0"; return false; }
+                // CurrentPoint 是 **float** —— 之前按 int 拆箱会抛 InvalidCastException，
+// 被 catch 吞成"扣进度失败"。这里统一走 Convert.ToSingle。
+                float cur = global::System.Convert.ToSingle(curProp.GetValue(inst));
+                if (cur <= 0f) { why = "当前任务进度为 0"; return false; }
 
-                int cost = (int)(cur * percent / 100f);
-                if (cost <= 0) cost = 1;
-                if (cur < cost) { why = $"进度不足（现有 {cur}，需要 {cost}）"; return false; }
+                float cost = cur * percent / 100f;
+                if (cost < 1f) cost = 1f;
+                if (cur < cost) { why = $"进度不足（现有 {cur:F0}，需要 {cost:F0}）"; return false; }
 
                 curProp.SetValue(inst, cur - cost);
-                Plugin.Log.LogInfo($"[HS] WhiteCommand：消耗任务进度 {cost}（{cur} → {cur - cost}）。");
+                Plugin.Log.LogInfo($"[HS] WhiteCommand：消耗任务进度 {cost:F0}（{cur:F0} → {cur - cost:F0}）。");
                 return true;
             }
             catch (global::System.Exception ex)
