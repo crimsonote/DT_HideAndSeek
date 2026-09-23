@@ -244,6 +244,7 @@ namespace HideAndSeek.Features.Rule
             }
 
             Uses[pid] = used + 1;
+            LastUse[pid] = now;          // ← 此前漏写，导致 CD 判据永远拿不到上次时间、次次放行
 
             // 复用雷达本体：把限时设成本次要求的时长，再开启
             if (WhiteRadarFeature.DurationSeconds != null)
@@ -263,6 +264,60 @@ namespace HideAndSeek.Features.Rule
         /// 那种情况下回执若走 NormalChat，设备界面根本不显示，表现就是"命令没反应"。
         /// </summary>
         /// <summary>扣减任务进度。返回 false 表示不足或读不到进度。</summary>
+        /// <summary>
+        /// 把当前任务进度广播给全房，驱动客户端进度条。
+        /// 正确的包是 S_MISSION_STATE（客户端 Handle_S_MISSION_STATE → MissionMirror.Set）。
+        /// 它会**整体覆盖**客户端镜像，所以能读到的任务类型列表要一并带上。
+        /// </summary>
+        private static void BroadcastMissionState()
+        {
+            try
+            {
+                var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
+                var inst = mmType == null ? null : AccessTools.PropertyGetter(mmType, "Instance")?.Invoke(null, null);
+                if (inst == null)
+                    return;
+
+                var curProp = AccessTools.Property(mmType, "CurrentPoint");
+                var goalProp = AccessTools.Property(mmType, "GoalPoint");
+                if (curProp == null || goalProp == null)
+                {
+                    Plugin.Log.LogWarning("[HS] WhiteCommand：找不到任务进度字段，跳过广播。");
+                    return;
+                }
+
+                var pkt = new Protocol.S_MISSION_STATE
+                {
+                    CurrentPoint = global::System.Convert.ToSingle(curProp.GetValue(inst)),
+                    GoalPoint = global::System.Convert.ToSingle(goalProp.GetValue(inst))
+                };
+
+                GameRoom.Instance?.Broadcast(pkt);
+                Plugin.Log.LogInfo($"[HS] WhiteCommand：已广播任务进度 {pkt.CurrentPoint:F0}/{pkt.GoalPoint:F0}。");
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] WhiteCommand：广播任务进度失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>让所有黑方立刻按新的移速倍率重算速度（否则"僵住"不会立即体现）。</summary>
+        private static void RefreshAllBlackSpeed(GameRoom room)
+        {
+            try
+            {
+                foreach (var p in room.Players)
+                {
+                    if (p?.PublicInfo == null || p.Color == EPlayerColor.White)
+                        continue;
+                    p.BuffComponent?.RefreshSpeed();
+                }
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] WhiteCommand：刷新黑方速度失败 — {ex.Message}");
+            }
+        }
         private static bool TrySpendProgress(GameRoom room, float percent, out string why)
         {
             why = null;
@@ -285,6 +340,10 @@ namespace HideAndSeek.Features.Rule
                 if (cur < cost) { why = $"进度不足（现有 {cur:F0}，需要 {cost:F0}）"; return false; }
 
                 curProp.SetValue(inst, cur - cost);
+
+                // 只改服务端字段，客户端的任务进度条不会动 —— 必须广播一次任务状态。
+                BroadcastMissionState();
+
                 Plugin.Log.LogInfo($"[HS] WhiteCommand：消耗任务进度 {cost:F0}（{cur:F0} → {cur - cost:F0}）。");
                 return true;
             }
@@ -330,6 +389,10 @@ namespace HideAndSeek.Features.Rule
                 if (_savedSpeed < 0f)
                     _savedSpeed = HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value;
                 HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value = 0f;
+
+                // 改配置只是改了服务端数值；客户端速度由 BuffComponent.RefreshSpeed 推出，
+                // 不主动推一次的话"僵住"不会立刻体现。
+                RefreshAllBlackSpeed(room);
             }
 
             _stasisUntil = now + (StasisSeconds?.Value ?? 5);

@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 2;
+        private const int CurrentVersion = 3;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,17 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v2 → v3
+            if (from < 3)
+            {
+                // ShowWarningArrow 旧默认值 true 会在目标身上留一个 CharacterArrow 图标
+                // （用户描述为"黑洞角色的图标"），观感突兀且会与 Kaho 的监视箭头抢槽位。
+                // 新默认是 false，这里把老配置一并对齐。
+                FixBool(config, log, "TeleportCommand", "ShowWarningArrow", false);
+            }
+
             // v1 → v2
+
             if (from < 2)
             {
                 // SkipDummies 旧默认值 true 会让雷达在"只有假人"的测试房里完全无效。
