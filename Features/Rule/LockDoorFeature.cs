@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Reflection;
 using BepInEx.Configuration;
 using HarmonyLib;
 using Protocol;
@@ -11,25 +12,24 @@ using GamePlayer = Server.Game.Player;
 namespace HideAndSeek.Features.Rule
 {
     /// <summary>
-    /// 锁门：锁住以某点为圆心、给定半径内的所有门；黑方按 E 可秒解。
+    /// 锁门：锁住半径内所有门。白方看到的是**原生锁定**（音效/进度条/按 E 无反应），
+    /// 黑方看到的是**只是关着的门**，于是他能正常按 E —— 服务端收到包后替他秒解并开门。
     ///
-    /// 为什么不用原生锁定态（State = 2）：
+    /// 为什么要伪造状态：
     ///   客户端 Door.Interact（:6275-6286）在 StateList[0] == 2 时只播 LockedDoorSfx 就 return，
-    ///   **不下发任何包**；特殊键路径同样被封（:6318-6321 返回空 → :8116 不发包）。
-    ///   于是原生锁定期间客户端根本不给服务端发包，"黑方按 E 秒解"无法实现。
+    ///   **不下发任何包**。所以真实锁定态下黑方根本无法"按 E 秒解"。
+    ///   而 Device.BroadcastState（:163469）发的是完整 DeviceInfo，客户端 Modify 会覆盖本地状态 ——
+    ///   于是可以对该门**逐人**发送不同状态：白方收真实的 2，黑方收伪造的 1。
     ///
-    /// 因此改用服务端隐形锁：线上状态始终保持 0/1，让客户端照常发 C_INTERACT_DOOR，
-    /// 闸门放在服务端的 Door.Interact Prefix：
-    ///   · 锁中 + 黑方按 E → 解除并放行（门随即打开）
-    ///   · 锁中 + 其他人按 E → 吞掉（门保持关闭）
-    /// 代价是失去原生 locked 视觉与进度条，用 LockedDoorSfx 音效补偿。
+    /// 副作用（有意保留）：TickDoor 每秒广播锁定进度，黑方每收到一次就会闪一下锁定视觉。
+    ///   这被当作"门确实被锁过"的提示接受，且不影响他按键。
     ///
-    /// 原版锁门的操作者是 Dark（Door.HandleEvent :162567 硬性要求），
-    /// 而本模块的 NoMasterMind 取消了黑幕分配 —— 这个命令正好补上缺口，故判定用 Black。
+    /// 原版锁门的操作者是 Dark（Door.HandleEvent :162567 硬性要求），而本模块的 NoMasterMind
+    /// 取消了黑幕分配 —— 这个命令正好补上缺口，故判定用 Black。
     /// </summary>
     [PatchFeature(
         section: "LockDoor",
-        description: "锁门命令：锁定半径内所有门，黑方按 E 秒解（服务端隐形锁）。",
+        description: "锁门命令：白方看到原生锁定，黑方看到只是关着（按 E 可秒解）。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class LockDoorFeature
@@ -37,15 +37,17 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(0.3f, "锁定半径 = 地图短边 × 此比例。0.25 ≈ 1/4 地图，0.33 ≈ 1/3。", Min = 0.05f, Max = 1f)]
         public static ConfigEntry<float> RadiusRatio;
 
-        [ConfigField(10, "自定义锁的持续秒数（到点自动解锁）。", Min = 1f, Max = 300f)]
+        [ConfigField(10, "锁定持续秒数（写入门自身的锁定总时长，由原版 TickDoor 计时解锁）。", Min = 1f, Max = 300f)]
         public static ConfigEntry<int> LockSeconds;
 
-        /// <summary>当前处于自定义锁的门 ID。</summary>
+        /// <summary>当前处于锁定的门 ID。仅用于判断"要不要给黑方伪造状态"。</summary>
         private static readonly HashSet<int> LockedDoors = new HashSet<int>();
+
+        private static MethodInfo _tickDoor;
 
         internal static int LockedCount => LockedDoors.Count;
 
-        /// <summary>按配置算出锁定半径（地图短边 × 比例）。取不到地图数据时退化为 1000。</summary>
+        /// <summary>锁定半径（地图短边 × 比例）。取不到地图数据时退化为 1000。</summary>
         internal static float GetRadius()
         {
             var map = Managers.Data?.MapData;
@@ -56,11 +58,10 @@ namespace HideAndSeek.Features.Rule
             float h = map.MapSize.Y * 224f;
             float shortSide = w < h ? w : h;
 
-            float ratio = RadiusRatio?.Value ?? 0.3f;
-            return shortSide * ratio;
+            return shortSide * (RadiusRatio?.Value ?? 0.3f);
         }
 
-        /// <summary>锁住以 center 为圆心、radius 为半径内的所有门，返回锁住的数量。</summary>
+        /// <summary>锁住以 center 为圆心、radius 内的所有门，返回锁住的数量。</summary>
         internal static int LockAround(PosInfo center, float radius, GamePlayer byPlayer)
         {
             if (center == null)
@@ -70,17 +71,18 @@ namespace HideAndSeek.Features.Rule
             if (manager?.Objects == null)
                 return 0;
 
+            int seconds = LockSeconds?.Value ?? 10;
             float r2 = radius * radius;
             int count = 0;
 
             foreach (var device in manager.Objects)
             {
                 if (!(device is GameDoor door))
-                    continue;                        // Objects 里还有电箱/尸体等其它设备
+                    continue;
 
                 var info = door.DeviceInfo;
                 if (info?.StateList == null || info.StateList.Count < 3)
-                    continue;                        // Door 构造保证 3 项；防御异常数据
+                    continue;
 
                 var pos = info.Pos;
                 if (pos == null)
@@ -91,38 +93,89 @@ namespace HideAndSeek.Features.Rule
                 if (dx * dx + dy * dy > r2)
                     continue;
 
-                door.CloseDoor();                    // State = 1：客户端 collider 生效，挡住所有人
+                // 先登记再 LockDoor：LockDoor 会触发 BroadcastState，
+                // 我们的 Postfix 靠 LockedDoors 判断是否要给黑方伪造状态
                 LockedDoors.Add(door.ID);
+
+                info.StateList[1] = seconds;         // 锁定总时长
+                info.StateList[2] = 0;               // 已锁定进度归零
+                door.LockDoor();                     // State = 2（白方看到原生锁定）
+
+                // LockDoor 不会启动计时，反射跑一次 TickDoor；它会自续 PushSurvivalJob
+                if (_tickDoor == null)
+                    _tickDoor = AccessTools.Method(typeof(GameDoor), "TickDoor");
+                _tickDoor?.Invoke(door, null);
+
                 count++;
             }
 
             if (count == 0)
                 return 0;
 
-            int seconds = LockSeconds?.Value ?? 10;
-
-            // PushSurvivalJob 会被 ClearSurvivalJob 在阶段切换时整体清空，
-            // 所以这里只需在开局/进侦探阶段显式 ClearAll，不必自己记定时器。
-            TimeManager.Instance.PushSurvivalJob(seconds, delegate
-            {
-                if (LockedDoors.Count > 0)
-                    Plugin.Log.LogInfo($"[HS] LockDoor：{seconds} 秒到，解锁 {LockedDoors.Count} 扇门。");
-                LockedDoors.Clear();
-            });
-
             Plugin.Log.LogInfo(
                 $"[HS] LockDoor：黑方 #{byPlayer?.PublicInfo?.PlayerId} 锁住 {count} 扇门（半径 {radius:F0}，{seconds} 秒）。");
             return count;
         }
 
-        /// <summary>清空自定义锁（开局与进入侦探阶段调用）。</summary>
+        /// <summary>清空锁定登记（开局与进入侦探阶段调用）。门自身的 State 由原版 TickDoor 收尾。</summary>
         internal static void ClearAll()
         {
             if (LockedDoors.Count > 0)
                 LockedDoors.Clear();
         }
 
-        // ── 按 E 的闸门：锁中的门只放黑方通过 ────────────────────────
+        /// <summary>给所有黑方补发一份"只是关着"的 DeviceInfo，覆盖掉他们刚收到的真实锁定态。</summary>
+        private static void SendFakeStateToBlack(GameDoor door)
+        {
+            var room = GameRoom.Instance;
+            if (room?.Players == null || door?.DeviceInfo == null)
+                return;
+
+            S_MODIFY_DEVICE packet = null;
+
+            foreach (var player in room.Players)
+            {
+                if (player?.Session == null || player.Color != EPlayerColor.Black)
+                    continue;
+
+                // 每人一份副本：StateList 是共享引用，直接改会污染白方与世界状态
+                var fake = door.DeviceInfo.Clone();
+                fake.StateList[0] = 1;               // 对黑方而言：门只是关着
+
+                packet = new S_MODIFY_DEVICE { Info = fake };
+                player.Session.Send(packet);
+            }
+        }
+
+        // ── ① 每次门状态广播后，向黑方补一份伪造状态 ──────────────────
+        [HarmonyPatch(typeof(Device), nameof(Device.BroadcastState))]
+        internal static class BroadcastStateHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(Device __instance)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+                if (!(__instance is GameDoor door) || !LockedDoors.Contains(door.ID))
+                    return;
+
+                SendFakeStateToBlack(door);
+            }
+        }
+
+        // ── ② 门真解锁时同步撤登记，免得继续伪造"关着" ────────────────
+        [HarmonyPatch(typeof(GameDoor), nameof(GameDoor.UnlockDoor))]
+        internal static class UnlockHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameDoor __instance)
+            {
+                if (__instance != null)
+                    LockedDoors.Remove(__instance.ID);
+            }
+        }
+
+        // ── ③ 黑方按 E：解锁并开门（真实状态是 2，原版 Interact 会什么都不做）──
         [HarmonyPatch(typeof(GameDoor), "Interact")]
         internal static class DoorInteractHook
         {
@@ -131,23 +184,25 @@ namespace HideAndSeek.Features.Rule
             {
                 if (ModeRuntime.Bypass)
                     return true;
-                if (__instance == null || !LockedDoors.Contains(__instance.ID))
-                    return true;                     // 未被自定义锁 → 原版开关门
-
-                // 锁中 + 黑方按 E → 秒解并放行（门随即打开）
-                if (player != null && player.Color == EPlayerColor.Black)
-                {
-                    LockedDoors.Remove(__instance.ID);
-                    Plugin.Log.LogInfo(
-                        $"[HS] LockDoor：黑方 #{player.PublicInfo?.PlayerId} 秒解了门 #{__instance.ID}。");
+                if (__instance?.DeviceInfo?.StateList == null
+                    || __instance.DeviceInfo.StateList.Count == 0)
                     return true;
-                }
+                if (__instance.DeviceInfo.StateList[0] != 2)
+                    return true;                          // 不是锁定态 → 原版开关门
+                if (player == null || player.Color != EPlayerColor.Black)
+                    return true;                          // 白方根本发不出这个包，走到这也不会是白方
 
-                return false;                        // 其他人：静默无视，门保持关闭
+                LockedDoors.Remove(__instance.ID);
+                __instance.UnlockDoor();                  // State 2 → 1（同时广播，黑方此时可见真实状态也无妨）
+                __instance.OpenDoor();                    // State 1 → 0：门开了
+
+                Plugin.Log.LogInfo(
+                    $"[HS] LockDoor：黑方 #{player.PublicInfo?.PlayerId} 秒解并打开了门 #{__instance.ID}。");
+                return false;
             }
         }
 
-        // ── 生命周期 ────────────────────────────────────────────────
+        // ── ④ 生命周期 ────────────────────────────────────────────────
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         internal static class StartHook
         {
