@@ -114,7 +114,13 @@ namespace HideAndSeek.Features.Combat
                 // 分母必须用**开局白方总数**（整局固定）。用当前存活数会越杀越小、
             // 每次所得越来越大，总发放量远超 PoolTotal —— 8 人房实测 6 杀能拿 159
             // 而非 100，于是能升 8 级而不是 4 级。
-            int divisor = _totalWhitesAtStart > 0 ? _totalWhitesAtStart : (whites + 1);
+            // 分母 = **可击杀人数** = 开局白方总数 - 1。
+            // 最后一名白方是黑方的胜利条件（杀了就结束），不会被计入击杀收益，
+            // 所以按白方总数算会低估每股：7 白时 100/7=14.3、杀满 6 人仅 85.7，
+            // 差 4.3 就能点到第 5 级。改成 -1 后每股 100/6=16.7，杀满正好 100，可升 5 级。
+            // 露娜计入分母（她确实占一个白方名额），不单独扣除。
+            int total = _totalWhitesAtStart > 0 ? _totalWhitesAtStart : (whites + 1);
+            int divisor = total > 1 ? (total - 1) : 1;
                 if (divisor <= 0)
                     divisor = 1;
 
