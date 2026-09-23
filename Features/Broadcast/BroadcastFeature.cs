@@ -67,11 +67,11 @@ namespace HideAndSeek.Features.Broadcast
             "开局提示：自行拿刀模式（所有人同一句）。")]
         public static ConfigEntry<string> StartBodySelfServe;
 
-        [ConfigField("开始杀戮、开始搜索吧~在倒计时结束之前",
+        [ConfigField("开始杀戮、开始搜索吧~或许也可以在发信站获得帮助(/help)在倒计时结束之前。",
             "开局提示：自动发刀模式下发给黑方。")]
         public static ConfigEntry<string> StartBodyBlack;
 
-        [ConfigField("躲避杀手，完成任务，在倒计时结束之前。祝你好运~",
+        [ConfigField("躲避杀手，完成任务，或许也可以在发信站获得帮助(/help)。在倒计时结束之前。祝你好运~",
             "开局提示：自动发刀模式下发给白方。")]
         public static ConfigEntry<string> StartBodyWhite;
 
