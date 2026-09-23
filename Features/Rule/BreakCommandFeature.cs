@@ -429,7 +429,7 @@ namespace HideAndSeek.Features.Rule
 
             _disconnectMethod.Invoke(target, new object[] { player });
             Plugin.Log.LogInfo($"[HS] 密聊命令：黑方 #{player.PublicInfo?.PlayerId} 拆除了电箱 #{target.ID}。");
-            Reply(player, deviceId, $"已拆除电箱 #{target.ID}。");
+            // 成功不回复：断电本身就有全图黑 + FuseOffSfx + 电箱箭头，文字是噪音
             return true;
         }
 
