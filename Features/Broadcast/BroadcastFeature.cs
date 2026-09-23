@@ -257,11 +257,13 @@ namespace HideAndSeek.Features.Broadcast
         }
 
         /// <summary>
-        /// 一条消息最多合并几行。聊天栏会**自动换行**，实际能塞的比预想的多
-        /// （实测约 100 个汉字仍可完整显示），所以这里给足余量，尽量少切消息 ——
-        /// 每条消息都会占聊天栏一个条目，切太碎会把前面的顶出可见区。
+        /// 一条消息最多合并几行。
+        ///
+        /// 上限由"单条消息的实际可读字数"反推：实测一条消息约能完整显示 84 个汉字，
+        /// 而每行 26 汉字 → 3 行 = 78 字（≤84，安全），4 行 = 104 字（超了）。
+        /// 原文里的换行与自动折行都计入行数，所以限定总行数即可保证视觉高度不超标。
         /// </summary>
-        private const int MaxLinesPerMessage = 6;
+        private const int MaxLinesPerMessage = 3;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
         private static void NoticeToWrapped(GamePlayer player, string text)
         {
