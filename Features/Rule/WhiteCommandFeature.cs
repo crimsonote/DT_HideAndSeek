@@ -62,13 +62,38 @@ namespace HideAndSeek.Features.Rule
         /// <summary>PlayerId → 上次发「扫描冷却中」的时间；每 10 秒最多提示一次。</summary>
         private static readonly Dictionary<int, float> CdNotice = new Dictionary<int, float>();
 
+        /// <summary>/stasis 的生效截止时刻。</summary>
+        private static float _stasisUntil;
+
+        /// <summary>/stasis 期间被压到 0 的原始黑方移速倍率。</summary>
+        private static float _savedSpeed = -1f;
+
+        private static readonly Dictionary<int, float> CmdLastUse = new Dictionary<int, float>();
+
         private const float CdNoticeInterval = 10f;
 
+        [ConfigField(true, "允许白方用 /stasis 消耗任务进度时停黑方。")]
+        public static ConfigEntry<bool> AllowStasis;
+
+        [ConfigField(5f, "/stasis 消耗的任务进度百分比。", Min = 0f, Max = 100f)]
+        public static ConfigEntry<float> StasisCostPercent;
+
+        [ConfigField(5f, "/stasis 时停黑方的秒数。", Min = 1f, Max = 60f)]
+        public static ConfigEntry<int> StasisSeconds;
+
+        [ConfigField(90f, "/stasis 的冷却秒数（每人独立）。", Min = 0f, Max = 600f)]
+        public static ConfigEntry<int> StasisCooldown;
+
+        [ConfigField(true, "允许白方用 /repair 消耗任务进度立即恢复供电（仅断电时可用）。")]
+        public static ConfigEntry<bool> AllowRepair;
+
+        [ConfigField(10f, "/repair 消耗的任务进度百分比。", Min = 0f, Max = 100f)]
+        public static ConfigEntry<float> RepairCostPercent;
         private const string WhiteHelp =
             "【捉迷藏 · 白方命令】\n" +
             "/radar — 开启全图扫描，15 秒内地图标记所有存活玩家。\n" +
             "        条件：存活且本局剩余次数 > 0。每人每局 2 次，CD 75s\n" +
-            "/help — 显示本列表";
+            "/stasis — 消耗 5% 任务进度，时停黑方 5 秒（CD 90）\n/repair — 消耗 10% 任务进度，立即恢复供电（仅断电时）\n/help — 显示本列表";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
@@ -141,6 +166,14 @@ namespace HideAndSeek.Features.Rule
                     DoRadar(room, player, deviceId);
                     break;
 
+                case "stasis":
+                    DoStasis(room, player, deviceId);
+                    break;
+
+                case "repair":
+                    DoRepair(room, player, deviceId);
+                    break;
+
                 default:
                     // 未知命令不公开发言，避免刷屏（只有本人能看到自己的输入被吞）
                     break;
@@ -200,6 +233,146 @@ namespace HideAndSeek.Features.Rule
         /// 关键：**按命令的来源通道回** —— 白方多半是在设备（发信机）上发命令，
         /// 那种情况下回执若走 NormalChat，设备界面根本不显示，表现就是"命令没反应"。
         /// </summary>
+        /// <summary>扣减任务进度。返回 false 表示不足或读不到进度。</summary>
+        private static bool TrySpendProgress(GameRoom room, float percent, out string why)
+        {
+            why = null;
+            try
+            {
+                var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
+                var inst = mmType == null ? null : AccessTools.PropertyGetter(mmType, "Instance")?.Invoke(null, null);
+                if (inst == null) { why = "读不到任务进度"; return false; }
+
+                var curProp = AccessTools.Property(mmType, "CurrentPoint");
+                if (curProp == null) { why = "读不到任务进度字段"; return false; }
+
+                int cur = (int)curProp.GetValue(inst);
+                if (cur <= 0) { why = "当前任务进度为 0"; return false; }
+
+                int cost = (int)(cur * percent / 100f);
+                if (cost <= 0) cost = 1;
+                if (cur < cost) { why = $"进度不足（现有 {cur}，需要 {cost}）"; return false; }
+
+                curProp.SetValue(inst, cur - cost);
+                Plugin.Log.LogInfo($"[HS] WhiteCommand：消耗任务进度 {cost}（{cur} → {cur - cost}）。");
+                return true;
+            }
+            catch (global::System.Exception ex)
+            {
+                why = "扣进度失败：" + ex.Message;
+                return false;
+            }
+        }
+
+        private static void DoStasis(GameRoom room, GamePlayer player, int deviceId)
+        {
+            if (AllowStasis == null || !AllowStasis.Value)
+                return;
+            if (room.State != EGameState.Survive || !player.IsAlive)
+                return;
+
+            int pid = player.PublicInfo?.PlayerId ?? 0;
+            float now = TimeManager.Instance?.SurviveTime ?? 0f;
+            float cd = StasisCooldown?.Value ?? 90f;
+
+            if (CmdLastUse.TryGetValue(pid, out float last) && now - last < cd)
+            {
+                float lastNotice = CdNotice.TryGetValue(pid, out float ln) ? ln : -9999f;
+                if (now - lastNotice >= CdNoticeInterval)
+                {
+                    CdNotice[pid] = now;
+                    Reply(player, deviceId, "时停冷却中。");
+                }
+                return;
+            }
+
+            if (!TrySpendProgress(room, StasisCostPercent?.Value ?? 5f, out string why))
+            {
+                Reply(player, deviceId, why);
+                return;
+            }
+
+            CmdLastUse[pid] = now;
+
+            if (HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul != null)
+            {
+                if (_savedSpeed < 0f)
+                    _savedSpeed = HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value;
+                HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value = 0f;
+            }
+
+            _stasisUntil = now + (StasisSeconds?.Value ?? 5);
+            Reply(player, deviceId, $"已时停黑方 {StasisSeconds?.Value ?? 5} 秒。");
+            SendPublic(room, "白方发动了时停。");
+        }
+
+        private static void DoRepair(GameRoom room, GamePlayer player, int deviceId)
+        {
+            if (AllowRepair == null || !AllowRepair.Value)
+                return;
+            if (room.State != EGameState.Survive)
+                return;
+
+            int broken = 0;
+            try { broken = Server.Game.DeviceManager.Instance?.GetDisconnectFuseCount() ?? 0; }
+            catch { }
+
+            if (broken <= 0)
+            {
+                Reply(player, deviceId, "当前没有断电，无需修复。");
+                return;
+            }
+
+            if (!TrySpendProgress(room, RepairCostPercent?.Value ?? 10f, out string why))
+            {
+                Reply(player, deviceId, why);
+                return;
+            }
+
+            int fixedCount = 0;
+            try
+            {
+                // 服务端 Fusebox 的恢复入口是 ConnetCable()（原版拼写少一个 c），
+                // 状态字段是 IsLight（true = 通电）。列表在 DeviceManager.Fuseboxes。
+                var dm = Server.Game.DeviceManager.Instance;
+                foreach (var fb in dm.Fuseboxes)
+                {
+                    if (fb == null || fb.IsLight)
+                        continue;
+                    fb.ConnetCable();
+                    fixedCount++;
+                }
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] WhiteCommand：修电失败 — {ex.Message}");
+            }
+
+            Reply(player, deviceId, $"已立即恢复供电（修复 {fixedCount} 处）。");
+            SendPublic(room, "白方紧急恢复了供电。");
+        }
+
+        /// <summary>时停到点后还原黑方移速。</summary>
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class StasisTickHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (_stasisUntil <= 0f)
+                    return;
+                if ((TimeManager.Instance?.SurviveTime ?? 0f) < _stasisUntil)
+                    return;
+
+                _stasisUntil = 0f;
+                if (_savedSpeed >= 0f && HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul != null)
+                {
+                    HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value = _savedSpeed;
+                    _savedSpeed = -1f;
+                }
+                Plugin.Log.LogInfo("[HS] WhiteCommand：时停结束，黑方移速已还原。");
+            }
+        }
         private static void Reply(GamePlayer player, int deviceId, string text)
         {
             try

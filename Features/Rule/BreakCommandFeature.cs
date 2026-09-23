@@ -176,7 +176,7 @@ namespace HideAndSeek.Features.Rule
             // 但它们不在配置里，所以 defs 里没有它们 —— 帮助列表会漏掉。
             // 这里补进展示用的副本（GetCommands 的结果带缓存，不要就地改）。
             var forHelp = new List<CommandDef>(defs);
-            foreach (var probe in new[] { "break", "lock", "tp", "list" })
+            foreach (var probe in new[] { "break", "lock", "tp", "list", "credit" })
             {
                 bool exists = false;
                 foreach (var d in forHelp)
@@ -230,6 +230,8 @@ namespace HideAndSeek.Features.Rule
                     return new CommandDef { Name = "break", Condition = "fusebox", Action = "Disconnect", Cooldown = 90 };
                 case "lock":
                     return new CommandDef { Name = "lock", Condition = "", Action = "Lock", Cooldown = 60 };
+                case "credit":
+                    return new CommandDef { Name = "credit", Condition = "", Action = "Credit", Cooldown = 0 };
                 case "list":
                     return new CommandDef { Name = "list", Condition = "", Action = "ListPlayers", Cooldown = 0 };
                 case "tp":
@@ -289,6 +291,13 @@ namespace HideAndSeek.Features.Rule
                         special = true;
                         if (!LockNearby(player, deviceId))
                             return;                      // 附近没门就不计次数、不写冷却
+                        continue;
+                    }
+
+                    if (a.Equals("Credit", global::System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        special = true;
+                        HandleCredit(room, player, deviceId, arg);
                         continue;
                     }
 
@@ -370,6 +379,34 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>拆离自己最近的可拆电箱；地图上没有则拒绝。返回是否真的拆了。</summary>
+        /// <summary>黑学分：无参查看余额与等级，带方向则升级。方向用英文（vision/speed/task）。</summary>
+        private static void HandleCredit(GameRoom room, GamePlayer player, int deviceId, string arg)
+        {
+            string dir = (arg ?? "").Trim().ToLowerInvariant();
+
+            if (string.IsNullOrEmpty(dir))
+            {
+                Reply(player, deviceId, HideAndSeek.Features.Combat.KillUpgradeFeature.Status());
+                return;
+            }
+
+            int idx;
+            switch (dir)
+            {
+                case "vision": idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirVision; break;
+                case "speed":  idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirSpeed; break;
+                case "task":   idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirTask; break;
+                default:
+                    Reply(player, deviceId, "用法：/credit [vision|speed|task]");
+                    return;
+            }
+
+            string msg;
+            if (HideAndSeek.Features.Combat.KillUpgradeFeature.TryUpgrade(room, idx, out msg))
+                Reply(player, deviceId, msg);
+            else
+                Reply(player, deviceId, msg);
+        }
         /// <summary>列出全部玩家（ID + 昵称 + 状态），便于 /tp 指定目标。</summary>
         private static string BuildPlayerList(GameRoom room)
         {
@@ -596,6 +633,7 @@ namespace HideAndSeek.Features.Rule
                 case "break": return "拆电断电（默认随机两个电箱）";
                 case "lock":  return "锁住附近的门";
                 case "tp":    return "3 秒后传送到目标处";
+                case "credit": return "查看/消耗黑学分升级（vision/speed/task）";
                 case "list":  return "列出玩家 ID 与昵称";
                 default:      return null;
             }
