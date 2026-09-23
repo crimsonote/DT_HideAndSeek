@@ -31,6 +31,12 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(3000, "预警到落地之间的毫秒数（留给目标的逃跑时间）。", Min = 0f, Max = 15000f)]
         public static ConfigEntry<int> WarnDelayMs;
 
+        [ConfigField(true, "预警期间在落点播一个世界特效（闪光），让目标看清黑方将从哪里出现。")]
+        public static ConfigEntry<bool> ShowLandingVfx;
+
+        [ConfigField("黑方即将传送到标记位置！",
+            "预警时发给目标的一行文字（出现在其聊天栏）。留空则不发。")]
+        public static ConfigEntry<string> LandingText;
         [ConfigField(300f, "目标在预警期间移动超过这个距离，就取消本次传送（0 = 不取消）。",
             Min = 0f, Max = 5000f)]
         public static ConfigEntry<float> CancelMoveDistance;
@@ -198,6 +204,42 @@ namespace HideAndSeek.Features.Rule
             // ① 立刻预警
             if ((PlayWarningSfx?.Value ?? true))
                 room.SendSystemSFX(ESoundType.WarningSfx, target);
+
+            // 落点世界特效：我们无法在客户端渲染世界空间文字，但可以用世界坐标的特效
+            // 把"黑方将从哪里出现"直接画在地上。distance 给大值以确保目标一定收到
+            // （默认 896 只覆盖附近）。
+            if (ShowLandingVfx == null || ShowLandingVfx.Value)
+            {
+                try
+                {
+                    room.BroadcastWorldVFX(EEffectType.FlashVfx, 0, dest, 99999f);
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] Teleport：落点特效失败 — {ex.Message}");
+                }
+            }
+
+            // 文字提示走目标自己的聊天栏（NormalChat 单人送达）
+            string landingText = LandingText?.Value;
+            if (!string.IsNullOrEmpty(landingText) && target.Session != null)
+            {
+                try
+                {
+                    target.Session.Send(new S_CHAT_MESSAGE
+                    {
+                        Type = EChatType.NormalChat,
+                        Text = landingText,
+                        PlayerId = 0,
+                        Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+                        IsDead = false
+                    });
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] Teleport：落点文字失败 — {ex.Message}");
+                }
+            }
 
             if (showArrow && arrowPos != null && target.Session != null)
             {
