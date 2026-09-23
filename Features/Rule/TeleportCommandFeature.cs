@@ -41,6 +41,74 @@ namespace HideAndSeek.Features.Rule
         /// 发起一次传送。targetId &lt;= 0 表示随机挑一个存活玩家。
         /// 返回 false 时 error 给出原因，调用方不应计次数与冷却。
         /// </summary>
+        /// <summary>
+        /// 解析安全落点。目标在柜子 / 游戏机座椅里时不能直接落到他身上 ——
+        /// 那种状态下 PublicInfo.Pos 指向容器内部，直接落过去会卡在柜体里。
+        /// 复刻 SkillComponent.TryGetSafeLandingPos(:177479)：
+        ///   柜子   → cabinet.DeviceData.Positions[0]（出口）
+        ///   游戏机 → nintendo.DeviceData.Positions[1]（退场点）
+        ///   其余   → 目标当前位置
+        /// </summary>
+        private static PosInfo ResolveSafeLanding(GamePlayer target)
+        {
+            if (target?.PublicInfo == null)
+                return null;
+
+            // ① 柜子（DeviceManager 是 public，无需反射）
+            try
+            {
+                var cabinet = Server.Game.DeviceManager.Instance?.GetCabinet(target.PublicInfo.PlayerId);
+                var cpos = cabinet?.DeviceData?.Positions;
+                if (cpos != null && cpos.Count > 0 && cpos[0] != null)
+                {
+                    Plugin.Log.LogInfo($"[HS] Teleport：目标 #{target.PublicInfo.PlayerId} 在柜子里，落点改用柜子出口。");
+                    return cpos[0].Clone();
+                }
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] Teleport：查询柜子失败 — {ex.Message}");
+            }
+
+            // ② 游戏机座椅（MissionManager 是 internal，走反射）
+            try
+            {
+                var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
+                var inst = mmType == null ? null : AccessTools.PropertyGetter(mmType, "Instance")?.Invoke(null, null);
+                var list = inst == null ? null : AccessTools.PropertyGetter(mmType, "NintendoList")?.Invoke(inst, null);
+
+                if (list is global::System.Collections.IEnumerable seq)
+                {
+                    foreach (var item in seq)
+                    {
+                        if (item == null)
+                            continue;
+
+                        var playing = AccessTools.PropertyGetter(item.GetType(), "PlayingPlayer")?.Invoke(item, null);
+                        if (!ReferenceEquals(playing, target))
+                            continue;
+
+                        var data = AccessTools.PropertyGetter(item.GetType(), "DeviceData")?.Invoke(item, null);
+                        var positions = data == null
+                            ? null
+                            : AccessTools.Field(data.GetType(), "Positions")?.GetValue(data) as global::System.Collections.IList;
+
+                        if (positions != null && positions.Count > 1 && positions[1] is PosInfo p)
+                        {
+                            Plugin.Log.LogInfo($"[HS] Teleport：目标 #{target.PublicInfo.PlayerId} 在游戏机上，落点改用退场点。");
+                            return p.Clone();
+                        }
+                        break;
+                    }
+                }
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] Teleport：查询游戏机失败 — {ex.Message}");
+            }
+
+            return target.PublicInfo.Pos?.Clone();
+        }
         internal static bool Begin(GameRoom room, GamePlayer caster, int targetId, out string error)
         {
             error = null;
@@ -106,7 +174,10 @@ namespace HideAndSeek.Features.Rule
             }
 
             // 落点快照 + 安全兜底（Move 不做任何校验）
-            var dest = target.PublicInfo?.Pos?.Clone();
+            // 安全落点：目标可能正在柜子里或游戏机上，那种状态下 PublicInfo.Pos
+            // 指向容器内部，直接落过去会卡在柜体里。
+            // 复刻原版 SkillComponent.TryGetSafeLandingPos(:177479) 的两条分支。
+            var dest = ResolveSafeLanding(target);
             if (dest == null)
             {
                 error = "目标位置不可用";
