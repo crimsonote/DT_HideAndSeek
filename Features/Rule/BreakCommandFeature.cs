@@ -163,6 +163,11 @@ namespace HideAndSeek.Features.Rule
                 }
             }
 
+            // 内置兜底：配置项只在**新建** .cfg 时写入默认值，老配置里不会有新命令。
+            // 让用户为了拿到 /lock、/tp 去手改文件是设计缺陷 —— 这三个命令始终可用。
+            if (def == null)
+                def = BuiltinCommand(name);
+
             if (def == null)
             {
                 Reply(player, deviceId, $"未知命令 /{name}。\n{BuildHelp(defs)}");
@@ -170,6 +175,22 @@ namespace HideAndSeek.Features.Rule
             }
 
             Execute(room, player, deviceId, def, arg);
+        }
+
+        /// <summary>内置命令：即使配置里没注册也照常工作。</summary>
+        private static CommandDef BuiltinCommand(string name)
+        {
+            switch (name)
+            {
+                case "break":
+                    return new CommandDef { Name = "break", Condition = "fusebox", Action = "Disconnect", Cooldown = 0 };
+                case "lock":
+                    return new CommandDef { Name = "lock", Condition = "", Action = "Lock", Cooldown = 60 };
+                case "tp":
+                    return new CommandDef { Name = "tp", Condition = "", Action = "Teleport", Cooldown = 60 };
+                default:
+                    return null;
+            }
         }
 
         /// <summary>依次校验次数 / 冷却 / 条件，任一不过即拒绝并回执原因。</summary>
@@ -243,6 +264,13 @@ namespace HideAndSeek.Features.Rule
                         special = true;
                         if (!Disconnect(room, player, deviceId, arg))
                             return;                      // 拆不动就不计次数、不写冷却
+
+                        // 原版断电需要**两个**电箱同时被拆（AreaManager.RefreshLight :173493 n>=2）；
+                        // 只拆一个不会全黑，与"立即制造断电"的语义不符。
+                        // 无参时自动再拆一个凑够阈值（第二次会挑下一个可拆目标）。
+                        // 配合 [PowerRepair] RepairThreshold=1，白方修好任意一个即恢复供电。
+                        if (string.IsNullOrEmpty(arg))
+                            Disconnect(room, player, deviceId, arg);
                         continue;
                     }
 
@@ -474,13 +502,38 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>以密聊形式回执给该玩家（与触发通道一致，客户端显示在密聊频道）。</summary>
+        /// <summary>游戏内聊天框一次最多显示 3 行，超出的部分必须分段发送。</summary>
+        private const int MaxLinesPerMessage = 3;
+
         private static void Reply(GamePlayer player, int deviceId, string text)
+        {
+            if (player?.Session == null || string.IsNullOrEmpty(text))
+                return;
+
+            string[] lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+
+            for (int start = 0; start < lines.Length; start += MaxLinesPerMessage)
+            {
+                int count = lines.Length - start < MaxLinesPerMessage
+                    ? lines.Length - start
+                    : MaxLinesPerMessage;
+
+                var sb = new global::System.Text.StringBuilder();
+                for (int i = start; i < start + count; i++)
+                {
+                    if (sb.Length > 0)
+                        sb.Append('\n');
+                    sb.Append(lines[i]);
+                }
+
+                SendChunk(player, deviceId, sb.ToString());
+            }
+        }
+
+        private static void SendChunk(GamePlayer player, int deviceId, string text)
         {
             try
             {
-                if (player?.Session == null)
-                    return;
-
                 player.Session.Send(new S_CHAT_MESSAGE
                 {
                     Type = EChatType.SecretChat,

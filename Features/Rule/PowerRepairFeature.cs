@@ -30,7 +30,7 @@ namespace HideAndSeek.Features.Rule
         side: FeatureSide.Host)]
     internal static class PowerRepairFeature
     {
-        [ConfigField(0, "剩余未修电箱数 ≤ 此值时恢复供电。0 = 原版行为（必须全部修好）；1 = 修好任意一个即恢复。",
+        [ConfigField(1, "剩余未修电箱数 ≤ 此值时恢复供电。0 = 原版行为（必须全部修好）；1 = 修好任意一个即恢复。",
             Min = 0f, Max = 2f)]
         public static ConfigEntry<int> RepairThreshold;
 
