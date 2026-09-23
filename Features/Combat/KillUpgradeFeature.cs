@@ -296,8 +296,8 @@ namespace HideAndSeek.Features.Combat
             {
                 string body = "【黑学分】" + text;
 
-                // 与 BroadcastFeature.Notice 一致：SecretChat 进发信机记录 + 弹泡，
-                // NormalChat 进聊天栏长期可回看（升级会通知白方，需要能事后查）。
+                // 两条通道：SecretChat → 弹泡 + 密聊记录；DeviceChat → 公共发信机记录。
+                // 不能用 NormalChat —— 客户端只在 大厅/裁判 渲染它，生存阶段等于白发。
                 room?.Broadcast(new S_CHAT_MESSAGE
                 {
                     Type = EChatType.SecretChat,
@@ -307,9 +307,9 @@ namespace HideAndSeek.Features.Combat
                 });
                 room?.Broadcast(new S_CHAT_MESSAGE
                 {
-                    Type = EChatType.NormalChat,
+                    Type = EChatType.DeviceChat,
                     Text = body,
-                    PlayerId = 0,
+                    DeviceId = 999999,
                     Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
                 });
             }
