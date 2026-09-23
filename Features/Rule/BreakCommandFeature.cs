@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using BepInEx.Configuration;
 using DummyClient;
 using HarmonyLib;
@@ -153,7 +153,7 @@ namespace HideAndSeek.Features.Rule
                 if (cooldown > 0 && now - _lastBreakAt < cooldown)
                 {
                     Reply(player, deviceId,
-                        $"冷却中，还需 {global::System.Math.Ceiling(cooldown - (now - _lastBreakAt))} 秒。");
+                        $"冷却中，还需 {(int)(cooldown - (now - _lastBreakAt)) + 1} 秒。");
                     return;
                 }
 
