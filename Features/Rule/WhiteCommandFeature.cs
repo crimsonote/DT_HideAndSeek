@@ -395,16 +395,27 @@ namespace HideAndSeek.Features.Rule
 
             CmdLastUse[pid] = now;
 
-            if (HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul != null)
+            // 复刻原版 UseTimeStop（:177532）：给黑方施加 TheWorld buff。
+            // 客户端 :14917 / :17153 的落地效果是 SkeletonAnim.timeScale = 0f（动画冻结）
+            // + PlayGray + _lockControlStack++ + CancelAllInteract —— 这才是真正的时停。
+            // BroadcastBuff 内部就是 alivePlayer.BuffComponent.AddBuff(type, duration)，
+            // 我们只对**黑方逐个**施加，避免波及白方。
+            int stasisMs = (StasisSeconds?.Value ?? 5) * 1000;
+            foreach (var p in room.Players)
             {
-                if (_savedSpeed < 0f)
-                    _savedSpeed = HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value;
-                HideAndSeek.Features.Combat.SpeedBoostFeature.BlackSpeedMul.Value = 0f;
-
-                // 改配置只是改了服务端数值；客户端速度由 BuffComponent.RefreshSpeed 推出，
-                // 不主动推一次的话"僵住"不会立刻体现。
-                RefreshAllBlackSpeed(room);
+                if (p?.PublicInfo == null || p.Color == EPlayerColor.White)
+                    continue;
+                try
+                {
+                    p.BuffComponent?.AddBuff(EBuffType.TheWorld, stasisMs);
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] WhiteCommand：施加时停失败 — {ex.Message}");
+                }
             }
+            room.BroadcastWorldSFX(ESoundType.TheWorldSfx, player.PublicInfo?.Pos);
+            Plugin.Log.LogInfo($"[HS] WhiteCommand：时停已施加（TheWorld {stasisMs}ms）。");
 
             _stasisUntil = now + (StasisSeconds?.Value ?? 5);
             Reply(player, deviceId, $"已时停黑方 {StasisSeconds?.Value ?? 5} 秒。");
@@ -457,38 +468,8 @@ namespace HideAndSeek.Features.Rule
             SendPublic(room, "白方紧急恢复了供电。");
         }
 
-        /// <summary>
-        /// 时停的核心实现：拦截服务端 Player.Move，把位移钳回当前服务端位置。
-        ///
-        /// 为什么不能只改速度：客户端移动是**本地权威**的（HandleMove :171719 不校验
-        /// 速度与位移），服务端改 SpeedMul / RefreshSpeed 对已经在动的客户端毫无影响 ——
-        /// 这正是"时停执行了、日志也打了、黑方照样走"的原因。
-        ///
-        /// Move(:175883) 开头就直接写 PublicInfo.Pos，所以在这里把 pos 换成当前位置，
-        /// 等同于"本次移动被抹平"，并且 Move 后续会重新广播位置，客户端被拉回。
-        /// </summary>
-        [HarmonyPatch(typeof(GamePlayer), "Move", new[] { typeof(PosInfo), typeof(bool) })]
-        internal static class MoveFreezeHook
-        {
-            [HarmonyPrefix]
-            private static void Prefix(GamePlayer __instance, ref PosInfo pos)
-            {
-                if (ModeRuntime.Bypass)
-                    return;
-                if (!IsStasisActive)
-                    return;
-                if (__instance?.PublicInfo?.Pos == null)
-                    return;
-                if (__instance.Color == EPlayerColor.White)
-                    return;                            // 只冻黑方
-
-                pos = new PosInfo
-                {
-                    X = __instance.PublicInfo.Pos.X,
-                    Y = __instance.PublicInfo.Pos.Y
-                };
-            }
-        }
+// MoveFreezeHook 已删除：原版时停走 TheWorld buff（客户端把动画 timeScale 置 0 并锁操作），
+        // 不需要、也不应该由我们去拦截服务端 Player.Move。
 
         /// <summary>时停到点后还原黑方移速。</summary>
         [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
