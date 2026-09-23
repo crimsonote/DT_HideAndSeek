@@ -285,7 +285,13 @@ namespace HideAndSeek.Features.Broadcast
             {
                 int take = global::System.Math.Min(MaxLinesPerMessage, lines.Count - i);
                 string chunk = string.Join("\n", lines.GetRange(i, take));
-                player.Session.Send(BuildText(chunk, EChatType.NormalChat));
+                // 按阶段选自适应通道：NormalChat 只在 大厅/裁判 渲染，
+                // 生存阶段发出去等于白发（开局提示正是这种情况）。
+                EChatType ct = (GameRoom.Instance?.State == EGameState.Lobby
+                                || GameRoom.Instance?.State == EGameState.Trial)
+                    ? EChatType.NormalChat
+                    : EChatType.SecretChat;
+                player.Session.Send(BuildText(chunk, ct));
             }
         }
         /// <summary>构造文字包。chatType 决定显示位置（NormalChat→聊天栏，SecretChat→弹泡/发信机）。</summary>
