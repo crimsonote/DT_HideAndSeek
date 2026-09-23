@@ -51,7 +51,7 @@ namespace HideAndSeek.Features.Rule
             "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数>\n" +
             "条件可留空（= 无条件）；可用 fusebox（地图上有可拆电箱）\n" +
             "      time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
-            "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairThreshold/MinProgress），\n" +
+            "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairCount/MinProgress），\n" +
             "      或特殊动作：Disconnect（拆最近可拆电箱）/ Lock（锁住附近的门）/\n" +
             "      Teleport（预警数秒后传送到目标位置，可跟玩家 ID 参数）。多个动作用 , 连接。\n" +
             "cd / uses 可省略，0 或省略 = 不限。行首 # 为注释。\n" +
@@ -268,7 +268,7 @@ namespace HideAndSeek.Features.Rule
                         // 原版断电需要**两个**电箱同时被拆（AreaManager.RefreshLight :173493 n>=2）；
                         // 只拆一个不会全黑，与"立即制造断电"的语义不符。
                         // 无参时自动再拆一个凑够阈值（第二次会挑下一个可拆目标）。
-                        // 配合 [PowerRepair] RepairThreshold=1，白方修好任意一个即恢复供电。
+                        // 配合 [PowerRepair] RepairCount=1，白方修好任意一个即恢复供电。
                         if (string.IsNullOrEmpty(arg))
                             Disconnect(room, player, deviceId, arg);
                         continue;

@@ -41,7 +41,7 @@ namespace HideAndSeek.Features.Rule
         [ConfigField("",
             "动态规则。格式：条件 -> 动作；多条用换行或分号分隔。" +
             "条件可用 time<=N（剩余秒）、kills>=N（黑方击杀）、alive<=N（白方存活），多个用 & 连接；" +
-            "动作是 Key=Value，多个用 , 连接。可用键：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairThreshold/MinProgress。" +
+            "动作是 Key=Value，多个用 , 连接。可用键：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairCount/MinProgress。" +
             "例：time<=120 -> SpeedMul=1.3, EnterRange=1200")]
         public static ConfigEntry<string> Rules;
 
@@ -269,10 +269,11 @@ namespace HideAndSeek.Features.Rule
                     KillLimitFeature.MaxKills.Value = (int)kl;
                     return true;
 
-                case "repairthreshold":
+                case "repaircount":
+                case "repairthreshold":   // 旧键名，保留兼容
                     if (!TryFloat(value, out float rt)) return false;
-                    Remember(key, PowerRepairFeature.RepairThreshold);
-                    PowerRepairFeature.RepairThreshold.Value = (int)rt;
+                    Remember(key, PowerRepairFeature.RepairCount);
+                    PowerRepairFeature.RepairCount.Value = (int)rt;
                     return true;
 
                 case "minprogress":
