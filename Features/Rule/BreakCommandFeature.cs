@@ -147,9 +147,28 @@ namespace HideAndSeek.Features.Rule
         {
             var defs = GetCommands();
 
+            // 内置命令（break/lock/tp/list）平时靠 BuiltinCommand 兜底执行，
+            // 但它们不在配置里，所以 defs 里没有它们 —— 帮助列表会漏掉。
+            // 这里补进展示用的副本（GetCommands 的结果带缓存，不要就地改）。
+            var forHelp = new List<CommandDef>(defs);
+            foreach (var probe in new[] { "break", "lock", "tp", "list" })
+            {
+                bool exists = false;
+                foreach (var d in forHelp)
+                {
+                    if (d.Name == probe) { exists = true; break; }
+                }
+                if (!exists)
+                {
+                    var b = BuiltinCommand(probe);
+                    if (b != null)
+                        forHelp.Add(b);
+                }
+            }
+
             if (name == "help")
             {
-                Reply(player, deviceId, BuildHelp(defs));
+                Reply(player, deviceId, BuildHelp(forHelp));
                 return;
             }
 
@@ -170,7 +189,7 @@ namespace HideAndSeek.Features.Rule
 
             if (def == null)
             {
-                Reply(player, deviceId, $"未知命令 /{name}。\n{BuildHelp(defs)}");
+                Reply(player, deviceId, $"未知命令 /{name}。\n{BuildHelp(forHelp)}");
                 return;
             }
 
@@ -183,7 +202,7 @@ namespace HideAndSeek.Features.Rule
             switch (name)
             {
                 case "break":
-                    return new CommandDef { Name = "break", Condition = "fusebox", Action = "Disconnect", Cooldown = 0 };
+                    return new CommandDef { Name = "break", Condition = "fusebox", Action = "Disconnect", Cooldown = 90 };
                 case "lock":
                     return new CommandDef { Name = "lock", Condition = "", Action = "Lock", Cooldown = 60 };
                 case "list":
@@ -271,15 +290,27 @@ namespace HideAndSeek.Features.Rule
                     if (a.Equals("Disconnect", global::System.StringComparison.OrdinalIgnoreCase))
                     {
                         special = true;
-                        if (!Disconnect(room, player, deviceId, arg))
-                            return;                      // 拆不动就不计次数、不写冷却
 
-                        // 原版断电需要**两个**电箱同时被拆（AreaManager.RefreshLight :173493 n>=2）；
-                        // 只拆一个不会全黑，与"立即制造断电"的语义不符。
-                        // 无参时自动再拆一个凑够阈值（第二次会挑下一个可拆目标）。
-                        // 配合 [PowerRepair] RepairCount=1，白方修好任意一个即恢复供电。
-                        if (string.IsNullOrEmpty(arg))
-                            Disconnect(room, player, deviceId, arg);
+                        // 接受最多两个电箱 ID（空格/逗号分隔）。不足两个时自动补随机目标：
+                        // 原版断电需要两个电箱同时被拆，只拆一个不会全黑。
+                        string[] ids = string.IsNullOrWhiteSpace(arg)
+                            ? new string[0]
+                            : arg.Split(new[] { ' ', ',', ';', '，' },
+                                        global::System.StringSplitOptions.RemoveEmptyEntries);
+
+                        int want = ids.Length > 2 ? ids.Length : 2;
+                        int done = 0;
+
+                        for (int i = 0; i < want; i++)
+                        {
+                            string one = i < ids.Length ? ids[i] : null;
+                            if (!Disconnect(room, player, deviceId, one))
+                                break;                    // 拆不动就停（失败提示已由 Disconnect 发出）
+                            done++;
+                        }
+
+                        if (done == 0)
+                            return;                       // 一个都没拆成 → 不计次数、不写冷却
                         continue;
                     }
 
@@ -537,18 +568,11 @@ namespace HideAndSeek.Features.Rule
         {
             switch (name)
             {
-                case "break":
-                    return "制造断电。用法：/break [电箱ID]（无参 = 自动选最近的）" +
-                           "。条件：电力尚未被破坏";
-                case "lock":
-                    return "锁住附近的门，白方需绕行。用法：/lock";
-                case "tp":
-                    return "预警 3 秒后传送到目标处（目标是自己时传送到随机其他玩家）。" +
-                           "用法：/tp [玩家ID]（无参 = 随机目标）";
-                case "list":
-                    return "列出全部玩家的 ID 与昵称，供 /tp 使用。用法：/list";
-                default:
-                    return null;
+                case "break": return "拆电断电（默认随机两个电箱）";
+                case "lock":  return "锁住附近的门";
+                case "tp":    return "3 秒后传送到目标处";
+                case "list":  return "列出玩家 ID 与昵称";
+                default:      return null;
             }
         }
 
@@ -564,9 +588,9 @@ namespace HideAndSeek.Features.Rule
                 {
                     sb.Append(desc);
                     if (d.Cooldown > 0)
-                        sb.Append("。CD ").Append(d.Cooldown).Append('s');
+                        sb.Append(" CD").Append(d.Cooldown);
                     if (d.MaxUses > 0)
-                        sb.Append("，每局 ").Append(d.MaxUses).Append(" 次");
+                        sb.Append(' ').Append(d.MaxUses).Append("次");
                 }
                 else
                 {
