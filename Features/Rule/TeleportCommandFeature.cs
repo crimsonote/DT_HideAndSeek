@@ -33,7 +33,16 @@ namespace HideAndSeek.Features.Rule
 
         [ConfigField(false, "传送落地时播放原版的 TeleportVfx（黑洞状特效）。默认关闭 —— 观感突兀。")]
         public static ConfigEntry<bool> ShowTeleportVfx;
+        [ConfigField("TeleportVfx",
+            "落点特效（EEffectType 名）：TeleportVfx / BlackHoleVfx / MineBombVfx / FlashVfx / ScopeVfx / none")]
+        public static ConfigEntry<string> LandingVfxType;
+
+        [ConfigField("TeleportSfx",
+            "落点音效（ESoundType 名）：TeleportSfx / WarningSfx / ExplosionSfx / AirHornSfx / BlackholeSfx / none")]
+        public static ConfigEntry<string> LandingSfxType;
+
         [ConfigField(true, "预警期间在落点播一个世界特效（闪光），让目标看清黑方将从哪里出现。")]
+
         public static ConfigEntry<bool> ShowLandingVfx;
 
         [ConfigField("黑方即将传送到标记处",
@@ -204,21 +213,44 @@ namespace HideAndSeek.Features.Rule
             bool showArrow = ShowWarningArrow?.Value ?? true;
 
             // ① 立刻预警
-            if ((PlayWarningSfx?.Value ?? true))
-                room.SendSystemSFX(ESoundType.WarningSfx, target);
+            // 注意：SendSystemSFX(type, player) 会把效果挂在**玩家身上** —— 那不是落点指示。
+            // 落点相关的视听提示一律走 BroadcastWorld*（带 Pos 的那几个重载）。
+            string sfxName = LandingSfxType?.Value;
+            if (!string.IsNullOrEmpty(sfxName)
+                && !sfxName.Equals("none", global::System.StringComparison.OrdinalIgnoreCase))
+            {
+                if (global::System.Enum.TryParse(sfxName, true, out ESoundType sfx))
+                {
+                    try { room.BroadcastWorldSFX(sfx, dest, 99999f); }
+                    catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Teleport：落点音效失败 — {ex.Message}"); }
+                }
+                else
+                {
+                    Plugin.Log.LogWarning($"[HS] Teleport：未知音效名 {sfxName}");
+                }
+            }
 
             // 落点世界特效：我们无法在客户端渲染世界空间文字，但可以用世界坐标的特效
             // 把"黑方将从哪里出现"直接画在地上。distance 给大值以确保目标一定收到
             // （默认 896 只覆盖附近）。
+            // 落点世界特效：客户端无法渲染世界空间文字，所以用世界坐标的特效把
+            // "黑方将从哪里出现"画在地上。distance 给大值以确保目标一定收到
+            // （默认 896 只覆盖附近）。特效类型可配，便于不进代码就换观感。
             if (ShowLandingVfx == null || ShowLandingVfx.Value)
             {
-                try
+                string vfxName = LandingVfxType?.Value;
+                if (!string.IsNullOrEmpty(vfxName)
+                    && !vfxName.Equals("none", global::System.StringComparison.OrdinalIgnoreCase))
                 {
-                    room.BroadcastWorldVFX(EEffectType.FlashVfx, 0, dest, 99999f);
-                }
-                catch (global::System.Exception ex)
-                {
-                    Plugin.Log.LogWarning($"[HS] Teleport：落点特效失败 — {ex.Message}");
+                    if (global::System.Enum.TryParse(vfxName, true, out EEffectType vfx))
+                    {
+                        try { room.BroadcastWorldVFX(vfx, 0, dest, 99999f); }
+                        catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Teleport：落点特效失败 — {ex.Message}"); }
+                    }
+                    else
+                    {
+                        Plugin.Log.LogWarning($"[HS] Teleport：未知特效名 {vfxName}");
+                    }
                 }
             }
 
