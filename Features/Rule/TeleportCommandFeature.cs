@@ -37,7 +37,7 @@ namespace HideAndSeek.Features.Rule
             "落点特效（EEffectType 名）：TeleportVfx / BlackHoleVfx / MineBombVfx / FlashVfx / ScopeVfx / none")]
         public static ConfigEntry<string> LandingVfxType;
 
-        [ConfigField("TeleportSfx",
+        [ConfigField("WarningSfx",
             "落点音效（ESoundType 名）：TeleportSfx / WarningSfx / ExplosionSfx / AirHornSfx / BlackholeSfx / none")]
         public static ConfigEntry<string> LandingSfxType;
 

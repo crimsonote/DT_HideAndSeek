@@ -328,6 +328,7 @@ namespace HideAndSeek.Features.Rule
                 if (inst == null) { why = "读不到任务进度"; return false; }
 
                 var curProp = AccessTools.Property(mmType, "CurrentPoint");
+                var goalProp = AccessTools.Property(mmType, "GoalPoint");
                 if (curProp == null) { why = "读不到任务进度字段"; return false; }
 
                 // CurrentPoint 是 **float** —— 之前按 int 拆箱会抛 InvalidCastException，
@@ -335,8 +336,14 @@ namespace HideAndSeek.Features.Rule
                 float cur = global::System.Convert.ToSingle(curProp.GetValue(inst));
                 if (cur <= 0f) { why = "当前任务进度为 0"; return false; }
 
-                float cost = cur * percent / 100f;
+                // 关键：百分比的基数是 GoalPoint（任务总量），不是 CurrentPoint（当前值）。
+                // 旧写法按当前值算 —— 进度 5/45 时 5% 只有 0.25，被下限抬到 1，
+                // 扣完 5→4 在进度条上根本看不出来，用户因此认为"完全没扣"。
+                float goal = goalProp == null ? 0f : global::System.Convert.ToSingle(goalProp.GetValue(inst));
+                float effective = goal > 0f ? goal : cur;
+                float cost = effective * percent / 100f;
                 if (cost < 1f) cost = 1f;
+                if (cost > cur) cost = cur;          // 不能扣成负数
                 if (cur < cost) { why = $"进度不足（现有 {cur:F0}，需要 {cost:F0}）"; return false; }
 
                 curProp.SetValue(inst, cur - cost);
@@ -545,3 +552,4 @@ namespace HideAndSeek.Features.Rule
         }
     }
 }
+
