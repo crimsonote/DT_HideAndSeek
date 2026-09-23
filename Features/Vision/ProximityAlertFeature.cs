@@ -26,7 +26,7 @@ namespace HideAndSeek.Features.Vision
     internal static class ProximityAlertFeature
     {
         [ConfigField(false, "启用接近预警。默认关闭。")]
-        public static ConfigEntry<bool> Enabled;
+        public static ConfigEntry<bool> AlertEnabled;
 
         [ConfigField(300f, "触发距离。黑方进入该距离后，向其附近的白方播放警示音。",
             Min = 0f, Max = 2000f)]
@@ -50,7 +50,7 @@ namespace HideAndSeek.Features.Vision
             {
                 if (ModeRuntime.Bypass || __instance == null)
                     return;
-                if (Enabled == null || !Enabled.Value)
+                if (AlertEnabled == null || !AlertEnabled.Value)
                     return;
                 if (__instance.State != EGameState.Survive)
                     return;

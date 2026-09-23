@@ -372,6 +372,7 @@ namespace HideAndSeek.Features.Vision
             UnlockUntil.Clear();
             MarkerUntil.Clear();
             LiveUntil.Clear();
+            PinSnapshot.Clear();      // 跨局 PlayerId 会复用，不清会读到上一局的快照位置
         }
     }
 }

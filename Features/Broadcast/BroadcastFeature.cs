@@ -41,7 +41,7 @@ namespace HideAndSeek.Features.Broadcast
         private const int MagicDeviceId = 999999;
 
         [ConfigField(true, "启用播报。")]
-        public static ConfigEntry<bool> Enabled;
+        public static ConfigEntry<bool> AnnounceEnabled;
 
         [ConfigField("捉迷藏模式", "标题（进房介绍与开局提示共用）。")]
         public static ConfigEntry<string> IntroTitle;
@@ -102,7 +102,7 @@ namespace HideAndSeek.Features.Broadcast
         private static readonly HashSet<int> PendingWelcome = new HashSet<int>();
 
         private static readonly Dictionary<string, string> PendingRuleChanges = new Dictionary<string, string>();
-        private static bool Ready => !ModeRuntime.Bypass && Enabled != null && Enabled.Value;
+        private static bool Ready => !ModeRuntime.Bypass && AnnounceEnabled != null && AnnounceEnabled.Value;
 
         /// <summary>当前是否为"自动指定黑方"模式（开局直接发刀）。</summary>
         private static bool AutoAssignBlack
