@@ -286,15 +286,16 @@ namespace HideAndSeek.Features.Broadcast
                 ? EChatType.NormalChat
                 : EChatType.SecretChat;
 
-            int perMsg = MaxLinesPerMessage?.Value ?? 0;
-            if (perMsg <= 0)
+            // 气泡（SecretChat）原样发送，不折行 —— TMP_Text 自带换行，
+            // 原文的 \n 就是作者的分行意图，再按字数折一次反而打乱结构。
+            // 聊天栏（NormalChat）必须折行：它放不下时是**直接截断**，不是折行。
+            if (ct == EChatType.SecretChat)
             {
-                // 不拆条：**原样发送**，不做宽度折行。
-                // 弹泡底层是 TMP_Text，原文里的 \n 会照常渲染，
-                // 人为按字数折行反而会把作者写好的换行结构打乱。
                 player.Session.Send(BuildText(text, ct));
                 return;
             }
+
+            int perMsg = MaxLinesPerMessage?.Value ?? 0;
 
             // 只有需要拆条时才折行 —— 因为要把行按 perMsg 分组，必须先有"行"的概念。
             int width = (int)(MaxLineWidth?.Value ?? 52f);
@@ -307,6 +308,9 @@ namespace HideAndSeek.Features.Broadcast
                         lines.Add(w);
                 }
             }
+
+            if (perMsg <= 0)
+                perMsg = lines.Count;              // 聊天栏：折行后一次发完
 
             int interval = intervalMs;
             int index = 0;
