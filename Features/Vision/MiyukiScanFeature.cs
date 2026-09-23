@@ -164,9 +164,22 @@ namespace HideAndSeek.Features.Vision
                     //     让地图标记跟随真实位置；之后停止发包，标记就静止在原地（需求里的"停留两秒"）。
                     // 实时段：仅白方需要重发 pin（黑方靠 AOI 解封由原版刷新）。
                     // 只在 LiveUntil 之前重发 → 之后停止发包，标记静止在原地（需求里的"停留两秒"）。
-                    if (MarkerUntil.ContainsKey(pid)
-                        && LiveUntil.TryGetValue(pid, out float live) && now < live)
-                        SendAllPins(__instance, p);
+                    if (MarkerUntil.ContainsKey(pid))
+                    {
+                        if (LiveUntil.TryGetValue(pid, out float live) && now < live)
+                        {
+                            // 实时段：跟随真实位置，并记录快照供静止段复用
+                            SendAllPins(__instance, p);
+                            SnapshotPins(__instance, p);
+                        }
+                        else
+                        {
+                            // 静止段：客户端 pin 有存活时间，不重发就会提前消失
+                            // （实测"1 秒刚过白点就没了"）。这里继续重发，但用快照位置，
+                            // 于是既能存活，又保持静止 —— 即需求里的"停留两秒"。
+                            SendSnapshotPins(__instance, p);
+                        }
+                    }
 
                     // ③ 到点触发下一轮扫描
                     if (!NextScanAt.TryGetValue(pid, out float next) || now >= next)
@@ -233,6 +246,59 @@ namespace HideAndSeek.Features.Vision
             }
         }
 
+        /// <summary>
+        /// 每个美幸一份"静止段"快照：miyukiPid → (targetPid → 位置)。
+        /// 实时段结束时记录，静止段照此重发 —— 客户端 pin 有存活时间，
+        /// 停止重发会导致白点提前消失（实测 1 秒刚过就没了）。
+        /// </summary>
+        private static readonly Dictionary<int, Dictionary<int, PosInfo>> PinSnapshot
+            = new Dictionary<int, Dictionary<int, PosInfo>>();
+
+        /// <summary>记录当前所有可见目标的位置，供静止段复用。</summary>
+        private static void SnapshotPins(GameRoom room, GamePlayer miyuki)
+        {
+            int mpid = miyuki.PublicInfo?.PlayerId ?? 0;
+            if (mpid == 0)
+                return;
+
+            var snap = new Dictionary<int, PosInfo>();
+            var all = room.Players;
+            for (int i = 0; i < all.Count; i++)
+            {
+                var other = all[i];
+                if (other?.PublicInfo == null || other == miyuki)
+                    continue;
+                bool visible = other.IsAlive && other.State != EPlayerState.Hide && !other.IsSpectator;
+                if (visible)
+                    snap[other.PublicInfo.PlayerId] = other.PublicInfo.Pos?.Clone();
+            }
+            PinSnapshot[mpid] = snap;
+        }
+
+        /// <summary>用快照位置重发 pin：保持存活，同时位置静止。</summary>
+        private static void SendSnapshotPins(GameRoom room, GamePlayer miyuki)
+        {
+            int mpid = miyuki.PublicInfo?.PlayerId ?? 0;
+            if (mpid == 0 || !PinSnapshot.TryGetValue(mpid, out var snap))
+                return;
+
+            foreach (var kv in snap)
+            {
+                if (kv.Value != null)
+                    WhiteRadarFeature.SendPin(miyuki, WhiteRadarFeature.PinIdBase + kv.Key, kv.Value);
+            }
+
+            // 快照里没有的人，确保其 pin 已清除（可能在这 2 秒内死亡/躲进柜子）
+            var all = room.Players;
+            for (int i = 0; i < all.Count; i++)
+            {
+                var other = all[i];
+                if (other?.PublicInfo == null || other == miyuki)
+                    continue;
+                if (!snap.ContainsKey(other.PublicInfo.PlayerId))
+                    WhiteRadarFeature.SendPin(miyuki, WhiteRadarFeature.PinIdBase + other.PublicInfo.PlayerId, null);
+            }
+        }
         private static void ClearPins(GameRoom room, GamePlayer miyuki)
         {
             var all = room.Players;

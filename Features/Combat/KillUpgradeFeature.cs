@@ -72,7 +72,10 @@ namespace HideAndSeek.Features.Combat
         private static readonly int[] Levels = new int[DirCount];
 
         /// <summary>已被我们改写过的基础值快照，用于"先还原再套用"避免叠加。</summary>
+        /// <summary>开局时的白方总数（学分分母基准，整局固定）。0 = 尚未记录。</summary>
+        private static int _totalWhitesAtStart;
         private static float _baseEnter = -1f;
+
         private static float _baseExit = -1f;
         private static float _baseSpeed = -1f;
         private static float _baseTask = -1f;
@@ -108,7 +111,10 @@ namespace HideAndSeek.Features.Combat
 
                 // 刚被杀的那个可能已被置为 Hide，所以白方分母取"当前存活白方数 + 1"，
                 // 这样在 2 白局面下每杀一人得 1/2、6 白局面下得 1/6，与开局口径一致。
-                int divisor = whites + 1;
+                // 分母必须用**开局白方总数**（整局固定）。用当前存活数会越杀越小、
+            // 每次所得越来越大，总发放量远超 PoolTotal —— 8 人房实测 6 杀能拿 159
+            // 而非 100，于是能升 8 级而不是 4 级。
+            int divisor = _totalWhitesAtStart > 0 ? _totalWhitesAtStart : (whites + 1);
                 if (divisor <= 0)
                     divisor = 1;
 
@@ -313,7 +319,29 @@ namespace HideAndSeek.Features.Combat
             }
         }
 
+        /// <summary>开局时记录白方总数，作为学分分母基准（整局固定）。</summary>
+        [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
+        internal static class CountWhitesHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                int whites = 0;
+                foreach (var p in __instance.Players)
+                {
+                    if (p?.PublicInfo == null)
+                        continue;
+                    if (p.Color == EPlayerColor.White)
+                        whites++;
+                }
+
+                _totalWhitesAtStart = whites;
+                float per = (PoolTotal?.Value ?? 100f) / (whites > 0 ? whites : 1);
+                Plugin.Log.LogInfo($"[HS] KillUpgrade：开局白方 {whites} 人，每股学分 {per:F1}（池子 {PoolTotal?.Value:F0}）。");
+            }
+        }
         // ── 生命周期 ────────────────────────────────────────────────
+
         [HarmonyPatch(typeof(GameRoom), "StartLobby")]
         internal static class LobbyHook
         {
@@ -346,6 +374,7 @@ namespace HideAndSeek.Features.Combat
                 WhiteWinFeature.MinMissionProgress.Value = (int)_baseTask;
 
             _baseEnter = _baseExit = _baseSpeed = _baseTask = -1f;
+            _totalWhitesAtStart = 0;
         }
     }
 }
