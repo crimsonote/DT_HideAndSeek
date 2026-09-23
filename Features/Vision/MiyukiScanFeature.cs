@@ -169,15 +169,15 @@ namespace HideAndSeek.Features.Vision
                         if (LiveUntil.TryGetValue(pid, out float live) && now < live)
                         {
                             // 实时段：跟随真实位置，并记录快照供静止段复用
-                            SendAllPins(__instance, p);
-                            SnapshotPins(__instance, p);
+                            SendAllPins(__instance, p, onlyOutsideAoi: p.Color == EPlayerColor.Black);
+                            SnapshotPins(__instance, p, onlyOutsideAoi: p.Color == EPlayerColor.Black);
                         }
                         else
                         {
                             // 静止段：客户端 pin 有存活时间，不重发就会提前消失
                             // （实测"1 秒刚过白点就没了"）。这里继续重发，但用快照位置，
                             // 于是既能存活，又保持静止 —— 即需求里的"停留两秒"。
-                            SendSnapshotPins(__instance, p);
+                            SendSnapshotPins(__instance, p);   // 用已过滤的快照，无需再判
                         }
                     }
 
@@ -217,9 +217,6 @@ namespace HideAndSeek.Features.Vision
                 }
             }
 
-            // 黑方不发 pin：AOI 解封后原版黑方地图本来就会显示所有人，
-            // 再叠我们那套会多出白色方块徽章（TurnComplyRules 的副产品）。
-            // 白方没有 AOI 通道，只能靠 pin 显示。
             // 实时段 = "持续把所有人介绍给美幸"的窗口。黑方必须覆盖整个解封期，
             // 否则中途站定不动的人会因为没有新的 Move 事件而不再被刷新。
             // 白方靠 pin 维持，实时段保持 UnlockSeconds 即可。
@@ -227,18 +224,16 @@ namespace HideAndSeek.Features.Vision
                 ? (MarkerSeconds?.Value ?? 3)
                 : (UnlockSeconds?.Value ?? 1));
 
-            if (!isBlack)
-            {
-                SendAllPins(room, miyuki);
-                MarkerUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
-            }
+            // 双方都发 pin；黑方只发 AOI 范围外的（范围内原版地图已经会显示）
+            SendAllPins(room, miyuki, onlyOutsideAoi: isBlack);
+            MarkerUntil[pid] = now + (MarkerSeconds?.Value ?? 3);
 
             Plugin.Log.LogInfo(
                 $"[HS] MiyukiScan：美幸 #{pid} 扫描（{(isBlack ? "黑方：解封 AOI" : "白方：仅地图")}）。");
         }
 
         /// <summary>把所有人的位置发给该美幸（pin 通道与白方雷达一致）。</summary>
-        private static void SendAllPins(GameRoom room, GamePlayer miyuki)
+        private static void SendAllPins(GameRoom room, GamePlayer miyuki, bool onlyOutsideAoi = false)
         {
             var all = room.Players;
             for (int i = 0; i < all.Count; i++)
@@ -248,6 +243,15 @@ namespace HideAndSeek.Features.Vision
                     continue;
 
                 bool visible = other.IsAlive && other.State != EPlayerState.Hide && !other.IsSpectator;
+
+                // 黑方只补 AOI 范围外的标记 —— 范围内原版地图已经会画，
+                // 再发 pin 会在那些人身上多叠一个白色方块。
+                if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
+                {
+                    float __exit = AoiCullingFeature.ExitRange?.Value ?? 900f;
+                    if (Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __exit * __exit)
+                        continue;
+                }
                 WhiteRadarFeature.SendPin(miyuki,
                     WhiteRadarFeature.PinIdBase + other.PublicInfo.PlayerId,
                     visible ? other.PublicInfo.Pos : null);
@@ -263,7 +267,7 @@ namespace HideAndSeek.Features.Vision
             = new Dictionary<int, Dictionary<int, PosInfo>>();
 
         /// <summary>记录当前所有可见目标的位置，供静止段复用。</summary>
-        private static void SnapshotPins(GameRoom room, GamePlayer miyuki)
+        private static void SnapshotPins(GameRoom room, GamePlayer miyuki, bool onlyOutsideAoi = false)
         {
             int mpid = miyuki.PublicInfo?.PlayerId ?? 0;
             if (mpid == 0)
@@ -278,6 +282,12 @@ namespace HideAndSeek.Features.Vision
                     continue;
                 bool visible = other.IsAlive && other.State != EPlayerState.Hide && !other.IsSpectator;
                 if (visible)
+                if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
+                {
+                    float __exit = AoiCullingFeature.ExitRange?.Value ?? 900f;
+                    if (Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __exit * __exit)
+                        continue;
+                }
                     snap[other.PublicInfo.PlayerId] = other.PublicInfo.Pos?.Clone();
             }
             PinSnapshot[mpid] = snap;
