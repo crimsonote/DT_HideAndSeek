@@ -223,6 +223,10 @@ namespace HideAndSeek.Features.Vision
             if (!IsBlack(player))                 // 接收者不是黑方 → 原版行为
                 return true;
 
+            // 美幸扫描期：暂时解除 AOI，让黑方看到全图（1 秒后由扫描功能收回）
+            if (MiyukiScanFeature.IsUnlocking(player))
+                return true;
+
             Diagnostics.Hit("AoiCulling");
 
             Resolve(player, out float cx, out float cy, out float enter, out _);

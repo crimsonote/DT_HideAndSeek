@@ -64,7 +64,7 @@ namespace HideAndSeek.Features.Vision
         public static ConfigEntry<bool> SkipDummies;
 
         /// <summary>非玩家 pin id 的基数：避开真实 PlayerId，让客户端查不到 PlayerCache。</summary>
-        private const int PinIdBase = 90000;
+        internal const int PinIdBase = 90000;
 
         /// <summary>雷达用的任务类型。避开 38(ScFusebox)/39(ScWeapon)，走 Define.MissionPinType 的其它分支。</summary>
         private const int RadarMissionType = 99;
@@ -171,7 +171,7 @@ namespace HideAndSeek.Features.Vision
         }
 
         /// <summary>下发或撤销一个 pin。pos 为 null 表示撤销（(0,0) 是客户端的删除哨兵）。</summary>
-        private static void SendPin(GamePlayer to, int pinId, PosInfo pos)
+        internal static void SendPin(GamePlayer to, int pinId, PosInfo pos)
         {
             try
             {
