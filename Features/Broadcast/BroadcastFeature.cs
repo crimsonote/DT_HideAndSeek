@@ -90,6 +90,9 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(52f, "聊天栏单行宽度上限（半角单位，中文按 2 计，52 = 26 个汉字）。超出会另起一行；设 0 关闭自动折行。",
             Min = 0f, Max = 200f)]
         public static ConfigEntry<float> MaxLineWidth;
+        [ConfigField(2500, "进房介绍每条消息之间的间隔（毫秒）。0 = 一次性发完。分条慢发是为了每条都能被看到，不必点开记录。", Min = 0f, Max = 15000f)]
+        public static ConfigEntry<int> MessageIntervalMs;
+
         [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
 
         public static ConfigEntry<int> WelcomeDelayMs;
@@ -283,17 +286,35 @@ namespace HideAndSeek.Features.Broadcast
 
             // 聊天栏的显示单位是"一条消息最多 3 行"，而不是"一行一条"。
             // 早先每行发一条，十几条消息把前面全顶出了可见区（实测"前面都被隐藏了"）。
+            // 按阶段选自适应通道：NormalChat 只在 大厅/裁判 渲染，生存阶段等于白发。
+            EChatType ct = (GameRoom.Instance?.State == EGameState.Lobby
+                            || GameRoom.Instance?.State == EGameState.Trial)
+                ? EChatType.NormalChat
+                : EChatType.SecretChat;
+
+            int interval = MessageIntervalMs?.Value ?? 2500;
+            int index = 0;
             for (int i = 0; i < lines.Count; i += MaxLinesPerMessage)
             {
                 int take = global::System.Math.Min(MaxLinesPerMessage, lines.Count - i);
                 string chunk = string.Join("\n", lines.GetRange(i, take));
-                // 按阶段选自适应通道：NormalChat 只在 大厅/裁判 渲染，
-                // 生存阶段发出去等于白发（开局提示正是这种情况）。
-                EChatType ct = (GameRoom.Instance?.State == EGameState.Lobby
-                                || GameRoom.Instance?.State == EGameState.Trial)
-                    ? EChatType.NormalChat
-                    : EChatType.SecretChat;
-                player.Session.Send(BuildText(chunk, ct));
+                int delay = interval > 0 ? index * interval : 0;
+
+                if (delay <= 0)
+                {
+                    player.Session.Send(BuildText(chunk, ct));
+                }
+                else
+                {
+                    // 闭包捕获局部副本，避免所有回调引用同一个 chunk
+                    string payload = chunk;
+                    GameRoom.Instance?.PushAfter(delay, delegate
+                    {
+                        try { player?.Session?.Send(BuildText(payload, ct)); }
+                        catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Broadcast：分段发送失败 — {ex.Message}"); }
+                    });
+                }
+                index++;
             }
         }
         /// <summary>构造文字包。chatType 决定显示位置（NormalChat→聊天栏，SecretChat→弹泡/发信机）。</summary>

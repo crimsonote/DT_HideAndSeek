@@ -235,7 +235,7 @@ namespace HideAndSeek.Features.Combat
             switch (dir)
             {
                 case DirVision:
-                    return $"黑方视野提升 {((VisionBonusPerLevel?.Value ?? 0.5f) * level * 100f):F0}%";
+                    return $"黑方地图视野提升 {((VisionBonusPerLevel?.Value ?? 0.5f) * level * 100f):F0}%";
                 case DirSpeed:
                     return $"黑方速度提升 {((SpeedBonusPerLevel?.Value ?? 0.1f) * level * 100f):F0}%";
                 case DirTask:
@@ -268,13 +268,13 @@ namespace HideAndSeek.Features.Combat
             var sb = new global::System.Text.StringBuilder();
             sb.Append("学分 ").Append(_credits.ToString("F1"))
               .Append(" 每级").Append(cost.ToString("F0"));
-            sb.Append('\n').Append("视野 ").Append(Levels[DirVision]).Append('/').Append(max)
+            sb.Append('\n').Append("视野v ").Append(Levels[DirVision]).Append('/').Append(max)
               .Append(" x").Append(vK.ToString("F1"));
-            sb.Append(" 移速 ").Append(Levels[DirSpeed]).Append('/').Append(max)
+            sb.Append(" 移速s ").Append(Levels[DirSpeed]).Append('/').Append(max)
               .Append(" +").Append(sB.ToString("F1"));
-            sb.Append('\n').Append("任务 ").Append(Levels[DirTask]).Append('/').Append(max)
+            sb.Append('\n').Append("任务t ").Append(Levels[DirTask]).Append('/').Append(max)
               .Append(" +").Append(tB.ToString("F0"))
-              .Append("  用法 /credit v|s|t");
+              .Append("  用法 /cre v|s|t");
             return sb.ToString();
         }
 
