@@ -124,9 +124,9 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> RepairCostPercent;
         private const string WhiteHelp =
             "【白方】" +
-            "\n/radar — 全图扫描 15 秒（2 次/局）CD75" +
-            "\n/stasis — 时停黑方 5 秒，耗 5% 进度 CD90" +
-            "\n/repair — 立即恢复供电，耗 10% 进度（仅断电）";
+            "\n/rad — 全图扫描 15 秒（2 次/局）CD75" +
+            "\n/sta — 时停黑方 5 秒，耗 5% 进度 CD90" +
+            "\n/rep — 立即恢复供电，耗 10% 进度（仅断电）";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
@@ -195,15 +195,15 @@ namespace HideAndSeek.Features.Rule
                     Reply(player, deviceId, WhiteHelp);
                     break;
 
-                case "radar":
+                case "rad": case "radar":
                     DoRadar(room, player, deviceId);
                     break;
 
-                case "stasis":
+                case "sta": case "stasis":
                     DoStasis(room, player, deviceId);
                     break;
 
-                case "repair":
+                case "rep": case "repair":
                     DoRepair(room, player, deviceId);
                     break;
 

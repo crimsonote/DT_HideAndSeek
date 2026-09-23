@@ -118,7 +118,8 @@ namespace HideAndSeek.Features.Combat
                 Plugin.Log.LogInfo(
                     $"[HS] KillUpgrade：击杀获得 {share:F1} 学分（池子 {PoolTotal?.Value:F0} ÷ {divisor}），当前 {_credits:F1}。");
 
-                Announce(room, $"黑方获得 {share:F1} 学分（现有 {_credits:F1}）。");
+                // 击杀本身不播报：死亡信息已由 BroadcastFeature.DeathAnnounce 负责，
+                // 这里再播一次会重复刷屏。
             }
         }
 
@@ -150,13 +151,33 @@ namespace HideAndSeek.Features.Combat
             Levels[dir]++;
             ApplyUpgrades();
 
-            message = $"{DirName(dir)} 升至 {Levels[dir]} 级（消耗 {cost:F1}，剩余 {_credits:F1}）";
+            // 播报口径：只说"提升到哪里"，不透露剩余积分（黑方自己 /cre 能看）。
+            // 任务门槛那项刻意回避"白方"二字。
+            message = UpgradeText(dir, Levels[dir]);
             if (AnnounceUpgrade == null || AnnounceUpgrade.Value)
-                Announce(room, "黑方强化：" + message);
+                Announce(room, message);
             Plugin.Log.LogInfo($"[HS] KillUpgrade：{message}");
             return true;
         }
 
+        /// <summary>
+        /// 升级后的对外文本。三项各自表述"提升到多少"，不谈剩余积分，也不提"白方"。
+        /// 视野显示倍率、移速显示加成、任务门槛显示提升后的数值。
+        /// </summary>
+        internal static string UpgradeText(int dir, int level)
+        {
+            switch (dir)
+            {
+                case DirVision:
+                    return $"视野提升已至 {1f + (VisionBonusPerLevel?.Value ?? 0.5f) * level:F1}";
+                case DirSpeed:
+                    return $"速度提升已至 {(SpeedBonusPerLevel?.Value ?? 0.1f) * level:F1}";
+                case DirTask:
+                    return $"最低任务完成量提高至 {(TaskBonusPerLevel?.Value ?? 10f) * level:F0}";
+                default:
+                    return "强化完成";
+            }
+        }
         internal static string DirName(int dir)
         {
             switch (dir)

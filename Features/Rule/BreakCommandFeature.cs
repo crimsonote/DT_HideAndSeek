@@ -168,15 +168,29 @@ namespace HideAndSeek.Features.Rule
             Plugin.Log.LogInfo($"[HS] Debug：以玩家 #{player.PublicInfo?.PlayerId} 身份执行 /{name} {arg}");
             Handle(room, player, 0, name, arg);
         }
+        /// <summary>把旧的长命令名归一成短名，保证改短后旧用法仍可用。</summary>
+        private static string Normalize(string name)
+        {
+            switch (name)
+            {
+                case "break": return "brk";
+                case "lock":  return "lck";
+                case "list":  return "ls";
+                case "credit": return "cre";
+                default: return name;
+            }
+        }
+
         private static void Handle(GameRoom room, GamePlayer player, int deviceId, string name, string arg)
         {
+            name = Normalize(name);
             var defs = GetCommands();
 
             // 内置命令（break/lock/tp/list）平时靠 BuiltinCommand 兜底执行，
             // 但它们不在配置里，所以 defs 里没有它们 —— 帮助列表会漏掉。
             // 这里补进展示用的副本（GetCommands 的结果带缓存，不要就地改）。
             var forHelp = new List<CommandDef>(defs);
-            foreach (var probe in new[] { "break", "lock", "tp", "list", "credit" })
+            foreach (var probe in new[] { "brk", "lck", "tp", "ls", "cre" })
             {
                 bool exists = false;
                 foreach (var d in forHelp)
@@ -226,14 +240,14 @@ namespace HideAndSeek.Features.Rule
         {
             switch (name)
             {
-                case "break":
-                    return new CommandDef { Name = "break", Condition = "fusebox", Action = "Disconnect", Cooldown = 90 };
-                case "lock":
-                    return new CommandDef { Name = "lock", Condition = "", Action = "Lock", Cooldown = 60 };
-                case "credit":
-                    return new CommandDef { Name = "credit", Condition = "", Action = "Credit", Cooldown = 0 };
-                case "list":
-                    return new CommandDef { Name = "list", Condition = "", Action = "ListPlayers", Cooldown = 0 };
+                case "brk":
+                    return new CommandDef { Name = "brk", Condition = "fusebox", Action = "Disconnect", Cooldown = 90 };
+                case "lck":
+                    return new CommandDef { Name = "lck", Condition = "", Action = "Lock", Cooldown = 60 };
+                case "cre":
+                    return new CommandDef { Name = "cre", Condition = "", Action = "Credit", Cooldown = 0 };
+                case "ls":
+                    return new CommandDef { Name = "ls", Condition = "", Action = "ListPlayers", Cooldown = 0 };
                 case "tp":
                     return new CommandDef { Name = "tp", Condition = "", Action = "Teleport", Cooldown = 60 };
                 default:
@@ -635,11 +649,11 @@ namespace HideAndSeek.Features.Rule
             // 分隔一律用符号，不写「用法：」「条件：」「冷却」这类词。
             switch (name)
             {
-                case "break":  return "拆电断电（默认随机两个电箱） CD{cd}";
-                case "lock":   return "锁住附近的门 CD{cd}";
-                case "tp":     return "3 秒后传送到目标处 [玩家ID] CD{cd}";
-                case "list":   return "列出玩家 ID 与昵称";
-                case "credit": return "查看/消耗黑学分升级 v|s|t";
+                case "brk": return "拆电断电（默认随机两个电箱） CD{cd}";
+                case "lck": return "锁住附近的门 CD{cd}";
+                case "tp":  return "3 秒后传送到目标处 [玩家ID] CD{cd}";
+                case "ls":  return "列出玩家 ID 与昵称";
+                case "cre": return "查看/消耗积分升级 v|s|t|help";
                 default:       return null;
             }
         }
