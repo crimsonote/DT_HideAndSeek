@@ -404,6 +404,12 @@ namespace HideAndSeek.Features.Rule
                 return;
             }
 
+            if (dir == "help" || dir == "?")
+            {
+                Reply(player, deviceId, HideAndSeek.Features.Combat.KillUpgradeFeature.HelpText());
+                return;
+            }
+
             int idx;
             switch (dir)
             {
@@ -414,7 +420,7 @@ namespace HideAndSeek.Features.Rule
                 case "t": case "task": case "任务":
                     idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirTask; break;
                 default:
-                    Reply(player, deviceId, "用法 /credit v|s|t");
+                    Reply(player, deviceId, "用法 /cre v|s|t|help");
                     return;
             }
 

@@ -164,6 +164,34 @@ namespace HideAndSeek.Features.Combat
         /// 升级后的对外文本。三项各自表述"提升到多少"，不谈剩余积分，也不提"白方"。
         /// 视野显示倍率、移速显示加成、任务门槛显示提升后的数值。
         /// </summary>
+        /// <summary>
+        /// 帮助文本：逐级列出**实际数值**而不是等级。
+        /// "任务升了 2 级"没有信息量；玩家要知道的是"最低任务量提高到了 10、15、20"。
+        /// </summary>
+        internal static string HelpText()
+        {
+            int max = MaxLevelPerItem?.Value ?? 3;
+            float cost = (PoolTotal?.Value ?? 100f) * (CostPercentPerLevel?.Value ?? 18f) / 100f;
+            float vB = VisionBonusPerLevel?.Value ?? 0.5f;
+            float sB = SpeedBonusPerLevel?.Value ?? 0.1f;
+            float tB = TaskBonusPerLevel?.Value ?? 10f;
+
+            var v = new global::System.Text.StringBuilder();
+            var s = new global::System.Text.StringBuilder();
+            var k = new global::System.Text.StringBuilder();
+            for (int i = 1; i <= max; i++)
+            {
+                if (i > 1) { v.Append('/'); s.Append('/'); k.Append('/'); }
+                v.Append((1f + vB * i).ToString("F1"));
+                s.Append('+').Append((sB * i).ToString("F1"));
+                k.Append((tB * i).ToString("F0"));
+            }
+
+            return $"学分 {_credits:F0} 每级{cost:F0}\n" +
+                   $"视野x {v}  速度 {s}\n" +
+                   $"任务量 {k}\n" +
+                   "用法 /cre v|s|t";
+        }
         internal static string UpgradeText(int dir, int level)
         {
             switch (dir)
