@@ -53,17 +53,8 @@ namespace HideAndSeek.Features.Combat
 
             TimeManager.Instance.UpdateRemainTime(bonus);
 
-            if (Announce != null && Announce.Value && !string.IsNullOrEmpty(AnnounceText?.Value))
-            {
-                string text = TextService.Format(AnnounceText.Value, ("sec", bonus.ToString()));
-                room.Broadcast(new Protocol.S_CHAT_MESSAGE
-                {
-                    Type = Protocol.EChatType.SecretChat,
-                    Text = text,
-                    DeviceId = 999999,
-                    Time = TimeManager.Instance.SurviveTime
-                });
-            }
+            // 击杀加时不再公开播报：按需求，除 /tp 之外的功能都不对外播报
+            // （击杀本身已有死亡通告，加时不必再单独通知全场）。
 
             Plugin.Log.LogInfo($"[HS] KillTimeBonus：击杀成功，倒计时 +{bonus} 秒。");
         }

@@ -124,9 +124,9 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> RepairCostPercent;
         private const string WhiteHelp =
             "【白方】" +
-            "\n/rad — 全图扫描 15 秒（2 次/局）CD75" +
-            "\n/sta — 冻结黑方 5 秒，耗 5% 进度 CD90" +
-            "\n/rep — 立即恢复供电，耗 10% 进度（仅断电）";
+            "\n/rad — 实验性全图扫描15秒(2/2)CD75" +
+            "\n/sta — 冻结黑方5秒，5%任务进度CD90" +
+            "\n/rep — 立即恢复供电，10%任务进度";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
@@ -258,8 +258,7 @@ namespace HideAndSeek.Features.Rule
             int shown = used + 1;
             Reply(player, deviceId, $"(实验性)全图扫描已开启({shown}/{max})。");
 
-            if (AnnounceOnUse == null || AnnounceOnUse.Value)
-                SendPublic(room, "扫描已开启。");
+            // 不公告：/rad 的开启不对外播报
         }
 
         /// <summary>
@@ -531,25 +530,6 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        /// <summary>向全房发一条公开聊天（不署名）。</summary>
-        private static void SendPublic(GameRoom room, string text)
-        {
-            try
-            {
-                room?.Broadcast(new S_CHAT_MESSAGE
-                {
-                    Type = EChatType.NormalChat,
-                    Text = text,
-                    PlayerId = 0,
-                    Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
-                    IsDead = false
-                });
-            }
-            catch (global::System.Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] 白方命令：公开发言失败 — {ex.Message}");
-            }
-        }
 
         // ── 生命周期：每局重置配额与冷却 ──────────────────────────────
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]

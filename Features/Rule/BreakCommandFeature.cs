@@ -655,7 +655,7 @@ namespace HideAndSeek.Features.Rule
             // 分隔一律用符号，不写「用法：」「条件：」「冷却」这类词。
             switch (name)
             {
-                case "brk": return "拆电断电（默认随机两个电箱） CD{cd}";
+                case "brk": return "破坏电闸 CD{cd}";
                 case "lck": return "锁住附近的门 CD{cd}";
                 case "tp":  return "3 秒后传送到目标处 [玩家ID] CD{cd}";
                 case "ls":  return "列出玩家 ID 与昵称";

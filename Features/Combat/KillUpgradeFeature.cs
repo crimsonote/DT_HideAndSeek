@@ -197,11 +197,11 @@ namespace HideAndSeek.Features.Combat
             switch (dir)
             {
                 case DirVision:
-                    return $"视野提升已至 {1f + (VisionBonusPerLevel?.Value ?? 0.5f) * level:F1}";
+                    return $"黑方视野提升已至 {1f + (VisionBonusPerLevel?.Value ?? 0.5f) * level:F1}倍";
                 case DirSpeed:
-                    return $"速度提升已至 {(SpeedBonusPerLevel?.Value ?? 0.1f) * level:F1}";
+                    return $"黑方速度提升已至 {(SpeedBonusPerLevel?.Value ?? 0.1f) * level:F1}倍";
                 case DirTask:
-                    return $"最低任务完成量提高至 {(TaskBonusPerLevel?.Value ?? 10f) * level:F0}";
+                    return $"最低任务完成量提高至 {(TaskBonusPerLevel?.Value ?? 10f) * level:F0}%";
                 default:
                     return "强化完成";
             }

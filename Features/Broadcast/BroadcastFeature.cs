@@ -51,7 +51,8 @@ namespace HideAndSeek.Features.Broadcast
             "黑方：在倒计时结束前杀死所有可以杀死的人，视野缩小，刀CD缩短\\n" +
             "白方：在倒计时结束前，避免死亡。通过完成任务可以缩短倒计时，倒计时结束后白方胜利。\\n" +
             "{knife}\\n" +
-            "报告功能被禁用，不分配黑幕角色，部分角色的技能效果会有改变。",
+            "报告功能被禁用，不分配黑幕角色，部分角色的技能效果会有改变。\n" +
+            "除此之外，可以在发信站输入/help来获得与使用部分指令以进行某些操作。",
             "进房介绍正文。{knife} 按发刀模式替换为下面两行之一。用 \\n 表示换行。")]
         public static ConfigEntry<string> JoinBody;
 
@@ -61,7 +62,8 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField("当前，黑方角色将会自动指定。", "自动发刀模式下 {knife} 的内容。")]
         public static ConfigEntry<string> JoinKnifeAuto;
 
-        [ConfigField("在倒计时结束之前，寻找刀具开始杀戮，或者完成任务逃离杀戮~",
+        [ConfigField("在倒计时结束之前，寻找凶器开始追捕，或者完成任务逃离追捕~\n" +
+            "或许也可以前往发信站使用/help来获得一些帮助。两个频道不一样呢~",
             "开局提示：自行拿刀模式（所有人同一句）。")]
         public static ConfigEntry<string> StartBodySelfServe;
 
