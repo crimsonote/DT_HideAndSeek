@@ -118,21 +118,16 @@ namespace HideAndSeek.Features.Broadcast
 
         private static void Notice(GameRoom room, string text)
         {
-            if (room == null || string.IsNullOrEmpty(text))
-                return;
+        // 第一条恒为 SecretChat：生存阶段弹泡 + 进密聊记录。
+        room.Broadcast(BuildText(text, EChatType.SecretChat));
 
-            // 双通道：
-            //   SecretChat → 进 SecretLog（发信机可回看）+ 触发弹泡，但弹泡一闪而过
-            //   NormalChat → 进聊天栏，长期可滚动回看。死亡/升级这类"需要事后查"的信息，
-            //                只有弹泡是不够的（用户反馈：要在那个位置长期记录）。
-            room.Broadcast(BuildChat(text));
-            room.Broadcast(new S_CHAT_MESSAGE
-            {
-                Type = EChatType.NormalChat,
-                Text = text,
-                PlayerId = 0,
-                Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
-            });
+        // 第二条按阶段自适应 —— 客户端每个阶段只有一条文字链路有效：
+        //   大厅/学裁 → NormalChat（聊天面板）；它在生存阶段**不渲染**
+        //   生存阶段  → DeviceChat（公共发信机 NormalLog）
+        EChatType second = (room.State == EGameState.Lobby || room.State == EGameState.Trial)
+            ? EChatType.NormalChat
+            : EChatType.DeviceChat;
+        room.Broadcast(BuildText(text, second));
         }
 
         /// <summary>
@@ -214,12 +209,16 @@ namespace HideAndSeek.Features.Broadcast
         /// 只发密聊通道（SecretChat）的全房通知，**不进普通聊天栏**。
         /// 死亡通告用它 —— 黑方需要知道还剩几人，白方不需要看到这条。
         /// </summary>
-        private static void NoticeSecret(GameRoom room, string text)
+        private static void NoticeDeath(GameRoom room, string text)
         {
             if (room == null || string.IsNullOrEmpty(text))
                 return;
 
+            // SecretChat → 生存阶段即时弹泡 + 进密聊记录（黑方据此判断剩余人数）
+            // DeviceChat → 进公共发信机（NormalLog），便于事后回看
+            // 不能用 NormalChat：客户端只在 大厅/裁判 阶段渲染它，生存阶段是白发。
             room.Broadcast(BuildText(text, EChatType.SecretChat));
+            room.Broadcast(BuildText(text, EChatType.DeviceChat));
         }
         private static void NoticeTo(GamePlayer player, string text)
         {
@@ -281,7 +280,7 @@ namespace HideAndSeek.Features.Broadcast
             Type = chatType,
             Text = text,
             PlayerId = 0,
-            DeviceId = chatType == EChatType.SecretChat ? MagicDeviceId : 0,
+            DeviceId = (chatType == EChatType.SecretChat || chatType == EChatType.DeviceChat) ? MagicDeviceId : 0,
             Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
         };
 
@@ -398,7 +397,7 @@ namespace HideAndSeek.Features.Broadcast
 
             string name = __instance?.Name ?? "某人";
             // 死亡通告只走密聊通道：黑方据此判断剩余人数，白方不必看到。
-            NoticeSecret(room, TextService.Format(
+            NoticeDeath(room, TextService.Format(
                 DeathAnnounce?.Value,
                 ("name", name),
                 ("alive", aliveWhites.ToString()),

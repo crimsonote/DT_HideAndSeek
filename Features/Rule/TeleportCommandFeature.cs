@@ -286,14 +286,21 @@ namespace HideAndSeek.Features.Rule
             {
                 try
                 {
-                    target.Session.Send(new S_CHAT_MESSAGE
-                    {
-                        Type = EChatType.NormalChat,
-                        Text = landingText,
-                        PlayerId = 0,
-                        Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
-                        IsDead = false
-                    });
+                        // 生存阶段 NormalChat 不渲染（等于白发），改用：
+                        //   SecretChat → 弹泡（发给被传送的目标本人）
+                        //   DeviceChat → 进他的公共发信机存档
+                        // DeviceId=999999 与 BroadcastFeature 的魔数一致 → 显示为无署名系统消息。
+                        foreach (var ct in new[] { EChatType.SecretChat, EChatType.DeviceChat })
+                        {
+                            target.Session.Send(new S_CHAT_MESSAGE
+                            {
+                                Type = ct,
+                                Text = landingText,
+                                DeviceId = 999999,
+                                Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+                                IsDead = false
+                            });
+                        }
                 }
                 catch (global::System.Exception ex)
                 {
