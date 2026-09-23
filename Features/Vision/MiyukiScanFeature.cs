@@ -60,6 +60,55 @@ namespace HideAndSeek.Features.Vision
         private static readonly Dictionary<int, float> MarkerUntil = new Dictionary<int, float>();
 
         /// <summary>该黑方是否正处于扫描解封期（AOI 闸门据此放行）。</summary>
+        private static bool _skillResolved;
+        private static ESkillType _miyukiSkill;
+
+        /// <summary>
+        /// 是否拥有美幸的扫描被动：本人是美幸，**或**技能被 RuleBreaker 换成了美幸的技能（Soi 偷取）。
+        /// 与 GameRefs.IsLunaSide 同思路 —— 服务端权威判据是技能而非角色，否则偷到能力的人拿不到效果。
+        /// </summary>
+        internal static bool HasMiyukiAbility(GamePlayer player)
+        {
+            if (player?.PublicInfo == null)
+                return false;
+
+            var dic = Managers.Data?.CharacterDic;
+
+            if (dic != null)
+            {
+                foreach (var kv in dic)
+                {
+                    var cd = kv.Value;
+                    if (cd == null)
+                        continue;
+
+                    // ① 本人是美幸
+                    if (cd.DataId == player.CharacterId)
+                    {
+                        if (cd.Type == ECharacterType.Miyuki)
+                            return true;
+                        break;
+                    }
+                }
+            }
+
+            // ② 技能被换成了美幸的技能（Soi 的 RuleBreaker 复制）
+            if (!_skillResolved && dic != null)
+            {
+                foreach (var kv in dic)
+                {
+                    var cd = kv.Value;
+                    if (cd != null && cd.DataId == MiyukiCharacterId)
+                    {
+                        _miyukiSkill = cd.Skill;
+                        _skillResolved = true;
+                        break;
+                    }
+                }
+            }
+
+            return _skillResolved && player.SkillComponent?.Data?.Type == _miyukiSkill;
+        }
         internal static bool IsUnlocking(GamePlayer black)
         {
             if (black?.PublicInfo == null)
@@ -88,8 +137,8 @@ namespace HideAndSeek.Features.Vision
                     var p = players[i];
                     if (p?.PublicInfo == null || !p.IsAlive || p.IsSpectator)
                         continue;
-                    if (p.PublicInfo.CharacterId != MiyukiCharacterId)
-                        continue;                        // 只处理美幸
+                    if (!HasMiyukiAbility(p))
+                        continue;                        // 只处理「本人是美幸」或「技能被换成美幸」的人
 
                     int pid = p.PublicInfo.PlayerId;
 
