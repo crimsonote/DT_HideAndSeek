@@ -87,7 +87,7 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(true, "有玩家进入房间时，单独向他播报玩法规则。")]
         public static ConfigEntry<bool> WelcomeOnJoin;
 
-        [ConfigField(26f, "聊天栏单行宽度上限（半角单位，中文按 2 计）。超出会另起一行；设 0 关闭自动折行。",
+        [ConfigField(52f, "聊天栏单行宽度上限（半角单位，中文按 2 计，52 = 26 个汉字）。超出会另起一行；设 0 关闭自动折行。",
             Min = 0f, Max = 200f)]
         public static ConfigEntry<float> MaxLineWidth;
         [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
@@ -264,7 +264,7 @@ namespace HideAndSeek.Features.Broadcast
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
-            int width = (int)(MaxLineWidth?.Value ?? 26f);
+            int width = (int)(MaxLineWidth?.Value ?? 52f);
             var lines = new List<string>();
             foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
             {

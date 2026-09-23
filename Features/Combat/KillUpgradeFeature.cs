@@ -51,7 +51,7 @@ namespace HideAndSeek.Features.Combat
             Min = 0f, Max = 5f)]
         public static ConfigEntry<float> VisionBonusPerLevel;
 
-        [ConfigField(0.1f, "【移速】每级增加量（直接加到 SpeedBoost.BlackSpeedMul）。",
+        [ConfigField(0.1667f, "【移速】每级增加量（加到 SpeedBoost.BlackSpeedMul）。0.1667 × 3 级 = 0.5 → 满级移速 1.5。",
             Min = 0f, Max = 2f)]
         public static ConfigEntry<float> SpeedBonusPerLevel;
 
@@ -167,7 +167,11 @@ namespace HideAndSeek.Features.Combat
             // 任务门槛那项刻意回避"白方"二字。
             message = UpgradeText(dir, Levels[dir]);
             if (AnnounceUpgrade == null || AnnounceUpgrade.Value)
-                Announce(room, message);
+                // 移速是直接改配置项，客户端不会自行重算 —— 必须推一次，
+            // 否则升级后要等下一次 RefreshSpeed（状态切换等）才生效。
+            RefreshBlackSpeed(room);
+
+            Announce(room, message);
             Plugin.Log.LogInfo($"[HS] KillUpgrade：{message}");
             return true;
         }
@@ -195,7 +199,7 @@ namespace HideAndSeek.Features.Combat
             {
                 if (i > 1) { v.Append('/'); s.Append('/'); k.Append('/'); }
                 v.Append((1f + vB * i).ToString("F1"));
-                s.Append('+').Append((sB * i).ToString("F1"));
+                s.Append((1f + sB * i).ToString("F2"));   // 显示最终移速（含基础 1.0）
                 k.Append((tB * i).ToString("F0"));
             }
 
@@ -203,6 +207,25 @@ namespace HideAndSeek.Features.Combat
                    $"视野x {v}  速度 {s}\n" +
                    $"任务量 {k}\n" +
                    "用法 /cre v|s|t";
+        }
+        /// <summary>升级后让所有黑方立刻按新倍率重算移速（否则客户端不更新）。</summary>
+        private static void RefreshBlackSpeed(GameRoom room)
+        {
+            try
+            {
+                if (room == null)
+                    return;
+                foreach (var p in room.Players)
+                {
+                    if (p?.PublicInfo == null || p.Color == EPlayerColor.White)
+                        continue;
+                    p.BuffComponent?.RefreshSpeed();
+                }
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] KillUpgrade：刷新黑方移速失败 — {ex.Message}");
+            }
         }
         internal static string UpgradeText(int dir, int level)
         {
