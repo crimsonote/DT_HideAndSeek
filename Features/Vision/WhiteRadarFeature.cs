@@ -179,11 +179,17 @@ namespace HideAndSeek.Features.Vision
                 // SetLocalPosition（立即定位），否则走 SetTargetPosition（平滑补间）——
                 // 而补间靠 LateUpdate 驱动，白方的 LateUpdate 在 :74673（小地图）与
                 // :53579（平板）都提前 return，补间永远不会执行，pin 就停在初始位置看不见。
+                                // IsForce 必须为 false，与原版 SendTraceTarget 一致：
+                //   false → SetTargetPosition(:86096)：position*0.094 - (896,1456)*0.094 + DOLocalMove
+                //   true  → SetLocalPosition(:86104)：改走 Util.GetMinimapPosition
+                // 两者坐标系不同，传 true 会让位置算错、pin 反而全部不可见。
+                // 补间由 DOTween 驱动，不受白方 LateUpdate 早退影响 ——
+                // 那个"延迟跟随"正是这段 0.1s DOLocalMove 正常工作的表现。
                 to.Session?.Send(new S_PIN_MOVE
                 {
                     Type = pinId,
                     Pos = pos ?? new PosInfo(),          // (0,0) = 删除哨兵
-                    IsForce = true
+                    IsForce = false
                 });
             }
             catch (global::System.Exception ex)
