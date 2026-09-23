@@ -117,7 +117,8 @@ namespace HideAndSeek.Features.Rule
                     if (room == null)
                         return true;
 
-                    room.Push(delegate { Handle(room, player, name); });
+                    int devId = msg.DeviceId;
+                    room.Push(delegate { Handle(room, player, name, devId); });
                     return false;                        // 吞掉命令，不当聊天广播
                 }
                 catch (global::System.Exception ex)
@@ -128,16 +129,16 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        private static void Handle(GameRoom room, GamePlayer player, string name)
+        private static void Handle(GameRoom room, GamePlayer player, string name, int deviceId)
         {
             switch (name)
             {
                 case "help":
-                    SendPublic(room, WhiteHelp);
+                    Reply(player, deviceId, WhiteHelp);
                     break;
 
                 case "radar":
-                    DoRadar(room, player);
+                    DoRadar(room, player, deviceId);
                     break;
 
                 default:
@@ -146,7 +147,7 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        private static void DoRadar(GameRoom room, GamePlayer player)
+        private static void DoRadar(GameRoom room, GamePlayer player, int deviceId)
         {
             int pid = player.PublicInfo?.PlayerId ?? 0;
             if (pid == 0)
@@ -161,7 +162,7 @@ namespace HideAndSeek.Features.Rule
 
             if (max <= 0 || used >= max)
             {
-                Reply(player, $"全图扫描次数已用尽（{used}/{max}）。");
+                Reply(player, deviceId, $"全图扫描次数已用尽（{used}/{max}）。");
                 return;
             }
 
@@ -175,7 +176,7 @@ namespace HideAndSeek.Features.Rule
                 {
                     CdNotice[pid] = now;
 
-                    Reply(player, "扫描冷却中。");
+                    Reply(player, deviceId, "扫描冷却中。");
                 }
                 return;
             }
@@ -188,20 +189,25 @@ namespace HideAndSeek.Features.Rule
             WhiteRadarFeature.SetActive(true);
 
             int shown = used + 1;
-            Reply(player, $"(实验性)全图扫描已开启({shown}/{max})。");
+            Reply(player, deviceId, $"(实验性)全图扫描已开启({shown}/{max})。");
 
             if (AnnounceOnUse == null || AnnounceOnUse.Value)
                 SendPublic(room, "瞭望已开启。");
         }
 
-        /// <summary>只发给该玩家的私密回执（公开聊天通道，但仅他一人收到）。</summary>
-        private static void Reply(GamePlayer player, string text)
+        /// <summary>
+        /// 只发给该玩家的私密回执。
+        /// 关键：**按命令的来源通道回** —— 白方多半是在设备（发信机）上发命令，
+        /// 那种情况下回执若走 NormalChat，设备界面根本不显示，表现就是"命令没反应"。
+        /// </summary>
+        private static void Reply(GamePlayer player, int deviceId, string text)
         {
             try
             {
                 player?.Session?.Send(new S_CHAT_MESSAGE
                 {
-                    Type = EChatType.NormalChat,
+                    Type = deviceId > 0 ? EChatType.DeviceChat : EChatType.NormalChat,
+                    DeviceId = deviceId,
                     Text = text,
                     PlayerId = player.PublicInfo?.PlayerId ?? 0,
                     Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
