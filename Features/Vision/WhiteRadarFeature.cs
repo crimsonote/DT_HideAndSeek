@@ -261,10 +261,14 @@ namespace HideAndSeek.Features.Vision
             [HarmonyPostfix]
             private static void Postfix()
             {
+                // 回大厅即关闭雷达本身，而不是只还原颜色后让它继续开着
+                if (IsActive)
+                {
+                    ClearAllPins();
+                    RadarOn.Value = false;
+                }
                 RestorePureDot();
                 Faked.Clear();
-                if (IsActive)
-                    ClearAllPins();
             }
         }
 
@@ -274,8 +278,13 @@ namespace HideAndSeek.Features.Vision
             [HarmonyPostfix]
             private static void Postfix()
             {
+                // 进入审判阶段同样关闭雷达：该阶段下发 S_PIN_MOVE 会让客户端 NRE
+                if (IsActive)
+                {
+                    ClearAllPins();
+                    RadarOn.Value = false;
+                }
                 RestorePureDot();
-                ClearAllPins();
             }
         }
     }
