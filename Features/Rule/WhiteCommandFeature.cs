@@ -59,6 +59,11 @@ namespace HideAndSeek.Features.Rule
         /// <summary>PlayerId → 上次使用时的 SurviveTime。</summary>
         private static readonly Dictionary<int, float> LastUse = new Dictionary<int, float>();
 
+        /// <summary>PlayerId → 上次发「扫描冷却中」的时间；每 10 秒最多提示一次。</summary>
+        private static readonly Dictionary<int, float> CdNotice = new Dictionary<int, float>();
+
+        private const float CdNoticeInterval = 10f;
+
         private const string WhiteHelp =
             "白方命令：/radar 开启全图瞭望、/help 查看本列表";
 
@@ -143,24 +148,61 @@ namespace HideAndSeek.Features.Rule
 
             int max = RadarUsesPerPlayer?.Value ?? 0;
             int used = Uses.TryGetValue(pid, out int u) ? u : 0;
+            int left = max - used;
+
             if (max <= 0 || used >= max)
-                return;                              // 次数用尽：静默（不留私人回执，避免暴露配额）
+            {
+                Reply(player, $"全图扫描次数已用尽（{used}/{max}）。");
+                return;
+            }
 
             float now = TimeManager.Instance?.SurviveTime ?? 0f;
             int cd = RadarCooldownSeconds?.Value ?? 0;
             if (cd > 0 && LastUse.TryGetValue(pid, out float last) && now - last < cd)
-                return;                              // 冷却中：同样静默
+            {
+                // 冷却提示每 10 秒最多回一次，避免刷屏；仍然带上剩余次数
+                float lastNotice = CdNotice.TryGetValue(pid, out float ln) ? ln : -9999f;
+                if (now - lastNotice >= CdNoticeInterval)
+                {
+                    CdNotice[pid] = now;
+
+                    Reply(player, "扫描冷却中。");
+                }
+                return;
+            }
 
             Uses[pid] = used + 1;
-            LastUse[pid] = now;
 
             // 复用雷达本体：把限时设成本次要求的时长，再开启
             if (WhiteRadarFeature.DurationSeconds != null)
                 WhiteRadarFeature.DurationSeconds.Value = RadarDurationSeconds?.Value ?? 15;
             WhiteRadarFeature.SetActive(true);
 
+            int shown = used + 1;
+            Reply(player, $"(实验性)全图扫描已开启({shown}/{max})。");
+
             if (AnnounceOnUse == null || AnnounceOnUse.Value)
                 SendPublic(room, "瞭望已开启。");
+        }
+
+        /// <summary>只发给该玩家的私密回执（公开聊天通道，但仅他一人收到）。</summary>
+        private static void Reply(GamePlayer player, string text)
+        {
+            try
+            {
+                player?.Session?.Send(new S_CHAT_MESSAGE
+                {
+                    Type = EChatType.NormalChat,
+                    Text = text,
+                    PlayerId = player.PublicInfo?.PlayerId ?? 0,
+                    Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+                    IsDead = false
+                });
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] 白方命令：回执失败 — {ex.Message}");
+            }
         }
 
         /// <summary>向全房发一条公开聊天（不署名）。</summary>
