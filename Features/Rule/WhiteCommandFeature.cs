@@ -424,7 +424,7 @@ namespace HideAndSeek.Features.Rule
 
             _stasisUntil = now + (StasisSeconds?.Value ?? 5);
             Reply(player, deviceId, $"已时停黑方 {StasisSeconds?.Value ?? 5} 秒。");
-            SendPublic(room, "白方发动了时停。");
+            // 不公开：只有执行者自己知道（回执已发给他），避免向黑方暴露白方动用了消耗手段。
         }
 
         private static void DoRepair(GameRoom room, GamePlayer player, int deviceId)
@@ -470,7 +470,7 @@ namespace HideAndSeek.Features.Rule
             }
 
             Reply(player, deviceId, $"已立即恢复供电（修复 {fixedCount} 处）。");
-            SendPublic(room, "白方紧急恢复了供电。");
+            // 不公开：只有执行者自己知道（回执已发给他），避免向黑方暴露白方动用了消耗手段。
         }
 
 // MoveFreezeHook 已删除：原版时停走 TheWorld buff（客户端把动画 timeScale 置 0 并锁操作），
