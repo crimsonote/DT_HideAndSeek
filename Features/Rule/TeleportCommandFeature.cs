@@ -31,10 +31,13 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(3000, "预警到落地之间的毫秒数（留给目标的逃跑时间）。", Min = 0f, Max = 15000f)]
         public static ConfigEntry<int> WarnDelayMs;
 
+        [ConfigField(300f, "目标在预警期间移动超过这个距离，就取消本次传送（0 = 不取消）。",
+            Min = 0f, Max = 5000f)]
+        public static ConfigEntry<float> CancelMoveDistance;
         [ConfigField(true, "预警时给目标播放警示音效（原版警示用的 WarningSfx）。")]
         public static ConfigEntry<bool> PlayWarningSfx;
 
-        [ConfigField(true, "预警时给目标一个指向传送者的箭头，便于判断该往哪躲。")]
+        [ConfigField(false, "预警时给目标一个指向传送者的箭头，便于判断该往哪躲。")]
         public static ConfigEntry<bool> ShowWarningArrow;
 
         /// <summary>

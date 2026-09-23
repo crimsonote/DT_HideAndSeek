@@ -628,46 +628,41 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static string Describe(string name)
         {
+            // 帮助要极短：聊天框每行容量有限，且 3 行就分段。
+            // 分隔一律用符号，不写「用法：」「条件：」「冷却」这类词。
             switch (name)
             {
-                case "break": return "拆电断电（默认随机两个电箱）";
-                case "lock":  return "锁住附近的门";
-                case "tp":    return "3 秒后传送到目标处";
-                case "credit": return "查看/消耗黑学分升级（vision/speed/task）";
-                case "list":  return "列出玩家 ID 与昵称";
-                default:      return null;
+                case "break":  return "拆电断电 ⏱{cd}";
+                case "lock":   return "锁门 ⏱{cd}";
+                case "tp":     return "3s后传送 [ID] ⏱{cd}";
+                case "list":   return "玩家列表";
+                case "credit": return "黑学分 升[v|s|t]";
+                default:       return null;
             }
         }
 
         private static string BuildHelp(List<CommandDef> defs)
         {
-            var sb = new global::System.Text.StringBuilder("【捉迷藏 · 黑方命令】");
+            var sb = new global::System.Text.StringBuilder("【黑方】");
             foreach (var d in defs)
             {
-                sb.Append("\n/").Append(d.Name).Append(" — ");
+                if (d.Name == "help")
+                    continue;
+
+                sb.Append("\n/").Append(d.Name);
 
                 string desc = Describe(d.Name);
                 if (desc != null)
                 {
-                    sb.Append(desc);
-                    if (d.Cooldown > 0)
-                        sb.Append(" CD").Append(d.Cooldown);
-                    if (d.MaxUses > 0)
-                        sb.Append(' ').Append(d.MaxUses).Append("次");
+                    // {cd} 占位符替换成实际冷却，省掉「冷却」两个字的宽度
+                    desc = desc.Replace("{cd}", (d.Cooldown > 0 ? d.Cooldown.ToString() : "-"));
+                    sb.Append(' ').Append(desc);
                 }
-                else
+                else if (!string.IsNullOrWhiteSpace(d.Condition))
                 {
-                    // 自定义命令：没有元信息，只列已知参数
-                    sb.Append("（自定义命令）");
-                    if (!string.IsNullOrWhiteSpace(d.Condition))
-                        sb.Append(" 条件 ").Append(d.Condition);
-                    if (d.Cooldown > 0)
-                        sb.Append(" CD ").Append(d.Cooldown).Append('s');
-                    if (d.MaxUses > 0)
-                        sb.Append(" 每局 ").Append(d.MaxUses).Append(" 次");
+                    sb.Append(" 条件:").Append(d.Condition);
                 }
             }
-            sb.Append("\n/help — 显示本列表");
             return sb.ToString();
         }
 

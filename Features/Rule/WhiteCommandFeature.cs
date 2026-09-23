@@ -90,10 +90,10 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(10f, "/repair 消耗的任务进度百分比。", Min = 0f, Max = 100f)]
         public static ConfigEntry<float> RepairCostPercent;
         private const string WhiteHelp =
-            "【捉迷藏 · 白方命令】\n" +
-            "/radar — 开启全图扫描，15 秒内地图标记所有存活玩家。\n" +
-            "        条件：存活且本局剩余次数 > 0。每人每局 2 次，CD 75s\n" +
-            "/stasis — 消耗 5% 任务进度，时停黑方 5 秒（CD 90）\n/repair — 消耗 10% 任务进度，立即恢复供电（仅断电时）\n/help — 显示本列表";
+            "【白方】" +
+            "\n/radar  全图扫描 15s 2次/局 CD75" +
+            "\n/stasis 停黑5s 耗5%进度 CD90" +
+            "\n/repair 立即修电 耗10%进度（仅断电）";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
