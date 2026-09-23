@@ -21,11 +21,11 @@ namespace HideAndSeek.Features.Vision
     ///
     /// 节流：每个白方独立计时，避免站在黑方旁边时音效刷屏。
     /// </summary>
-    [PatchFeature("ProximityAlert", "黑方靠近时给白方播放警示音（只改服务端的听觉预警）。",
-        defaultEnabled: true, side: FeatureSide.Host)]
+    [PatchFeature("ProximityAlert", "黑方靠近时给白方播放警示音（默认关闭，需要时再开）。",
+        defaultEnabled: false, side: FeatureSide.Host)]
     internal static class ProximityAlertFeature
     {
-        [ConfigField(true, "启用接近预警。")]
+        [ConfigField(false, "启用接近预警。默认关闭。")]
         public static ConfigEntry<bool> Enabled;
 
         [ConfigField(300f, "触发距离。黑方进入该距离后，向其附近的白方播放警示音。",
@@ -36,7 +36,7 @@ namespace HideAndSeek.Features.Vision
             Min = 0.5f, Max = 60f)]
         public static ConfigEntry<float> AlertIntervalSeconds;
 
-        [ConfigField("WarningSfx", "预警音效（ESoundType 名）。建议 WarningSfx / HandBellSfx / StuckDoorSfx。")]
+        [ConfigField("none", "预警音效（ESoundType 名）。none = 不播放。可选 WarningSfx / HandBellSfx / ElevatorSfx。")]
         public static ConfigEntry<string> AlertSfx;
 
         /// <summary>每名白方上一次收到预警的时间。</summary>
@@ -59,8 +59,19 @@ namespace HideAndSeek.Features.Vision
                 float range = AlertRange?.Value ?? 300f;
                 float interval = AlertIntervalSeconds?.Value ?? 3f;
 
-                if (!global::System.Enum.TryParse(AlertSfx?.Value, true, out ESoundType sfx))
+                // none / 空 → 不播放；名字写错才回退到 WarningSfx（并留下日志便于排查）
+                string sfxName = AlertSfx?.Value;
+                bool silent = string.IsNullOrEmpty(sfxName)
+                    || sfxName.Equals("none", global::System.StringComparison.OrdinalIgnoreCase);
+                if (silent)
+                    return;
+
+                ESoundType sfx;
+                if (!global::System.Enum.TryParse(sfxName, true, out sfx))
+                {
+                    Plugin.Log.LogWarning($"[HS] ProximityAlert：未知音效名 {sfxName}，本次回退 WarningSfx。");
                     sfx = ESoundType.WarningSfx;
+                }
 
                 var players = __instance.Players;
 
