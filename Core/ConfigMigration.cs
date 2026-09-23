@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 4;
+        private const int CurrentVersion = 5;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,12 +37,22 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v4 → v5
+            if (from < 5)
+            {
+                // EnterRange 旧默认 750 只覆盖小地图可视半径(约1223)的 61%，
+                // 观感上是"要贴很近才现身"，而 ExitRange 1100 已接近边缘，
+                // 造成"进得晚、出得也晚"的不对称。改为 900（约74%），滞回带收窄到 200。
+                ForceFloat(config, log, "AoiCulling", "EnterRange", 900f);
+            }
+
             // v3 → v4
+
             if (from < 4)
             {
                 // WelcomeDelayMs 旧默认 2500 太短：客户端场景未加载完就发送会丢消息，
                 // 用户实测要求改到 10 秒。
-                EnsureInt(config, log, "Broadcast", "WelcomeDelayMs", 10000);
+                ForceInt(config, log, "Broadcast", "WelcomeDelayMs", 10000);
             }
 
             // v2 → v3
@@ -96,6 +106,59 @@ namespace HideAndSeek.Core
         }
 
         /// <summary>确保整型键存在且不小于期望值（新键名场景用它兜底）。</summary>
+        /// <summary>
+        /// 强制把已存在的整型键改成期望值。
+        /// 与 EnsureInt 的区别：EnsureInt 只在键**缺失**时补（用于新增配置项），
+        /// 而本方法用于"**旧默认值已经写进 .cfg**"的场景 —— 那时键是存在的，
+        /// 只改代码里的 [ConfigField] 默认值是没用的，BepInEx 不会覆盖已有条目。
+        /// </summary>
+        private static void ForceInt(ConfigFile config, ManualLogSource log,
+            string section, string key, int expected)
+        {
+            try
+            {
+                ConfigDefinition def = new ConfigDefinition(section, key);
+                if (!config.ContainsKey(def))
+                    return;
+
+                var entry = config.Bind(section, key, expected);
+                if (entry.Value == expected)
+                    return;
+
+                int old = entry.Value;
+                entry.Value = expected;
+                log.LogInfo($"[HS]   修正 {section}.{key}：{old} → {expected}");
+            }
+            catch (global::System.Exception ex)
+            {
+                log.LogWarning($"[HS]   迁移 {section}.{key} 失败：{ex.Message}");
+            }
+        }
+
+        /// <summary>强制把已存在的浮点键改成期望值（同 ForceInt）。</summary>
+        private static void ForceFloat(ConfigFile config, ManualLogSource log,
+            string section, string key, float expected)
+        {
+            try
+            {
+                ConfigDefinition def = new ConfigDefinition(section, key);
+                if (!config.ContainsKey(def))
+                    return;
+
+                var entry = config.Bind(section, key, expected);
+                if (global::System.Math.Abs(entry.Value - expected) < 0.0001f)
+                    return;
+
+                float old = entry.Value;
+                entry.Value = expected;
+                log.LogInfo($"[HS]   修正 {section}.{key}：{old} → {expected}");
+            }
+            catch (global::System.Exception ex)
+            {
+                log.LogWarning($"[HS]   迁移 {section}.{key} 失败：{ex.Message}");
+            }
+        }
+
         private static void EnsureInt(ConfigFile config, ManualLogSource log,
             string section, string key, int expected)
         {
