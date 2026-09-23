@@ -36,6 +36,25 @@ namespace HideAndSeek.Features.Weapon
         [ConfigField(2500, "发刀延迟毫秒数（等待全体客户端进入对局）。", Min = 0f, Max = 30000f)]
         public static ConfigEntry<int> GrantDelayMs;
 
+        [ConfigField("", "发刀时最高优先级排除的玩家 ID（逗号分隔，如 \"1,3\"）。" +
+            "若排除后真人候选为空，会自动放开假人限制在原池外重抽 —— 即宁可发给假人，也不发给被排除者。")]
+        public static ConfigEntry<string> ExcludePlayerIds;
+
+        /// <summary>该玩家是否在排除名单里。</summary>
+        private static bool IsExcluded(GamePlayer player, string list)
+        {
+            if (string.IsNullOrWhiteSpace(list) || player?.PublicInfo == null)
+                return false;
+
+            int id = player.PublicInfo.PlayerId;
+            foreach (string part in list.Split(','))
+            {
+                if (int.TryParse(part.Trim(), out int x) && x == id)
+                    return true;
+            }
+            return false;
+        }
+
         [HarmonyPostfix]
         private static void Postfix(GameRoom __instance)
         {
@@ -56,10 +75,26 @@ namespace HideAndSeek.Features.Weapon
 
             var candidates = room.Players
                 .Where(p => p?.PublicInfo != null && p.IsAlive && !p.IsSpectator && !p.IsDummy)
+                .Where(p => !IsExcluded(p, ExcludePlayerIds?.Value))
                 .ToList();
 
+            // 真人池被排除空了 → 放开假人限制重抽：宁可把刀发给假人，也不发给被排除者
             if (candidates.Count == 0)
+            {
+                candidates = room.Players
+                    .Where(p => p?.PublicInfo != null && p.IsAlive && !p.IsSpectator)
+                    .Where(p => !IsExcluded(p, ExcludePlayerIds?.Value))
+                    .ToList();
+
+                if (candidates.Count > 0)
+                    Plugin.Log.LogInfo("[HS] WeaponGrant：真人候选被排除后为空，已放开假人限制重抽。");
+            }
+
+            if (candidates.Count == 0)
+            {
+                Plugin.Log.LogWarning("[HS] WeaponGrant：排除后无任何候选，本次不发刀。");
                 return;
+            }
 
             var target = candidates[Util.GetRandomNumber(0, candidates.Count)];
             int weaponId = WeaponId?.Value ?? Define.ITEM_ID_KNIFE;
