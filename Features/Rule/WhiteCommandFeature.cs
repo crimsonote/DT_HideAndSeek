@@ -65,6 +65,10 @@ namespace HideAndSeek.Features.Rule
         /// <summary>/stasis 的生效截止时刻。</summary>
         private static float _stasisUntil;
 
+        /// <summary>时停是否正在生效（供 Move 拦截查询）。</summary>
+        internal static bool IsStasisActive
+            => _stasisUntil > 0f && (TimeManager.Instance?.SurviveTime ?? 0f) < _stasisUntil;
+
         /// <summary>/stasis 期间被压到 0 的原始黑方移速倍率。</summary>
         private static float _savedSpeed = -1f;
 
@@ -451,6 +455,39 @@ namespace HideAndSeek.Features.Rule
 
             Reply(player, deviceId, $"已立即恢复供电（修复 {fixedCount} 处）。");
             SendPublic(room, "白方紧急恢复了供电。");
+        }
+
+        /// <summary>
+        /// 时停的核心实现：拦截服务端 Player.Move，把位移钳回当前服务端位置。
+        ///
+        /// 为什么不能只改速度：客户端移动是**本地权威**的（HandleMove :171719 不校验
+        /// 速度与位移），服务端改 SpeedMul / RefreshSpeed 对已经在动的客户端毫无影响 ——
+        /// 这正是"时停执行了、日志也打了、黑方照样走"的原因。
+        ///
+        /// Move(:175883) 开头就直接写 PublicInfo.Pos，所以在这里把 pos 换成当前位置，
+        /// 等同于"本次移动被抹平"，并且 Move 后续会重新广播位置，客户端被拉回。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "Move", new[] { typeof(PosInfo), typeof(bool) })]
+        internal static class MoveFreezeHook
+        {
+            [HarmonyPrefix]
+            private static void Prefix(GamePlayer __instance, ref PosInfo pos)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+                if (!IsStasisActive)
+                    return;
+                if (__instance?.PublicInfo?.Pos == null)
+                    return;
+                if (__instance.Color == EPlayerColor.White)
+                    return;                            // 只冻黑方
+
+                pos = new PosInfo
+                {
+                    X = __instance.PublicInfo.Pos.X,
+                    Y = __instance.PublicInfo.Pos.Y
+                };
+            }
         }
 
         /// <summary>时停到点后还原黑方移速。</summary>
