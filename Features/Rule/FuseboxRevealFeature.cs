@@ -4,6 +4,8 @@ using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
 using GameRoom = Server.Game.GameRoom;
+using GamePlayer = Server.Game.Player;
+using GameDeviceManager = Server.Game.DeviceManager;
 
 namespace HideAndSeek.Features.Rule
 {
@@ -74,6 +76,87 @@ namespace HideAndSeek.Features.Rule
                         Pos = pos.Clone(),
                         IsAdd = isAdd
                     });
+                }
+            }
+
+            /// <summary>转交给所有黑方（原版只发 MasterMind）。</summary>
+            private static void BroadcastToBlack(ESchoolMission type, int deviceId, PosInfo pos, bool isAdd)
+            {
+                var room = GameRoom.Instance;
+                if (room?.Players == null || pos == null)
+                    return;
+
+                var masterMind = room.MasterMind;
+                int sent = 0;
+
+                foreach (var player in room.Players)
+                {
+                    if (player?.Session == null)
+                        continue;
+                    if (player.Color != EPlayerColor.Black)
+                        continue;
+                    if (player == masterMind)
+                        continue;                 // 原版已发给他；平板列表不去重，避免重复条目
+
+                    // 每人一份：Pos 是 protobuf 消息，避免多收件人共享同一引用
+                    player.Session.Send(new S_SABOTAGE_MISSION
+                    {
+                        MissionType = type,
+                        DeviceId = deviceId,
+                        Pos = pos.Clone(),
+                        IsAdd = isAdd
+                    });
+                    sent++;
+                }
+
+                if (sent == 0 && isAdd)
+                    Plugin.Log.LogInfo($"[HS] FuseboxReveal：{type} #{deviceId} 派发时场上无黑方，已跳过（黑方诞生后会补发）。");
+            }
+
+            /// <summary>
+            /// 黑方刚诞生时补发当前所有可拆目标。
+            ///
+            /// 必需：电箱任务只在 GameRoom.GameStart（回合第一帧）派发一次，
+            /// 而那时全员仍是 White（StartPick 设定，且 NoMasterMind 拒绝了唯一会变 Dark 的人），
+            /// 所以 BroadcastToBlack 的 foreach 全员跳过、一个包都发不出去。
+            /// 黑方要到玩家去武器架拿刀（ItemManager.InsertWeapon 染黑）时才存在，
+            /// 因此必须在"变黑瞬间"补一次，否则他整局看不到任何可拆目标。
+            /// </summary>
+            [HarmonyPatch(typeof(GamePlayer), "set_Color")]
+            internal static class BecomeBlackHook
+            {
+                [HarmonyPostfix]
+                private static void Postfix(GamePlayer __instance, EPlayerColor value)
+                {
+                    if (value != EPlayerColor.Black)
+                        return;
+                    if (ModeRuntime.Bypass)
+                        return;
+                    if (RevealToBlack == null || !RevealToBlack.Value)
+                        return;
+
+                    var dm = GameDeviceManager.Instance;
+                    if (dm == null)
+                        return;
+
+                    // 只有 MissionType == -1 才是"待拆"（DisconnetCable 会置 0）
+                    if (dm.Fuseboxes != null)
+                    {
+                        foreach (var fb in dm.Fuseboxes)
+                        {
+                            if (fb?.DeviceInfo == null)
+                                continue;
+                            if (fb.DeviceInfo.MissionType != -1)
+                                continue;
+                            BroadcastToBlack(ESchoolMission.ScFusebox, fb.ID, fb.DeviceInfo.Pos, true);
+                        }
+                    }
+
+                    var armory = dm.CurrentArmory;
+                    if (armory?.DeviceInfo != null && armory.DeviceInfo.MissionType == -1)
+                        BroadcastToBlack(ESchoolMission.ScWeapon, armory.ID, armory.DeviceInfo.Pos, true);
+
+                    Plugin.Log.LogInfo($"[HS] FuseboxReveal：黑方 #{__instance.PublicInfo?.PlayerId} 诞生，已补发可拆目标。");
                 }
             }
         }
