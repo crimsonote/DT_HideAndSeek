@@ -60,7 +60,7 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(30, "自动关闭的秒数（0 = 一直开启）。PureDot 模式强烈建议保持限时。", Min = 0f, Max = 600f)]
         public static ConfigEntry<int> DurationSeconds;
 
-        [ConfigField(true, "跳过假人（它们不会动，标出来没意义）。")]
+        [ConfigField(false, "跳过假人。默认 false —— 测试房里往往只有假人，跳过会导致雷达看起来完全无效。")]
         public static ConfigEntry<bool> SkipDummies;
 
         /// <summary>非玩家 pin id 的基数：避开真实 PlayerId，让客户端查不到 PlayerCache。</summary>
@@ -227,7 +227,7 @@ namespace HideAndSeek.Features.Vision
 
         private static void Refresh(GameRoom room)
         {
-            bool skipDummy = SkipDummies?.Value ?? true;
+            bool skipDummy = SkipDummies?.Value ?? false;
             bool pureDot = UsePureDot;
 
             foreach (var white in room.Players)
