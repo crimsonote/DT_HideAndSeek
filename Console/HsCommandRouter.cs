@@ -349,22 +349,52 @@ namespace HideAndSeek.Console
         private static GamePlayer FindPlayer(GameRoom room, int id)
             => room?.Players?.FirstOrDefault(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
 
-        // ── /hs_grant [on|off] ──────────────────────────────────────
+        // ── /hs_grant [on|off] | exclude <ID...> | exclude clear ─────
         // 切换发刀模式：on = 开局随机发刀并锁死武器架；off = 原版自行跑刀。
         // GiveAtStart 只在 StartSurvive 那一刻被读取，所以改动下一局才生效。
         private static string Grant(string[] args)
         {
             var give = HideAndSeek.Features.Weapon.WeaponGrantFeature.GiveAtStart;
             var block = HideAndSeek.Features.Weapon.WeaponGrantFeature.BlockFurtherWeapons;
+            var exclude = HideAndSeek.Features.Weapon.WeaponGrantFeature.ExcludePlayerIds;
             if (give == null)
                 return Error("发刀功能未加载");
 
+            // 排除名单：发刀时最高优先级排除这些人（宁可发给假人也不发给他们）
+            if (args.Length > 0 && args[0].Equals("exclude", StringComparison.OrdinalIgnoreCase))
+            {
+                if (exclude == null)
+                    return Error("排除名单不可用");
+
+                if (args.Length < 2)
+                    return $"{{\"ok\":true,\"exclude\":\"{exclude.Value}\"}}";
+
+                if (args[1].Equals("clear", StringComparison.OrdinalIgnoreCase))
+                {
+                    exclude.Value = "";
+                    return "{\"ok\":true,\"exclude\":\"\",\"note\":\"已清空排除名单\"}";
+                }
+
+                var sb = new StringBuilder();
+                for (int i = 1; i < args.Length; i++)
+                {
+                    if (!int.TryParse(args[i], out int id) || id <= 0)
+                        return Error("用法: hs_grant exclude <玩家ID...> | hs_grant exclude clear");
+
+                    if (sb.Length > 0) sb.Append(',');
+                    sb.Append(id);
+                }
+
+                exclude.Value = sb.ToString();
+                return $"{{\"ok\":true,\"exclude\":\"{exclude.Value}\"}}";
+            }
+
             if (args.Length == 0)
-                return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)}}}";
+                return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)},\"exclude\":\"{exclude?.Value}\"}}";
 
             bool? on = ParseBool(args[0]);
             if (on == null)
-                return Error("用法: hs_grant <on|off>（on=开局随机发刀并锁死武器架；off=自行跑刀。改动下一局生效）");
+                return Error("用法: hs_grant <on|off> | hs_grant exclude <玩家ID...> | hs_grant exclude clear");
 
             give.Value = on.Value;
 
@@ -372,7 +402,8 @@ namespace HideAndSeek.Console
             if (block != null)
                 block.Value = on.Value;
 
-            return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)},\"note\":\"下一局生效\"}}";
+            AnnounceRule(on.Value ? "发刀模式 = 开局随机发刀" : "发刀模式 = 自行跑刀");
+            return $"{{\"ok\":true,\"autoGrant\":{Bool(give.Value)},\"blockArmory\":{Bool(block?.Value ?? false)},\"exclude\":\"{exclude?.Value}\",\"note\":\"下一局生效\"}}";
         }
 
         /// <summary>
