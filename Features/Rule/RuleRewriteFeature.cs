@@ -137,7 +137,7 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        private static bool MatchesAll(string condPart, GameRoom room)
+        internal static bool MatchesAll(string condPart, GameRoom room)
         {
             foreach (string cond in condPart.Split('&'))
             {
@@ -210,7 +210,7 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>把动作键映射到各功能的配置项；写入前先记录原值以便还原。</summary>
-        private static bool SetValue(string key, string value)
+        internal static bool SetValue(string key, string value)
         {
             switch (key.ToLowerInvariant())
             {

@@ -1,3 +1,4 @@
+﻿using System.Collections.Generic;
 using System.Reflection;
 using BepInEx.Configuration;
 using DummyClient;
@@ -12,39 +13,74 @@ using GamePlayer = Server.Game.Player;
 namespace HideAndSeek.Features.Rule
 {
     /// <summary>
-    /// 黑方密聊命令通道：发信站密聊里以 "/" 开头的文本按命令处理，否则当普通聊天。
+    /// 黑方密聊命令通道：发信站密聊里以 "/" 开头的文本按命令处理，其余当普通聊天。
     ///
-    /// 为什么走密聊：原版只有 Dark（黑幕）能拆电 —— 客户端 InputInteract（:14583-14607）
-    /// 把 Black 的 Q 导流成挥刀，开拆入口 UseSabotage 在客户端；IsDestroyEvidenceTarget /
-    /// DeviceType 又是纯客户端本地计算（:7809-7821），无法把电箱伪装成别的设备借道。
-    /// 密聊是唯一能承载任意字符串、且服务端已内建「仅 Black/Dark」闸门的通道
-    /// （C_CHAT_MESSAGE{SecretChat} → Handle_C_CHAT_MESSAGE :174587，
+    /// 命令在配置里注册，**条件 / CD / 次数 / 效果都写在注册项上**，
+    /// 任一不满足即拒绝并回执原因 —— 杜绝"无条件给自己无限加强"。
+    ///
+    /// 为什么走密聊：原版只有 Dark（黑幕）能拆电，客户端 InputInteract（:14583-14607）
+    /// 把 Black 的 Q 导流成挥刀，开拆入口 UseSaborage 在客户端；IsDestroyEvidenceTarget /
+    /// DeviceType 又是纯客户端本地计算（:7809-7821）。而密聊是唯一能承载任意字符串、
+    /// 且服务端已内建「仅 Black/Dark」闸门的通道
+    /// （C_CHAT_MESSAGE{SecretChat} → Handle_C_CHAT_MESSAGE :174587；
     ///   RelayDeviceChat :174755 丢弃非 Black/Dark）。
     ///
-    /// 四条硬约束：
+    /// 命令包会被吞掉（return false），所以**不会**经 Replicator.Secrets(:174060)
+    /// 转发给同阵营 —— 黑幕看不到黑方在用命令。回执只发给本人。
+    ///
+    /// 硬约束：
     ///   1. 状态改动走 GameRoom.Push（JobSerializer，网络线程直接改会竞态）
-    ///   2. 不经 DeviceManager.Interact（InteractLock 会与原版紧随的 ChatDevice.Interact 互踩）
+    ///   2. 拆电不经 DeviceManager.Interact（InteractLock 会与原版紧随的 ChatDevice.Interact 互踩）
     ///   3. 自补前置（MissionType==-1 / Survive / StateList[0]==0 / 颜色），吞包绕过了原版闸门
     ///   4. 类名用 Server.Game.* 别名（与客户端同名类冲突）
     /// </summary>
     [PatchFeature(
         section: "BreakCommand",
-        description: "黑方在发信站密聊里用 /break 拆电（原版只有黑幕能拆）；其它 / 开头内容回帮助。",
+        description: "黑方密聊命令通道：命令在配置中注册（含条件/CD/次数/效果），不满足即拒绝。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class BreakCommandFeature
     {
-        [ConfigField(true, "允许黑方用密聊命令 /break [电箱ID] 拆电。")]
+        [ConfigField(true, "启用黑方密聊命令通道。关闭后以 / 开头的密聊也会被当作普通聊天。")]
         public static ConfigEntry<bool> AllowBreakBySecretChat;
 
-        [ConfigField(30, "拆电命令的冷却秒数（0 = 无冷却）。", Min = 0f, Max = 300f)]
-        public static ConfigEntry<int> BreakCooldownSeconds;
+        [ConfigField("break = -> Disconnect ; cd=30",
+            "命令注册表。每条一行，格式：\n" +
+            "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数>\n" +
+            "条件可留空（= 无条件）；可用 time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
+            "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairThreshold/MinProgress），\n" +
+            "      或特殊动作 Disconnect（拆离自己最近的可拆电箱）。多个动作用 , 连接。\n" +
+            "cd / uses 可省略，0 或省略 = 不限。行首 # 为注释。\n" +
+            "例：break = -> Disconnect ; cd=30\n" +
+            "    boost = kills>=2 & time<=120 -> SpeedMul=1.5 ; cd=60 ; uses=1")]
+        public static ConfigEntry<string> Commands;
 
-        private const string HelpText =
-            "可用命令：/break [电箱ID] —— 拆除一个可拆电箱（无参 = 离你最近的一个）";
+        private sealed class CommandDef
+        {
+            public string Name;
+            public string Condition;
+            public string Action;
+            public int Cooldown;
+            public int MaxUses;
+        }
 
+        private static readonly Dictionary<string, int> Uses = new Dictionary<string, int>();
+        private static readonly Dictionary<string, float> LastUse = new Dictionary<string, float>();
+        private static List<CommandDef> _parsed;
+        private static string _parsedFrom;
         private static MethodInfo _disconnectMethod;
-        private static float _lastBreakAt = -9999f;
+
+        // ── 每局重置计数 ────────────────────────────────────────────
+        [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
+        internal static class StartHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                Uses.Clear();
+                LastUse.Clear();
+            }
+        }
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
@@ -64,19 +100,27 @@ namespace HideAndSeek.Features.Rule
                         return true;
 
                     string text = (msg.Text ?? "").Trim();
-                    if (!TryParseCommand(text, out string cmd, out string arg))
-                        return true;                     // 不以 "/" 开头 → 普通聊天
+                    if (string.IsNullOrEmpty(text) || text[0] != '/')
+                        return true;                     // 非命令 → 普通聊天
+
+                    string[] parts = text.Substring(1)
+                        .Split(new[] { ' ', '\t' }, global::System.StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0)
+                        return true;
+
+                    string name = parts[0].ToLowerInvariant();
+                    string arg = parts.Length > 1 ? parts[1] : null;
 
                     var peer = session as HostPeerSession;
                     var player = peer?.Player;
                     if (player == null)
                         return true;
 
-                    // 原版闸门在 RelayDeviceChat；吞包绕过了它，必须自己复刻
+                    // 原版闸门在 RelayDeviceChat(:174755)；吞包绕过了它，必须自己复刻
                     if (player.Color != EPlayerColor.Black)
                     {
                         Plugin.Log.LogWarning(
-                            $"[HS] 密聊命令：非黑方 #{player.PublicInfo?.PlayerId} 试图使用 /{cmd}，已忽略。");
+                            $"[HS] 密聊命令：非黑方 #{player.PublicInfo?.PlayerId} 试图使用 /{name}，已忽略。");
                         return true;
                     }
 
@@ -85,7 +129,7 @@ namespace HideAndSeek.Features.Rule
                         return true;
 
                     int deviceId = msg.DeviceId;
-                    room.Push(delegate { Handle(room, player, deviceId, cmd, arg); });
+                    room.Push(delegate { Handle(room, player, deviceId, name, arg); });
                     return false;                        // 吞掉命令，不当聊天广播
                 }
                 catch (global::System.Exception ex)
@@ -96,150 +140,301 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        /// <summary>以 "/" 开头才算命令；返回 false 表示交给原版当聊天处理。</summary>
-        private static bool TryParseCommand(string text, out string command, out string argument)
+        private static void Handle(GameRoom room, GamePlayer player, int deviceId, string name, string arg)
         {
-            command = null;
-            argument = null;
+            var defs = GetCommands();
 
-            if (string.IsNullOrEmpty(text) || text[0] != '/')
-                return false;
-
-            string[] parts = text.Substring(1)
-                .Split(new[] { ' ', '\t' }, global::System.StringSplitOptions.RemoveEmptyEntries);
-
-            if (parts.Length == 0)
-                return false;
-
-            command = parts[0].ToLowerInvariant();
-            argument = parts.Length > 1 ? parts[1] : null;
-            return true;
-        }
-
-        private static void Handle(GameRoom room, GamePlayer player, int deviceId, string command, string argument)
-        {
-            switch (command)
+            if (name == "help")
             {
-                case "break":
-                    DoBreak(room, player, deviceId, argument);
-                    break;
-
-                case "help":
-                    Reply(player, deviceId, HelpText);
-                    break;
-
-                default:
-                    Reply(player, deviceId, $"未知命令 /{command}。{HelpText}");
-                    break;
+                Reply(player, deviceId, BuildHelp(defs));
+                return;
             }
+
+            CommandDef def = null;
+            foreach (var d in defs)
+            {
+                if (d.Name == name)
+                {
+                    def = d;
+                    break;
+                }
+            }
+
+            if (def == null)
+            {
+                Reply(player, deviceId, $"未知命令 /{name}。\n{BuildHelp(defs)}");
+                return;
+            }
+
+            Execute(room, player, deviceId, def, arg);
         }
 
-        private static void DoBreak(GameRoom room, GamePlayer player, int deviceId, string argument)
+        /// <summary>依次校验次数 / 冷却 / 条件，任一不过即拒绝并回执原因。</summary>
+        private static void Execute(GameRoom room, GamePlayer player, int deviceId, CommandDef def, string arg)
         {
             try
             {
                 if (room.State != EGameState.Survive || !player.IsAlive)
-                    return;
-
-                int wantId = 0;
-                if (!string.IsNullOrEmpty(argument) && !int.TryParse(argument, out wantId))
                 {
-                    Reply(player, deviceId, $"电箱 ID 必须是数字。{HelpText}");
+                    Reply(player, deviceId, "当前阶段无法使用命令。");
                     return;
                 }
 
-                int cooldown = BreakCooldownSeconds?.Value ?? 0;
+                // ① 次数
+                int used = Uses.TryGetValue(def.Name, out int u) ? u : 0;
+                if (def.MaxUses > 0 && used >= def.MaxUses)
+                {
+                    Reply(player, deviceId, $"/{def.Name} 本局已用完（上限 {def.MaxUses} 次）。");
+                    return;
+                }
+
+                // ② 冷却
                 float now = TimeManager.Instance?.SurviveTime ?? 0f;
-                if (cooldown > 0 && now - _lastBreakAt < cooldown)
+                if (def.Cooldown > 0 && LastUse.TryGetValue(def.Name, out float last)
+                    && now - last < def.Cooldown)
                 {
                     Reply(player, deviceId,
-                        $"冷却中，还需 {(int)(cooldown - (now - _lastBreakAt)) + 1} 秒。");
+                        $"/{def.Name} 冷却中，还需 {(int)(def.Cooldown - (now - last)) + 1} 秒。");
                     return;
                 }
 
-                var manager = GameDeviceManager.Instance;
-                if (manager?.Fuseboxes == null)
+                // ③ 条件
+                if (!string.IsNullOrWhiteSpace(def.Condition)
+                    && !RuleRewriteFeature.MatchesAll(def.Condition, room))
                 {
-                    Reply(player, deviceId, "当前没有可拆的电箱。");
+                    Reply(player, deviceId, $"/{def.Name} 条件未满足（{def.Condition}）。");
                     return;
                 }
 
-                GameFusebox target = null;
-                float bestSq = float.MaxValue;
-                var selfPos = player.PublicInfo?.Pos;
-
-                foreach (var fusebox in manager.Fuseboxes)
+                // ④ 效果
+                bool special = false;
+                foreach (string action in def.Action.Split(','))
                 {
-                    var info = fusebox?.DeviceInfo;
-                    if (info?.StateList == null || info.StateList.Count == 0)
-                        continue;
-                    if (info.MissionType != -1)              // 只拆被标记的目标（DisconnetCable 的唯一守卫）
-                        continue;
-                    if (info.StateList[0] != 0)              // 已断电的不重复拆
+                    string a = action.Trim();
+                    if (a.Length == 0)
                         continue;
 
-                    if (wantId > 0)
+                    if (a.Equals("Disconnect", global::System.StringComparison.OrdinalIgnoreCase))
                     {
-                        if (fusebox.ID == wantId)
-                        {
-                            target = fusebox;
-                            break;
-                        }
+                        special = true;
+                        if (!Disconnect(room, player, deviceId, arg))
+                            return;                      // 拆不动就不计次数、不写冷却
                         continue;
                     }
 
-                    // 无参：取离黑方最近的一个（Host 有权威坐标）
-                    if (selfPos == null || info.Pos == null)
+                    int eq = a.IndexOf('=');
+                    if (eq <= 0)
                     {
-                        if (target == null)
-                            target = fusebox;
-                        continue;
+                        Reply(player, deviceId, $"命令配置有误：{a}");
+                        return;
                     }
 
-                    float dx = info.Pos.X - selfPos.X;
-                    float dy = info.Pos.Y - selfPos.Y;
-                    float d = dx * dx + dy * dy;
-                    if (d < bestSq)
+                    string key = a.Substring(0, eq).Trim();
+                    string value = a.Substring(eq + 1).Trim();
+                    if (!RuleRewriteFeature.SetValue(key, value))
                     {
-                        bestSq = d;
-                        target = fusebox;
+                        Reply(player, deviceId, $"命令配置有误：{a}");
+                        return;
                     }
+                    Plugin.Log.LogInfo($"[HS] 密聊命令 /{def.Name}：{key} → {value}");
                 }
 
-                // 地图上没有可拆电箱即不允许拆
-                if (target == null)
-                {
-                    Reply(player, deviceId, wantId > 0
-                        ? $"没有可拆的电箱 #{wantId}（可能未派发、已断电或不在本局目标内）。"
-                        : "当前没有可拆的电箱（尚未派发或已全部断电）。");
-                    return;
-                }
+                Uses[def.Name] = used + 1;
+                LastUse[def.Name] = now;
 
-                // 反射复用原版拆电：灯光/箭头/音效/线索/OnBlackout 奖励/黑幕通知全走原版。注意拼写少一个 c。
-                if (_disconnectMethod == null)
-                    _disconnectMethod = AccessTools.Method(typeof(GameFusebox), "DisconnetCable");
-
-                if (_disconnectMethod == null)
-                {
-                    Plugin.Log.LogWarning("[HS] 密聊命令：找不到 Fusebox.DisconnetCable。");
-                    Reply(player, deviceId, "拆电功能当前不可用（内部方法未找到）。");
-                    return;
-                }
-
-                _disconnectMethod.Invoke(target, new object[] { player });
-                _lastBreakAt = now;
-
-                Plugin.Log.LogInfo($"[HS] 密聊命令：黑方 #{player.PublicInfo?.PlayerId} 拆除了电箱 #{target.ID}。");
-                Reply(player, deviceId, $"已拆除电箱 #{target.ID}。");
+                if (!special)
+                    Reply(player, deviceId, $"/{def.Name} 已执行。");
             }
             catch (global::System.Exception ex)
             {
-                Plugin.Log.LogWarning($"[HS] 密聊命令：拆电失败 — {ex.Message}");
-                Reply(player, deviceId, "拆电失败，请查看房主日志。");
+                Plugin.Log.LogWarning($"[HS] 密聊命令 /{def.Name} 执行失败 — {ex.Message}");
+                Reply(player, deviceId, $"/{def.Name} 执行失败，请查看房主日志。");
             }
         }
 
-        /// <summary>以密聊形式回执给该玩家（与触发通道一致，客户端会显示在密聊频道）。</summary>
+        /// <summary>拆离自己最近的可拆电箱；地图上没有则拒绝。返回是否真的拆了。</summary>
+        private static bool Disconnect(GameRoom room, GamePlayer player, int deviceId, string arg)
+        {
+            int wantId = 0;
+            if (!string.IsNullOrEmpty(arg) && !int.TryParse(arg, out wantId))
+            {
+                Reply(player, deviceId, "电箱 ID 必须是数字。");
+                return false;
+            }
+
+            var manager = GameDeviceManager.Instance;
+            if (manager?.Fuseboxes == null)
+            {
+                Reply(player, deviceId, "当前没有可拆的电箱。");
+                return false;
+            }
+
+            GameFusebox target = null;
+            float bestSq = float.MaxValue;
+            var selfPos = player.PublicInfo?.Pos;
+
+            foreach (var fusebox in manager.Fuseboxes)
+            {
+                var info = fusebox?.DeviceInfo;
+                if (info?.StateList == null || info.StateList.Count == 0)
+                    continue;
+                if (info.MissionType != -1)              // 只拆被标记的目标（DisconnetCable 的唯一守卫）
+                    continue;
+                if (info.StateList[0] != 0)              // 已断电的不重复拆
+                    continue;
+
+                if (wantId > 0)
+                {
+                    if (fusebox.ID == wantId)
+                    {
+                        target = fusebox;
+                        break;
+                    }
+                    continue;
+                }
+
+                if (selfPos == null || info.Pos == null)
+                {
+                    if (target == null)
+                        target = fusebox;
+                    continue;
+                }
+
+                float dx = info.Pos.X - selfPos.X;
+                float dy = info.Pos.Y - selfPos.Y;
+                float d = dx * dx + dy * dy;
+                if (d < bestSq)
+                {
+                    bestSq = d;
+                    target = fusebox;
+                }
+            }
+
+            if (target == null)
+            {
+                Reply(player, deviceId, wantId > 0
+                    ? $"没有可拆的电箱 #{wantId}（可能未派发、已断电或不在本局目标内）。"
+                    : "当前没有可拆的电箱（尚未派发或已全部断电）。");
+                return false;
+            }
+
+            // 反射复用原版拆电：灯光/箭头/音效/线索/OnBlackout 奖励/黑幕通知全走原版。注意拼写少一个 c。
+            if (_disconnectMethod == null)
+                _disconnectMethod = AccessTools.Method(typeof(GameFusebox), "DisconnetCable");
+
+            if (_disconnectMethod == null)
+            {
+                Plugin.Log.LogWarning("[HS] 密聊命令：找不到 Fusebox.DisconnetCable。");
+                Reply(player, deviceId, "拆电功能当前不可用（内部方法未找到）。");
+                return false;
+            }
+
+            _disconnectMethod.Invoke(target, new object[] { player });
+            Plugin.Log.LogInfo($"[HS] 密聊命令：黑方 #{player.PublicInfo?.PlayerId} 拆除了电箱 #{target.ID}。");
+            Reply(player, deviceId, $"已拆除电箱 #{target.ID}。");
+            return true;
+        }
+
+        /// <summary>解析命令注册表；配置未变时复用上次结果。</summary>
+        private static List<CommandDef> GetCommands()
+        {
+            string raw = Commands?.Value ?? "";
+            if (_parsed != null && _parsedFrom == raw)
+                return _parsed;
+
+            var list = new List<CommandDef>();
+
+            foreach (string line in raw.Split(new[] { '\n', '\r' },
+                global::System.StringSplitOptions.RemoveEmptyEntries))
+            {
+                string text = line.Trim();
+                if (text.Length == 0 || text.StartsWith("#"))
+                    continue;
+
+                var def = ParseLine(text);
+                if (def != null)
+                    list.Add(def);
+            }
+
+            _parsed = list;
+            _parsedFrom = raw;
+            return list;
+        }
+
+        /// <summary>解析一行：name = cond -> action ; cd=N ; uses=N（参数分隔用 ; 或 |）</summary>
+        private static CommandDef ParseLine(string text)
+        {
+            int eq = text.IndexOf('=');
+            if (eq <= 0)
+                return null;
+
+            var def = new CommandDef { Name = text.Substring(0, eq).Trim().ToLowerInvariant() };
+            if (def.Name.Length == 0)
+                return null;
+
+            string rest = text.Substring(eq + 1).Trim();
+
+            // 行内切出参数段（cd=/uses=），其余内容原样并入主体
+            var body = new global::System.Text.StringBuilder();
+            foreach (string piece in rest.Split(new[] { ';', '|' }))
+            {
+                string p = piece.Trim();
+                if (p.Length == 0)
+                    continue;
+
+                if (p.StartsWith("cd=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(p.Substring(3).Trim(), out int cd))
+                        def.Cooldown = cd < 0 ? 0 : cd;
+                    continue;
+                }
+
+                if (p.StartsWith("uses=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(p.Substring(5).Trim(), out int us))
+                        def.MaxUses = us < 0 ? 0 : us;
+                    continue;
+                }
+
+                if (body.Length > 0)
+                    body.Append(' ');
+                body.Append(p);
+            }
+
+            rest = body.ToString();
+            int arrow = rest.IndexOf("->", global::System.StringComparison.Ordinal);
+            if (arrow >= 0)
+            {
+                def.Condition = rest.Substring(0, arrow).Trim();
+                def.Action = rest.Substring(arrow + 2).Trim();
+            }
+            else
+            {
+                def.Condition = "";
+                def.Action = rest.Trim();
+            }
+
+            return def.Action.Length == 0 ? null : def;
+        }
+
+        private static string BuildHelp(List<CommandDef> defs)
+        {
+            var sb = new global::System.Text.StringBuilder("可用命令：");
+            foreach (var d in defs)
+            {
+                sb.Append("\n/").Append(d.Name);
+                if (d.Cooldown > 0)
+                    sb.Append("（冷却 ").Append(d.Cooldown).Append("s）");
+                if (d.MaxUses > 0)
+                    sb.Append("（每局 ").Append(d.MaxUses).Append(" 次）");
+                if (!string.IsNullOrWhiteSpace(d.Condition))
+                    sb.Append("（条件 ").Append(d.Condition).Append("）");
+            }
+            sb.Append("\n/help 查看本列表");
+            return sb.ToString();
+        }
+
+        /// <summary>以密聊形式回执给该玩家（与触发通道一致，客户端显示在密聊频道）。</summary>
         private static void Reply(GamePlayer player, int deviceId, string text)
         {
             try
