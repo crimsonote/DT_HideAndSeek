@@ -125,7 +125,7 @@ namespace HideAndSeek.Features.Rule
         private const string WhiteHelp =
             "【白方】" +
             "\n/rad — 全图扫描 15 秒（2 次/局）CD75" +
-            "\n/sta — 时停黑方 5 秒，耗 5% 进度 CD90" +
+            "\n/sta — 冻结黑方 5 秒，耗 5% 进度 CD90" +
             "\n/rep — 立即恢复供电，耗 10% 进度（仅断电）";
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
@@ -259,7 +259,7 @@ namespace HideAndSeek.Features.Rule
             Reply(player, deviceId, $"(实验性)全图扫描已开启({shown}/{max})。");
 
             if (AnnounceOnUse == null || AnnounceOnUse.Value)
-                SendPublic(room, "瞭望已开启。");
+                SendPublic(room, "扫描已开启。");
         }
 
         /// <summary>
@@ -387,7 +387,7 @@ namespace HideAndSeek.Features.Rule
                 if (now - lastNotice >= CdNoticeInterval)
                 {
                     CdNotice[pid] = now;
-                    Reply(player, deviceId, "时停冷却中。");
+                    Reply(player, deviceId, "冻结冷却中。");
                 }
                 return;
             }
@@ -423,7 +423,7 @@ namespace HideAndSeek.Features.Rule
             Plugin.Log.LogInfo($"[HS] WhiteCommand：时停已施加（TheWorld {stasisMs}ms）。");
 
             _stasisUntil = now + (StasisSeconds?.Value ?? 5);
-            Reply(player, deviceId, $"已时停黑方 {StasisSeconds?.Value ?? 5} 秒。");
+            Reply(player, deviceId, $"已冻结黑方 {StasisSeconds?.Value ?? 5} 秒。");
             // 不公开：只有执行者自己知道（回执已发给他），避免向黑方暴露白方动用了消耗手段。
         }
 
