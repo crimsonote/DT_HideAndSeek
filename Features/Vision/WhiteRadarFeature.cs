@@ -66,6 +66,9 @@ namespace HideAndSeek.Features.Vision
         /// <summary>非玩家 pin id 的基数：避开真实 PlayerId，让客户端查不到 PlayerCache。</summary>
         private const int PinIdBase = 90000;
 
+        /// <summary>雷达用的任务类型。避开 38(ScFusebox)/39(ScWeapon)，走 Define.MissionPinType 的其它分支。</summary>
+        private const int RadarMissionType = 99;
+
         /// <summary>PureDot 模式使用的"非白方"枚举值。取未定义的 3，避开 Black(1)/Dark(2) 分支。</summary>
         private const int FakeColorValue = 3;
 
@@ -172,10 +175,16 @@ namespace HideAndSeek.Features.Vision
         {
             try
             {
-                to.Session?.Send(new S_PIN_MOVE
+                // 用 S_SABOTAGE_MISSION 而不是 S_PIN_MOVE：
+                // 后者的 RefreshComplyRulesPin 必然执行 TurnComplyRules，点亮 ComplyRules 容器，
+                // 而 Target 的 sprite 在预制体里就是 null → Unity 画成白色实心方块，Host 无法消除。
+                // 前者走 Map.AddSabotageMission → AddCommonPin，SetInfo 会主动把 ComplyRules 隐藏。
+                to.Session?.Send(new S_SABOTAGE_MISSION
                 {
-                    Type = pinId,
-                    Pos = pos ?? new PosInfo()          // (0,0) = 删除
+                    MissionType = (ESchoolMission)RadarMissionType,
+                    DeviceId = pinId,
+                    Pos = pos ?? new PosInfo(),
+                    IsAdd = pos != null                 // IsAdd=false → 按 DeviceId 精确删除
                 });
             }
             catch (global::System.Exception ex)
@@ -239,6 +248,11 @@ namespace HideAndSeek.Features.Vision
 
                     // 死人/躲藏/旁观要**撤销**而不是跳过：尤其阵亡瞬间会收到 S_NOTIFY_BLACK，
                     // pin 若还在就会被 RefreshBlackPin 命中并 TurnBlack
+                    // 跳过自己：给白方本人建 pin 会让他看到一个跟着自己延迟移动的点 +
+                    // 头上的白色方块（Target 无贴图），而那本来就不是我们要传达的信息。
+                    if (other == white)
+                        continue;
+
                     bool visible = other.IsAlive
                         && other.State != EPlayerState.Hide
                         && !other.IsSpectator
