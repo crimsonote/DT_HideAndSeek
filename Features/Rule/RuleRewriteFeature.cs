@@ -178,6 +178,31 @@ namespace HideAndSeek.Features.Rule
                 return whites <= n;
             }
 
+            // fusebox：地图上存在"已派发目标、且尚未断电"的电箱。
+            // 原版在断电数归零后会 PushSurvivalJob(60, StartFuseboxSabotage) 重新派发 3 个目标
+            //（RefreshLight :173503），所以这个条件天然包含了那 60 秒节奏 ——
+            // 命令的可用性直接交给原版派发时机，不必再另设 CD。
+            if (cond.Equals("fusebox", global::System.StringComparison.OrdinalIgnoreCase))
+                return HasBreakableFusebox();
+
+            return false;
+        }
+
+        /// <summary>地图上是否有可拆的电箱（已派发目标且尚未断电）。</summary>
+        internal static bool HasBreakableFusebox()
+        {
+            var manager = Server.Game.DeviceManager.Instance;
+            if (manager?.Fuseboxes == null)
+                return false;
+
+            foreach (var fusebox in manager.Fuseboxes)
+            {
+                var info = fusebox?.DeviceInfo;
+                if (info?.StateList == null || info.StateList.Count == 0)
+                    continue;
+                if (info.MissionType == -1 && info.StateList[0] == 0)
+                    return true;
+            }
             return false;
         }
 
