@@ -1,5 +1,6 @@
 ﻿using BepInEx.Configuration;
 using HarmonyLib;
+using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
 using GameDeviceManager = Server.Game.DeviceManager;
@@ -72,6 +73,20 @@ namespace HideAndSeek.Features.Rule
                     setter?.Invoke(fb, new object[] { true });
                     if (fb.DeviceInfo.StateList != null && fb.DeviceInfo.StateList.Count > 0)
                         fb.DeviceInfo.StateList[0] = 0;
+
+                    // 原版 ConnetCable 改完状态后会做这几件事，缺一不可 ——
+                    // 只写字段客户端不会知道，表现就是"服务端已恢复、本地仍显示没修"。
+                    try { fb.BroadcastStateInArea(); } catch { }
+                    try
+                    {
+                        GameRoom.Instance?.BroadcastAlivePlayers(new S_REMOVE_ARROW
+                        {
+                            Type = EArrowType.FuseboxArrow,
+                            Pos = fb.DeviceInfo.Pos
+                        });
+                    }
+                    catch { }
+
                     fixedCount++;
                 }
 
