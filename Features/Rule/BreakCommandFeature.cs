@@ -44,7 +44,7 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "启用黑方密聊命令通道。关闭后以 / 开头的密聊也会被当作普通聊天。")]
         public static ConfigEntry<bool> AllowBreakBySecretChat;
 
-        [ConfigField("brk = fusebox -> Disconnect ; cd=0\n" +
+        [ConfigField("brk = fusebox -> Disconnect ; cd=90\n" +
                      "lck = -> Lock ; cd=60\n" +
                      "tp  = -> Teleport ; cd=60",
             "命令注册表。每条一行，格式：\n" +

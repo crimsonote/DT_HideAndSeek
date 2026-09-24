@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 11;
+        private const int CurrentVersion = 12;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,20 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v11 → v12
+            if (from < 12)
+            {
+                // BreakCommand.Commands 里 brk 的 cd 一直是 0（配置默认值），
+                // 而配置**优先于** BuiltinCommand 的兜底（那里写的是 90）——
+                // 所以实际生效的是 0，命令可以无限连发。
+                // 用户要求：cd = 90，且使用条件为"地图上有可拆电箱"（fusebox，已在）。
+                MigrateString(config, log, "BreakCommand", "Commands",
+                    "brk = fusebox -> Disconnect ; cd=0\\nlck",
+                    "brk = fusebox -> Disconnect ; cd=90\\nlck = -> Lock ; cd=60\\ntp  = -> Teleport ; cd=60");
+            }
+
             // v10 → v11
+
             if (from < 11)
             {
                 // v10 曾把开局提示压成短句，丢掉了"第二胜利途径"与"两个频道不同"等规则说明。
