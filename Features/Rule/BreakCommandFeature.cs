@@ -45,8 +45,8 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<bool> AllowBreakBySecretChat;
 
         [ConfigField("brk = fusebox -> Disconnect ; cd=90\n" +
-                     "lck = -> Lock ; cd=90\n" +
-                     "tp  = -> Teleport ; cd=90",
+                     "lck = -> Lock ; cd=60\n" +
+                     "tp  = -> Teleport ; cd=60",
             "命令注册表。每条一行，格式：\n" +
             "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数>\n" +
             "条件可留空（= 无条件）；可用 fusebox（地图上有可拆电箱）\n" +
@@ -243,13 +243,13 @@ namespace HideAndSeek.Features.Rule
                 case "brk":
                     return new CommandDef { Name = "brk", Condition = "fusebox", Action = "Disconnect", Cooldown = 90 };
                 case "lck":
-                    return new CommandDef { Name = "lck", Condition = "", Action = "Lock", Cooldown = 90 };
+                    return new CommandDef { Name = "lck", Condition = "", Action = "Lock", Cooldown = 60 };
                 case "cre":
                     return new CommandDef { Name = "cre", Condition = "", Action = "Credit", Cooldown = 0 };
                 case "ls":
                     return new CommandDef { Name = "ls", Condition = "", Action = "ListPlayers", Cooldown = 0 };
                 case "tp":
-                    return new CommandDef { Name = "tp", Condition = "", Action = "Teleport", Cooldown = 90 };
+                    return new CommandDef { Name = "tp", Condition = "", Action = "Teleport", Cooldown = 60 };
                 default:
                     return null;
             }
