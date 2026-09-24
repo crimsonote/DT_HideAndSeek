@@ -290,6 +290,14 @@ namespace HideAndSeek.Features.Combat
         /// </summary>
         private static void ClearAndRestore()
         {
+            // 配额与每人冷却**必须先清**，而且要放在下面的早退之前：
+            // 它们记的是 TimeManager.SurviveTime，而那个值每局从 0 重新计时。
+            // 不清的话上一局记下的时刻在新局里算出来是负数，
+            // `now - t > window` 永远不成立 ⇒ 记录永不过期
+            // ⇒ 第二局开局就"配额满 / 提示还在冷却"，人数再少也领不到。
+            IssuedTimes.Clear();
+            LastIssue.Clear();
+
             if (Active.Count == 0)
                 return;
 
