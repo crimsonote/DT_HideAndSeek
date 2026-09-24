@@ -59,7 +59,7 @@ namespace HideAndSeek.Features.Rule
                      "lck = -> Lock ; cd=60\n" +
                      "tp  = -> Teleport ; cd=60",
             "命令注册表。每条一行，格式：\n" +
-            "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数> ; side=<any|white|black> ; ch=<pub|secret|both> ; alias=<别名,别名>\n" +
+            "    <命令名> = <条件> -> <效果> ; cd=<秒> ; uses=<每局次数> ; side=<any|white|black> ; ch=<pub|secret|both> ; alias=<别名,别名> ; per=<room|player>\n" +
             "条件可留空（= 无条件）；可用 fusebox（地图上有可拆电箱）\n" +
             "      time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
             "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairCount/MinProgress），\n" +
@@ -68,8 +68,79 @@ namespace HideAndSeek.Features.Rule
             "cd / uses 可省略，0 或省略 = 不限。行首 # 为注释。\n" +
             "side / ch 省略时按黑方密聊处理（与旧格式一致）：side=black、ch=secret。\n" +
             "例（给白方加一条公开频道的命令）：scan = -> Radar ; side=white ; ch=pub ; cd=120\n" +
+            "行尾可加 desc=<说明> 覆盖该命令在 /help 里的说明文案（必须写在行尾，其值一路吃到行尾，\n" +
+            "因此说明里可以出现 ; | , 等符号）。不写则按动作取 Texts 里的 Desc_<动作名>。\n" +
             "默认的 fusebox 条件已隐含原版派发节奏（断电归零后 60 秒才重新派发目标），通常不必再设 cd。")]
         public static ConfigEntry<string> Commands;
+
+        // 全部默认文案集中在这里；下面的 Texts 配置项直接引用它，因此文案只有一份定义。
+        // 用户在 .cfg 里删掉某一行不会让提示变成空白 —— GetTexts 会把用户配置叠加在内置默认之上。
+        private const string DefaultTexts =
+            // ── 引擎闸门 ──
+            "PhaseBlocked = 当前阶段无法使用命令。\n" +
+            "UsesExhausted = /{name} 本局已用完（上限 {n} 次）。\n" +
+            "Cooldown = /{name} 冷却中，还需 {sec} 秒。\n" +
+            "ConditionFailed = /{name} 条件未满足（{cond}）。\n" +
+            "Executed = /{name} 已执行。\n" +
+            "ExecFailed = /{name} 执行失败，请查看房主日志。\n" +
+            "BadAction = 命令配置有误：{a}\n" +
+            "UnknownCommand = 未知命令 /{name}。\n" +
+            // ── 帮助 ──
+            "HelpTitle = 【命令帮助】\n" +
+            "GroupAny = 公共\n" +
+            "GroupWhite = 白方\n" +
+            "GroupBlack = 黑方\n" +
+            "HelpCondition = 条件:{cond}\n" +
+            // ── 帮助：每条命令的说明，键 = Desc_<动作名小写> ──
+            "Desc_help = 查看这份帮助\n" +
+            "Desc_reload = 重新读取配置文件\n" +
+            "Desc_refresh = 刷新网络连接 CD{cd}\n" +
+            "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
+            "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
+            "Desc_repair = 立即恢复供电，耗{cost}%任务进度\n" +
+            "Desc_lock = 锁住附近的门 CD{cd}\n" +
+            "Desc_teleport = 3 秒后传送到目标处 [玩家ID] CD{cd}\n" +
+            "Desc_disconnect = 破坏电闸 CD{cd}\n" +
+            "Desc_credit = 查看/消耗积分升级 v|s|t|help\n" +
+            "Desc_listplayers = 列出玩家 ID 与昵称\n" +
+            // ── 动作回执 ──
+            "ReloadNoConfig = 配置句柄不可用（DT_Tools 未就绪）。\n" +
+            "ReloadDone = 配置已重新读取。\n" +
+            "ReloadFailed = 重载失败，详见日志。\n" +
+            "LockNone = 附近没有可锁的门。\n" +
+            "LockDone = 已锁住 {n} 扇门（半径 {radius}）。\n" +
+            "DisconnectBadId = 电箱 ID 必须是数字。\n" +
+            "DisconnectNoFuseboxes = 当前没有可拆的电箱。\n" +
+            "DisconnectNoFuseIdle = 当前没有可拆的电箱（尚未派发或已全部断电）。\n" +
+            "DisconnectNoSuchFuse = 没有可拆的电箱 #{id}（可能未派发、已断电或不在本局目标内）。\n" +
+            "DisconnectUnavailable = 拆电功能当前不可用（内部方法未找到）。\n" +
+            "TeleportFailed = 传送失败：{err}\n" +
+            "PlayerListTitle = 玩家列表（/tp 可用 ID）：\n" +
+            "PlayerListEmpty = 当前没有玩家\n" +
+            "TagDummy = [假人]\n" +
+            "TagSpectator = [观战]\n" +
+            "TagDead = [死亡]\n" +
+            "CreditUsage = 用法 /cre v|s|t|help\n" +
+            "RadarOn = (实验性)全图扫描已开启({n}/{uses})。\n" +
+            "StasisDone = 已冻结黑方 {sec} 秒。\n" +
+            "RepairNoOutage = 当前没有断电，无需修复。\n" +
+            "RepairDone = 已立即恢复供电（修复 {n} 处）。\n" +
+            "RefreshPending = 网络刷新中\n" +
+            "RefreshDone = [刷新完成]\n" +
+            "RefreshFailed = 网络连接异常，刷新失败。\n" +
+            "SpendNoProgress = 当前任务进度为 0\n" +
+            "SpendInsufficient = 进度不足（现有 {x}，需要 {y}）\n" +
+            "SpendUnavailable = 读不到任务进度";
+
+        [ConfigField(DefaultTexts,
+            "命令对玩家显示的全部文案。格式：每条一行 `<键> = <文本>`，行首 # 为注释。\n" +
+            "占位符（按出现的键自动填充）：{name} 命令名 / {n} 数量 / {uses} 次数上限 / {sec} 秒数 /\n" +
+            "      {cd} 冷却 / {cond} 条件 / {dur} 雷达秒数 / {cost} 进度百分比 / {radius} 半径 /\n" +
+            "      {id} 电箱 ID / {x} {y} 进度数值 / {a} 出错的动作串 / {err} 失败原因\n" +
+            "把某条的值留空 = 该提示不再发送（例如不想看到\"已执行\"就写 `Executed = `）。\n" +
+            "删掉整行 = 回到内置默认文案。\n" +
+            "每条命令自己的帮助说明在 Commands 里用行尾 desc= 覆盖（见该配置项说明）。")]
+        public static ConfigEntry<string> Texts;
 
         // ══ 白方命令的运行参数 ═════════════════════════════════════════
         // 冷却与次数不在这里 —— 它们和黑方一样写在注册表行上（cd= / uses=），
@@ -145,6 +216,9 @@ namespace HideAndSeek.Features.Rule
             public CommandChannel Channel = CommandChannel.Secret;
             public string Condition = "";
             public string Action = "";
+
+            /// <summary>注册表行尾 desc= 给出的帮助说明；为空则按动作查 Texts 的 Desc_&lt;动作&gt;。</summary>
+            public string Desc;
             public int Cooldown;
             public int MaxUses;
 
@@ -327,7 +401,7 @@ namespace HideAndSeek.Features.Rule
                 // 回复等于给所有人一个探测命令表的手段。密聊则给出提示，方便黑方自己纠错。
                 if (channel == CommandChannel.Secret)
                     Reply(player, deviceId, channel,
-                        $"未知命令 /{name}。\n{BuildHelp(player, channel)}");
+                        T("UnknownCommand", "name", name) + "\n" + BuildHelp(player, channel));
                 return;
             }
 
@@ -414,7 +488,7 @@ namespace HideAndSeek.Features.Rule
                 {
                     if (!def.AllowOutsideSurvive)
                     {
-                        Reply(player, deviceId, channel, "当前阶段无法使用命令。");
+                        Reply(player, deviceId, channel, T("PhaseBlocked"));
                         return;
                     }
                 }
@@ -425,7 +499,7 @@ namespace HideAndSeek.Features.Rule
                 int used = Uses.TryGetValue(key, out int u) ? u : 0;
                 if (def.MaxUses > 0 && used >= def.MaxUses)
                 {
-                    Reply(player, deviceId, channel, $"/{def.Name} 本局已用完（上限 {def.MaxUses} 次）。");
+                    Reply(player, deviceId, channel, T("UsesExhausted", "name", def.Name, "n", def.MaxUses.ToString()));
                     return;
                 }
 
@@ -444,14 +518,15 @@ namespace HideAndSeek.Features.Rule
                     }
 
                     Reply(player, deviceId, channel,
-                        $"/{def.Name} 冷却中，还需 {(int)(def.Cooldown - (now - last)) + 1} 秒。");
+                        T("Cooldown", "name", def.Name,
+                            "sec", (((int)(def.Cooldown - (now - last))) + 1).ToString()));
                     return;
                 }
 
                 if (!string.IsNullOrWhiteSpace(def.Condition)
                     && !RuleRewriteFeature.MatchesAll(def.Condition, room))
                 {
-                    Reply(player, deviceId, channel, $"/{def.Name} 条件未满足（{def.Condition}）。");
+                    Reply(player, deviceId, channel, T("ConditionFailed", "name", def.Name, "cond", def.Condition));
                     return;
                 }
 
@@ -470,12 +545,12 @@ namespace HideAndSeek.Features.Rule
                 LastUse[key] = now;
 
                 if (!special)
-                    Reply(player, deviceId, channel, $"/{def.Name} 已执行。");
+                    Reply(player, deviceId, channel, T("Executed", "name", def.Name));
             }
             catch (global::System.Exception ex)
             {
                 Plugin.Log.LogWarning($"[HS] 命令 /{def.Name} 执行失败 — {ex.Message}");
-                Reply(player, deviceId, channel, $"/{def.Name} 执行失败，请查看房主日志。");
+                Reply(player, deviceId, channel, T("ExecFailed", "name", def.Name));
             }
         }
 
@@ -536,7 +611,7 @@ namespace HideAndSeek.Features.Rule
                         int.TryParse(arg, out wantPid);
                     if (!TeleportCommandFeature.Begin(room, player, wantPid, out string tpErr))
                     {
-                        Reply(player, deviceId, channel, "传送失败：" + tpErr);
+                        Reply(player, deviceId, channel, T("TeleportFailed", "err", tpErr));
                         return false;
                     }
                     return true;
@@ -551,7 +626,7 @@ namespace HideAndSeek.Features.Rule
                     int eq = a.IndexOf('=');
                     if (eq <= 0)
                     {
-                        Reply(player, deviceId, channel, $"命令配置有误：{a}");
+                        Reply(player, deviceId, channel, T("BadAction", "a", a));
                         return false;
                     }
 
@@ -559,7 +634,7 @@ namespace HideAndSeek.Features.Rule
                     string v = a.Substring(eq + 1).Trim();
                     if (!RuleRewriteFeature.SetValue(k, v))
                     {
-                        Reply(player, deviceId, channel, $"命令配置有误：{a}");
+                        Reply(player, deviceId, channel, T("BadAction", "a", a));
                         return false;
                     }
                     Plugin.Log.LogInfo($"[HS] 命令 /{def.Name}：{k} → {v}");
@@ -700,7 +775,16 @@ namespace HideAndSeek.Features.Rule
 
             string rest = text.Substring(eq + 1).Trim();
 
-            // 行内切出参数段（cd= / uses= / side= / ch= / alias=），其余内容原样并入主体
+            // desc= 必须写在**行尾**，其值一路吃到行尾（因此可以含 ; | , 等分隔符，方便写说明）。
+            // 这也是唯一能让 desc 含分隔符的做法 —— 否则说明里的标点会把参数段切坏。
+            int descAt = rest.IndexOf("desc=", global::System.StringComparison.OrdinalIgnoreCase);
+            if (descAt >= 0)
+            {
+                def.Desc = rest.Substring(descAt + 5).Trim();
+                rest = rest.Substring(0, descAt).Trim();
+            }
+
+            // 行内切出参数段（cd= / uses= / side= / ch= / alias= / per=），其余内容原样并入主体
             var body = new global::System.Text.StringBuilder();
             foreach (string piece in rest.Split(new[] { ';', '|' }))
             {
@@ -802,6 +886,68 @@ namespace HideAndSeek.Features.Rule
             return list.ToArray();
         }
 
+        // ══ 文案表 ════════════════════════════════════════════════════
+
+        private static Dictionary<string, string> _defaultTexts;
+        private static Dictionary<string, string> _texts;
+        private static string _textsFrom;
+
+        private static Dictionary<string, string> ParseTexts(string raw)
+        {
+            var dict = new Dictionary<string, string>(global::System.StringComparer.OrdinalIgnoreCase);
+            foreach (string line in (raw ?? "").Split(new[] { '\n', '\r' },
+                global::System.StringSplitOptions.RemoveEmptyEntries))
+            {
+                string t = line.Trim();
+                if (t.Length == 0 || t.StartsWith("#"))
+                    continue;
+
+                int eq = t.IndexOf('=');
+                if (eq <= 0)
+                    continue;
+
+                string key = t.Substring(0, eq).Trim();
+                if (key.Length == 0)
+                    continue;
+
+                dict[key] = t.Substring(eq + 1).Trim();
+            }
+            return dict;
+        }
+
+        /// <summary>
+        /// 取一条文案。用户配置是**叠加**在内置默认之上的，所以删掉某行只会回到内置文案，
+        /// 不会让提示变成空白；把值留空才是"这条不发送"。
+        /// </summary>
+        private static string T(string key)
+        {
+            string raw = Texts?.Value ?? "";
+            if (_texts == null || _textsFrom != raw)
+            {
+                if (_defaultTexts == null)
+                    _defaultTexts = ParseTexts(DefaultTexts);
+
+                var merged = new Dictionary<string, string>(_defaultTexts,
+                    global::System.StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in ParseTexts(raw))
+                    merged[kv.Key] = kv.Value;
+
+                _texts = merged;
+                _textsFrom = raw;
+            }
+
+            return _texts.TryGetValue(key, out string value) ? value : "";
+        }
+
+        private static string T(string key, string k1, string v1)
+            => T(key).Replace("{" + k1 + "}", v1 ?? "");
+
+        private static string T(string key, string k1, string v1, string k2, string v2)
+            => T(key, k1, v1).Replace("{" + k2 + "}", v2 ?? "");
+
+        private static string T(string key, string k1, string v1, string k2, string v2, string k3, string v3)
+            => T(key, k1, v1, k2, v2).Replace("{" + k3 + "}", v3 ?? "");
+
         // ══ 帮助 ══════════════════════════════════════════════════════
 
         /// <summary>动作串里的第一个动作（帮助文案按它归类）。</summary>
@@ -815,29 +961,41 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 按**动作**而不是按命令名给帮助文案：命令名可以被用户改（注册表里 brk→break），
-        /// 改完还按名字查表就会退化成"只有条件、没有说明"。
+        /// 每条命令的帮助说明：注册表行尾的 <c>desc=</c> 优先，否则按**动作**查 Texts 的
+        /// <c>Desc_&lt;动作名&gt;</c>。
+        ///
+        /// 按动作而不是按命令名查：命令名可以被用户改（注册表里 brk→break、lck→lock），
+        /// 改完若还按名字查表，帮助就会退化成"只有条件、没有说明"。
         /// </summary>
         private static string Describe(CommandDef def)
         {
-            switch (PrimaryAction(def.Action))
-            {
-                case "help":        return "查看这份帮助";
-                case "reload":      return "重新读取配置文件";
-                case "refresh":     return "刷新网络连接 CD{cd}";
-                case "radar":
-                    return $"全图扫描{RadarDurationSeconds?.Value ?? 15}秒({def.MaxUses}次) CD{{cd}}";
-                case "stasis":
-                    return $"冻结黑方{StasisSeconds?.Value ?? 5}秒，耗{(StasisCostPercent?.Value ?? 5f):F0}%任务进度 CD{{cd}}";
-                case "repair":
-                    return $"立即恢复供电，耗{(RepairCostPercent?.Value ?? 10f):F0}%任务进度";
-                case "lock":        return "锁住附近的门 CD{cd}";
-                case "teleport":    return "3 秒后传送到目标处 [玩家ID] CD{cd}";
-                case "disconnect":  return "破坏电闸 CD{cd}";
-                case "credit":      return "查看/消耗积分升级 v|s|t|help";
-                case "listplayers": return "列出玩家 ID 与昵称";
-                default:            return null;
-            }
+            string action = PrimaryAction(def.Action);
+            string template = string.IsNullOrEmpty(def.Desc) ? T("Desc_" + action) : def.Desc;
+            if (string.IsNullOrEmpty(template))
+                return null;                         // 没写说明 → 帮助里退回显示条件
+
+            return FillDesc(template, def, action);
+        }
+
+        /// <summary>把说明模板里的占位符换成实际值。</summary>
+        private static string FillDesc(string template, CommandDef def, string action)
+        {
+            string text = template
+                .Replace("{cd}", def.Cooldown > 0 ? def.Cooldown.ToString() : "-")
+                .Replace("{uses}", def.MaxUses > 0 ? def.MaxUses.ToString() : "-")
+                .Replace("{name}", def.Name);
+
+            if (action == "radar")
+                return text.Replace("{dur}", (RadarDurationSeconds?.Value ?? 15).ToString());
+
+            if (action == "stasis")
+                return text.Replace("{sec}", (StasisSeconds?.Value ?? 5).ToString())
+                           .Replace("{cost}", (StasisCostPercent?.Value ?? 5f).ToString("F0"));
+
+            if (action == "repair")
+                return text.Replace("{cost}", (RepairCostPercent?.Value ?? 10f).ToString("F0"));
+
+            return text;
         }
 
         /// <summary>
@@ -850,13 +1008,13 @@ namespace HideAndSeek.Features.Rule
             bool white = player.Color == EPlayerColor.White;
             bool black = player.Color == EPlayerColor.Black;
 
-            var sb = new global::System.Text.StringBuilder("【命令帮助】");
-            AppendGroup(sb, "公共", CommandSide.Any, channel);
+            var sb = new global::System.Text.StringBuilder(T("HelpTitle"));
+            AppendGroup(sb, T("GroupAny"), CommandSide.Any, channel);
 
             if (white)
-                AppendGroup(sb, "白方", CommandSide.White, channel);
+                AppendGroup(sb, T("GroupWhite"), CommandSide.White, channel);
             else if (black)
-                AppendGroup(sb, "黑方", CommandSide.Black, channel);
+                AppendGroup(sb, T("GroupBlack"), CommandSide.Black, channel);
 
             return sb.ToString();
         }
@@ -908,16 +1066,14 @@ namespace HideAndSeek.Features.Rule
             {
                 sb.Append("\n/").Append(def.Name);
 
-                string desc = Describe(def);
+                string desc = Describe(def);          // 占位符已在 FillDesc 里填好
                 if (desc != null)
                 {
-                    // {cd} 占位符换成实际冷却，省掉「冷却」两个字的宽度
-                    desc = desc.Replace("{cd}", def.Cooldown > 0 ? def.Cooldown.ToString() : "-");
                     sb.Append("  ").Append(desc);
                 }
                 else if (!string.IsNullOrWhiteSpace(def.Condition))
                 {
-                    sb.Append("  条件:").Append(def.Condition);
+                    sb.Append("  ").Append(T("HelpCondition", "cond", def.Condition));
                 }
             }
         }
@@ -938,7 +1094,7 @@ namespace HideAndSeek.Features.Rule
         private static string BuildPlayerList(GameRoom room)
         {
             if (room?.Players == null)
-                return "当前没有玩家";
+                return T("PlayerListEmpty");
 
             // 一行并排两个：聊天框每行字符有限，而昵称假定不超过 12 字母 / 6 汉字，
             // 两个并排正好用满一行，条目多时能省一半行数。
@@ -951,14 +1107,14 @@ namespace HideAndSeek.Features.Rule
                 var one = new global::System.Text.StringBuilder();
                 one.Append('#').Append(p.PublicInfo.PlayerId);
                 one.Append(' ').Append(p.Name ?? "?");
-                if (p.IsDummy) one.Append("[假人]");
-                if (p.IsSpectator) one.Append("[观战]");
-                else if (!p.IsAlive) one.Append("[死亡]");
+                if (p.IsDummy) one.Append(T("TagDummy"));
+                if (p.IsSpectator) one.Append(T("TagSpectator"));
+                else if (!p.IsAlive) one.Append(T("TagDead"));
 
                 items.Add(one.ToString());
             }
 
-            var sb = new global::System.Text.StringBuilder("玩家列表（/tp 可用 ID）：");
+            var sb = new global::System.Text.StringBuilder(T("PlayerListTitle"));
             for (int i = 0; i < items.Count; i += 2)
             {
                 sb.Append('\n').Append(items[i]);
@@ -996,7 +1152,7 @@ namespace HideAndSeek.Features.Rule
                 case "t": case "task": case "任务":
                     idx = HideAndSeek.Features.Combat.KillUpgradeFeature.DirTask; break;
                 default:
-                    Reply(player, deviceId, channel, "用法 /cre v|s|t|help");
+                    Reply(player, deviceId, channel, T("CreditUsage"));
                     return;
             }
 
@@ -1012,11 +1168,11 @@ namespace HideAndSeek.Features.Rule
 
             if (count == 0)
             {
-                Reply(player, deviceId, channel, "附近没有可锁的门。");
+                Reply(player, deviceId, channel, T("LockNone"));
                 return false;
             }
 
-            Reply(player, deviceId, channel, $"已锁住 {count} 扇门（半径 {radius:F0}）。");
+            Reply(player, deviceId, channel, T("LockDone", "n", count.ToString(), "radius", radius.ToString("F0")));
             return true;
         }
 
@@ -1051,14 +1207,14 @@ namespace HideAndSeek.Features.Rule
             int wantId = 0;
             if (!string.IsNullOrEmpty(arg) && !int.TryParse(arg, out wantId))
             {
-                Reply(player, deviceId, channel, "电箱 ID 必须是数字。");
+                Reply(player, deviceId, channel, T("DisconnectBadId"));
                 return false;
             }
 
             var manager = GameDeviceManager.Instance;
             if (manager?.Fuseboxes == null)
             {
-                Reply(player, deviceId, channel, "当前没有可拆的电箱。");
+                Reply(player, deviceId, channel, T("DisconnectNoFuseboxes"));
                 return false;
             }
 
@@ -1106,8 +1262,8 @@ namespace HideAndSeek.Features.Rule
             if (target == null)
             {
                 Reply(player, deviceId, channel, wantId > 0
-                    ? $"没有可拆的电箱 #{wantId}（可能未派发、已断电或不在本局目标内）。"
-                    : "当前没有可拆的电箱（尚未派发或已全部断电）。");
+                    ? T("DisconnectNoSuchFuse", "id", wantId.ToString())
+                    : T("DisconnectNoFuseIdle"));
                 return false;
             }
 
@@ -1118,7 +1274,7 @@ namespace HideAndSeek.Features.Rule
             if (_disconnectMethod == null)
             {
                 Plugin.Log.LogWarning("[HS] 命令：找不到 Fusebox.DisconnetCable。");
-                Reply(player, deviceId, channel, "拆电功能当前不可用（内部方法未找到）。");
+                Reply(player, deviceId, channel, T("DisconnectUnavailable"));
                 return false;
             }
 
@@ -1141,18 +1297,18 @@ namespace HideAndSeek.Features.Rule
             {
                 if (Plugin.HsConfig == null)
                 {
-                    Reply(player, deviceId, channel, "配置句柄不可用（DT_Tools 未就绪）。");
+                    Reply(player, deviceId, channel, T("ReloadNoConfig"));
                     return false;
                 }
 
                 Plugin.HsConfig.Reload();
-                Reply(player, deviceId, channel, "配置已重新读取。");
+                Reply(player, deviceId, channel, T("ReloadDone"));
                 Plugin.Log.LogInfo("[HS] 配置已通过 /reload 重新读取。");
                 return true;
             }
             catch (global::System.Exception ex)
             {
-                Reply(player, deviceId, channel, "重载失败，详见日志。");
+                Reply(player, deviceId, channel, T("ReloadFailed"));
                 Plugin.Log.LogWarning($"[HS] /reload 失败 — {ex.Message}");
                 return false;
             }
@@ -1172,7 +1328,7 @@ namespace HideAndSeek.Features.Rule
             string key = CmdKey(def, player.PublicInfo?.PlayerId ?? 0);
             int used = Uses.TryGetValue(key, out int u) ? u : 0;
 
-            Reply(player, deviceId, channel, $"(实验性)全图扫描已开启({used + 1}/{def.MaxUses})。");
+            Reply(player, deviceId, channel, T("RadarOn", "n", (used + 1).ToString(), "uses", def.MaxUses.ToString()));
             // 不公告：/rad 的开启不对外播报
             return true;
         }
@@ -1213,7 +1369,7 @@ namespace HideAndSeek.Features.Rule
             }
             Plugin.Log.LogInfo($"[HS] 命令：时停已施加（TheWorld {stasisMs}ms）。");
 
-            Reply(player, deviceId, channel, $"已冻结黑方 {StasisSeconds?.Value ?? 5} 秒。");
+            Reply(player, deviceId, channel, T("StasisDone", "sec", (StasisSeconds?.Value ?? 5).ToString()));
             // 不公开：只有执行者自己知道（回执已发给他），避免向黑方暴露白方动用了消耗手段。
             return true;
         }
@@ -1227,7 +1383,7 @@ namespace HideAndSeek.Features.Rule
 
             if (broken <= 0)
             {
-                Reply(player, deviceId, channel, "当前没有断电，无需修复。");
+                Reply(player, deviceId, channel, T("RepairNoOutage"));
                 return false;
             }
 
@@ -1256,7 +1412,7 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] 命令：修电失败 — {ex.Message}");
             }
 
-            Reply(player, deviceId, channel, $"已立即恢复供电（修复 {fixedCount} 处）。");
+            Reply(player, deviceId, channel, T("RepairDone", "n", fixedCount.ToString()));
             // 不公开：只有执行者自己知道（回执已发给他），避免向黑方暴露白方动用了消耗手段。
             return true;
         }
@@ -1274,18 +1430,18 @@ namespace HideAndSeek.Features.Rule
             why = null;
 
             float cur = MissionBridge.CurrentPoint;
-            if (cur <= 0f) { why = "当前任务进度为 0"; return false; }
+            if (cur <= 0f) { why = T("SpendNoProgress"); return false; }
 
             float goal = MissionBridge.GoalPoint;
             float effective = goal > 0f ? goal : cur;
             float cost = effective * percent / 100f;
             if (cost < 1f) cost = 1f;
             if (cost > cur) cost = cur;              // 不能扣成负数
-            if (cur < cost) { why = $"进度不足（现有 {cur:F0}，需要 {cost:F0}）"; return false; }
+            if (cur < cost) { why = T("SpendInsufficient", "x", cur.ToString("F0"), "y", cost.ToString("F0")); return false; }
 
             if (!MissionBridge.SetCurrentPoint(cur - cost))
             {
-                why = "读不到任务进度";
+                why = T("SpendUnavailable");
                 return false;
             }
 
@@ -1329,7 +1485,7 @@ namespace HideAndSeek.Features.Rule
         private static bool DoRefresh(GameRoom room, GamePlayer player, int deviceId, CommandChannel channel)
         {
             int delay = RefreshDelayMs?.Value ?? 5000;
-            Reply(player, deviceId, channel, "网络刷新中");
+            Reply(player, deviceId, channel, T("RefreshPending"));
 
             if (delay <= 0)
             {
@@ -1355,9 +1511,9 @@ namespace HideAndSeek.Features.Rule
                     return;                          // 等待期间阶段变了或阵亡 → 静默收尾
 
                 if (CompleteAsMission(player))
-                    Reply(player, deviceId, channel, "[刷新完成]");
+                    Reply(player, deviceId, channel, T("RefreshDone"));
                 else
-                    Reply(player, deviceId, channel, "网络连接异常，刷新失败。");
+                    Reply(player, deviceId, channel, T("RefreshFailed"));
             }
             catch (global::System.Exception ex)
             {
