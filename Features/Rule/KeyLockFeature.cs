@@ -226,6 +226,18 @@ namespace HideAndSeek.Features.Rule
                 if (player?.PublicInfo == null)
                     return true;
 
+                // 关于"1 秒开合冷却"：**不要去动它**（曾经试过清 _interactCooldownPlayers，已撤）。
+                //
+                // 原版 Server.Game.Door :162545 用 _interactCooldownPlayers 做门禁，命中就跳过
+                // OpenDoor/CloseDoor —— 但它只影响"门真的被开关"，而本 Prefix 在原方法体
+                // **之前**执行，所以被冷却忽略的那几次照样会记进计数。
+                // 客户端 Door.Interact(:6275) 也没有任何输入冷却：只要门不是锁定态就直接发
+                // C_INTERACT_DOOR。
+                //
+                // ⇒ "短时间连按 E 几次"天然就能凑够次数，冷却保持原样即可。
+                //   第一次没锁上，先看日志里"记到第 N/3 次"涨不涨 —— 涨了就是次数没够，
+                //   不涨才是别的问题。
+
                 int doorId = __instance.ID;
                 int pid = player.PublicInfo.PlayerId;
                 int state = info.StateList[0];
@@ -283,7 +295,15 @@ namespace HideAndSeek.Features.Rule
             times.RemoveAll(t => now - t > window);
             times.Add(now);
 
-            int need = SealsNeeded?.Value ?? 2;
+            int need = SealsNeeded?.Value ?? 3;
+
+            // 每次都记一行：不锁的时候，这行日志能直接说明"记到第几次"，
+            // 不必再猜是没凑够次数、还是被原版的开合冷却吞掉了。
+            // 只在手持鱼时才会走到这里，所以不会吵。
+            Plugin.Log.LogInfo(
+                $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 记到第 {times.Count}/{need} 次开合" +
+                $"（窗口 {window:F0} 秒，还需 {need - times.Count} 次）。");
+
             if (times.Count < need)
                 return false;
 

@@ -483,7 +483,7 @@ namespace HideAndSeek.Features.Rule
         {
             foreach (var def in defs)
             {
-                if (!MatchesName(def, name))
+                if (!SameCommand(def, name))
                     continue;
                 if (def.Channel != channel && def.Channel != CommandChannel.Both)
                     continue;
@@ -504,6 +504,29 @@ namespace HideAndSeek.Features.Rule
                     return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// def 与玩家输入的名字是否指向**同一个命令**。
+        ///
+        /// 除了字面量比较，还要跨到内置表判一次：注册表里可能写的是内置命令的**别名**
+        /// （例如注册表写 `break = ...`，而 `break` 是内置 `brk` 的别名），
+        /// 玩家却可能打主名 `/brk`。只比字面量的话，`/break` 命中注册表、`/brk` 落到内置，
+        /// 同一个命令两个名字两套参数（实测就是 CD 0 与 CD 90 的差别）。
+        ///
+        /// 判据：把 def 的名字与 name **都归一到内置主名**再比；两边都不属于任何内置命令时，
+        /// 归一结果等于原值，于是退回纯字面量比较（自定义命令名不受影响）。
+        /// </summary>
+        private static bool SameCommand(CommandDef def, string name)
+        {
+            if (MatchesName(def, name))
+                return true;
+
+            string a = CanonicalName(def.Name);
+            string b = CanonicalName(name);
+
+            // a == b 且确实发生过归一（否则就是两个不相干的自定义名，交给上面的字面量比较）
+            return a == b && (a != def.Name || b != name);
         }
 
         private static bool SideAllows(CommandSide side, GamePlayer player)
