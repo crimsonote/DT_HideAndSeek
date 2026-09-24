@@ -90,7 +90,7 @@ namespace HideAndSeek.Features.Rule
         private static readonly Dictionary<int, float> RefreshLastUse = new Dictionary<int, float>();
 
         /// <summary>S_MISSION_CLEAR.ClearedType 用的哨兵值：不在客户端任务文本表里，因此不弹"XXX 已完成"。</summary>
-                [ConfigField(38, "弹窗用哪个任务的名称（ESchoolMission 枚举值）。默认 38 = ScFusebox。" +
+                [ConfigField(17, "弹窗用哪个任务的名称（ESchoolMission 枚举值）。默认 17 = ScFixPc 网络系统维护。" +
             "客户端弹窗文本取自本地化表，Host 端无法自定义，只能借用某个真实任务名。",
             Min = 0f, Max = 60f)]
         public static ConfigEntry<int> RefreshPopupType;
@@ -363,7 +363,7 @@ namespace HideAndSeek.Features.Rule
                 TimeManager.Instance?.UpdateRemainTime(num2);
                 room.Broadcast(new S_MISSION_CLEAR
                 {
-                    ClearedType = (RefreshPopup == null || RefreshPopup.Value) ? (RefreshPopupType?.Value ?? 38) : 0,
+                    ClearedType = (RefreshPopup == null || RefreshPopup.Value) ? (RefreshPopupType?.Value ?? 17) : 0,
                     NextType = 0,
                     AddTime = (int)num2,
                     CompleterId = player.PublicInfo.PlayerId
