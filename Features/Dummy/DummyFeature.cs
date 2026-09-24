@@ -19,12 +19,19 @@ namespace HideAndSeek.Features.Dummy
     ///     因此自动生成挂在 GameRoom.StartPick 的 Prefix 上。
     ///   - 手动操作走 hs_dummy 命令（在大厅或选角阶段执行）。
     ///
-    /// 默认关闭：它只用于测试，正式玩法不该带着一群假人。
+    /// 本段默认**启用**，含义是"启用假人这个功能"（选角、清理、hs_dummy 的名字/角色都靠它）。
+    /// "要不要自动生成"由 AutoSpawnCount 单独表达（默认 0 = 不自动生成、只用 hs_dummy 手动加）——
+    /// 段开关不该兼任这件事：段一旦关闭，PatchLoader 会对**整个类**跳过 PatchAll，
+    /// 于是选角与跨局清理也一起失效（曾因此让 DesiredCharacter/SpawnedIds 残留到下一局，
+    /// 真人被当成假人选角、hs_dummy 报"人数已达出生点上限"）。
+    ///
+    /// 原先"选角"被拆到独立的 [DummyPick] 段就是为了绕开这一点，现在两段合并回本段，
+    /// 那个坑从结构上不会再出现。
     /// </summary>
     [PatchFeature(
         section: "Dummy",
-        description: "假人玩家（测试用）：在单人房造出可被刀死的白方靶子，供房主自己当黑方验证对抗流程。",
-        defaultEnabled: false,
+        description: "假人玩家（测试用）：造出可被刀死的白方靶子，供房主自己当黑方验证对抗流程。",
+        defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class DummyFeature
     {
