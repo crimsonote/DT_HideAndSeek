@@ -282,7 +282,10 @@ namespace HideAndSeek.Features.Rule
             {
                 var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
                 if (mmType == null)
+                {
+                    Plugin.Log.LogWarning("[HS] /refresh：找不到 Server.Game.MissionManager");
                     return false;
+                }
 
                 object inst = mmType.GetProperty("Instance",
                     global::System.Reflection.BindingFlags.Public
@@ -293,6 +296,7 @@ namespace HideAndSeek.Features.Rule
                 var tr = Traverse.Create(inst);
                 float cur = tr.Property("CurrentPoint").GetValue<float>();
                 float goal = tr.Property("GoalPoint").GetValue<float>();
+                Plugin.Log.LogInfo($"[HS] /refresh：进度 {cur:F1}/{goal:F1}（点档 {point}）");
                 if (goal <= 0f)
                     return false;
 
@@ -464,63 +468,11 @@ namespace HideAndSeek.Features.Rule
             try
             {
                 var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
-                var inst = mmType == null ? null : AccessTools.PropertyGetter(mmType, "Instance")?.Invoke(null, null);
-                if (inst == null)
-                    return;
-
-                var curProp = AccessTools.Property(mmType, "CurrentPoint");
-                var goalProp = AccessTools.Property(mmType, "GoalPoint");
-                if (curProp == null || goalProp == null)
-                    return;
-
-                float cur = global::System.Convert.ToSingle(curProp.GetValue(inst));
-                float goal = global::System.Convert.ToSingle(goalProp.GetValue(inst));
-                if (goal <= 0f)
-                    return;
-
-                // 唯一能驱动进度条的包是 S_MISSION_PROGRESS_PERCENT：
-                //   客户端 Handle_S_MISSION_PROGRESS_PERCENT(:42889)
-                //     → BroadcastSceneEvent(ChangeMissionPercent)
-                //     → UI_GameScene.ChangeMissionPercent(:75129) → DOValue
-                // 而 S_MISSION_STATE 第一行就是 `if (!Managers.Host.IsHost) return;`，
-                // **房主机直接丢弃**（我们就是房主），且它会清空客户端的任务列表镜像。
-                GameRoom.Instance?.Broadcast(new Protocol.S_MISSION_PROGRESS_PERCENT
+                if (mmType == null)
                 {
-                    Percent = (int)(cur / goal * 100f)
-                });
-                Plugin.Log.LogInfo($"[HS] WhiteCommand：已广播任务进度 {cur:F0}/{goal:F0} = {(int)(cur / goal * 100f)}%。");
-            }
-            catch (global::System.Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] WhiteCommand：广播任务进度失败 — {ex.Message}");
-            }
-        }
-
-        /// <summary>让所有黑方立刻按新的移速倍率重算速度（否则"僵住"不会立即体现）。</summary>
-        private static void RefreshAllBlackSpeed(GameRoom room)
-        {
-            try
-            {
-                foreach (var p in room.Players)
-                {
-                    if (p?.PublicInfo == null || p.Color == EPlayerColor.White)
-                        continue;
-                    p.BuffComponent?.RefreshSpeed();
+                    Plugin.Log.LogWarning("[HS] /refresh：找不到 Server.Game.MissionManager");
+                    return false;
                 }
-            }
-            catch (global::System.Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] WhiteCommand：刷新黑方速度失败 — {ex.Message}");
-            }
-        }
-        private static bool TrySpendProgress(GameRoom room, float percent, out string why)
-        {
-            why = null;
-            try
-            {
-                var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
-                var inst = mmType == null ? null : AccessTools.PropertyGetter(mmType, "Instance")?.Invoke(null, null);
-                if (inst == null) { why = "读不到任务进度"; return false; }
 
                 var curProp = AccessTools.Property(mmType, "CurrentPoint");
                 var goalProp = AccessTools.Property(mmType, "GoalPoint");
