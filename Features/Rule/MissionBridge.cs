@@ -25,7 +25,6 @@ namespace HideAndSeek.Features.Rule
         private static global::System.Type _type;
 
         private static PropertyInfo _instance;
-        private static PropertyInfo _allClear;
         private static PropertyInfo _currentPoint;
         private static PropertyInfo _goalPoint;
         private static PropertyInfo _progressList;
@@ -51,7 +50,6 @@ namespace HideAndSeek.Features.Rule
             }
 
             _instance = AccessTools.Property(_type, "Instance");
-            _allClear = AccessTools.Property(_type, "AllClear");
             _currentPoint = AccessTools.Property(_type, "CurrentPoint");
             _goalPoint = AccessTools.Property(_type, "GoalPoint");
             _progressList = AccessTools.Property(_type, "ProgressMissionList");
@@ -107,32 +105,6 @@ namespace HideAndSeek.Features.Rule
             {
                 Fail(member, ex);
                 return fallback;
-            }
-        }
-
-        /// <summary>
-        /// 任务是否已全部完成（原版 <c>MissionManager.AllClear</c>）。
-        /// 读不到时返回 false —— 调用方都是"为真才做特殊处理"，保守取 false 更安全。
-        /// </summary>
-        internal static bool AllClear
-        {
-            get
-            {
-                if (!Ensure())
-                    return false;
-
-                object inst = Instance();
-                if (inst == null || _allClear == null)
-                    return false;
-                try
-                {
-                    return global::System.Convert.ToBoolean(_allClear.GetValue(inst));
-                }
-                catch (global::System.Exception ex)
-                {
-                    Fail("AllClear", ex);
-                    return false;
-                }
             }
         }
 

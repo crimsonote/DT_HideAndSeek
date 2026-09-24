@@ -82,6 +82,7 @@ namespace HideAndSeek.Features.Rule
                 }
             }
 
+            Plugin.Log.LogInfo("[HS] 限制时间归零 → 判白方胜利。");
             TriggerWhiteWin(__instance);
             return false;
         }
@@ -155,7 +156,15 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        private static void TriggerWhiteWin(GameRoom room)
+        /// <summary>
+        /// 白方胜利结算。内容与 MissionManager.ClearAllMission(:166889) 逐行等价，
+        /// 因此也被 CorpseReportFeature 复用 —— 任务进度顶满 100%（路径 ③）时，
+        /// 它拦掉原版取尸进审判的那一步之后，走的就是这里。
+        ///
+        /// 刻意不在这里打日志：触发原因有两个（限时归零 / 任务全清），
+        /// 由调用方各自记录，免得日志把原因说错。
+        /// </summary>
+        internal static void TriggerWhiteWin(GameRoom room)
         {
             room.ResultType = EResultType.WhiteWin;
             room.ApplyTeamResults();
@@ -171,8 +180,6 @@ namespace HideAndSeek.Features.Rule
                 room.ChangeGameState(EGameState.TotalResult);
                 room.Broadcast(new S_ENDING_CAMERA { IsEnd = false });
             });
-
-            Plugin.Log.LogInfo("[HS] 限制时间归零 → 判白方胜利。");
         }
 
         /// <summary>
