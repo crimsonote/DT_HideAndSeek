@@ -17,6 +17,12 @@ namespace HideAndSeek
         public const string Version = "0.1.0";
 
         public static Plugin Instance { get; private set; }
+
+        /// <summary>
+        /// 本插件的 ConfigFile（命名为 HsConfig 以避免与 BaseUnityPlugin.Config 重名）。暴露出来是为了 /reload —— BepInEx 不监听 .cfg 变化，
+        /// 改文件后必须显式 Reload() 才会重读到内存。
+        /// </summary>
+        public static BepInEx.Configuration.ConfigFile HsConfig { get; private set; }
         public static ManualLogSource Log { get; private set; }
 
         private void Awake()
@@ -30,6 +36,7 @@ namespace HideAndSeek
             // 推迟到 Start：确保 DT_Tools 的 Awake 已执行，其 Plugin.Instance 可被探测到，
             // 从而把 HS_* 段写进同一个 ConfigFile（DT CONFIG 页面可见）。
             var config = DtBridge.ResolveConfig();
+            HsConfig = config;
 
             var result = PatchLoader.Load(
                 new Harmony(Guid),

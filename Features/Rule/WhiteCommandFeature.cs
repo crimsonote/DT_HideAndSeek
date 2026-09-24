@@ -122,11 +122,19 @@ namespace HideAndSeek.Features.Rule
 
         [ConfigField(10f, "/repair 消耗的任务进度百分比。", Min = 0f, Max = 100f)]
         public static ConfigEntry<float> RepairCostPercent;
-        private const string WhiteHelp =
-            "【白方】" +
-            "\n/rad — 实验性全图扫描15秒(2/2)CD75" +
-            "\n/sta — 冻结黑方5秒，5%任务进度CD90" +
-            "\n/rep — 立即恢复供电，10%任务进度";
+        /// <summary>
+        /// 白方 /help 文案。每次调用按当前配置生成 ——
+        /// 早先写成 const 字符串，数字是死的；改了 .cfg 后帮助里仍是旧值。
+        /// </summary>
+        private static string BuildWhiteHelp()
+        {
+            int uses = RadarUsesPerPlayer?.Value ?? 2;
+            return "【白方】"
+                + $"\n/rad — 全图扫描{RadarDurationSeconds?.Value ?? 15}秒({uses}/{uses})CD{RadarCooldownSeconds?.Value ?? 75}"
+                + $"\n/sta — 冻结黑方{StasisSeconds?.Value ?? 5}秒，{(StasisCostPercent?.Value ?? 5f):F0}%任务进度CD{StasisCooldown?.Value ?? 90}"
+                + $"\n/rep — 立即恢复供电，{(RepairCostPercent?.Value ?? 10f):F0}%任务进度"
+                + "\n/reload — 重新读取配置文件（改了 .cfg 后不必重启）";
+        }
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
@@ -187,12 +195,39 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 重新读取 .cfg。
+        ///
+        /// 必需：BepInEx **不监听**配置文件变化，ConfigEntry.Value 是启动时读入的内存副本；
+        /// 手动编辑 .cfg 后，除非重启游戏或显式 Reload()，代码里读到的仍是旧值 ——
+        /// 表现就是"改了配置但 /help、冷却、开关全都没变"。
+        /// </summary>
+        private static void DoReload(GamePlayer player, int deviceId)
+        {
+            try
+            {
+                if (Plugin.HsConfig == null)
+                {
+                    Reply(player, deviceId, "配置句柄不可用（DT_Tools 未就绪）。");
+                    return;
+                }
+
+                Plugin.HsConfig.Reload();
+                Reply(player, deviceId, "配置已重新读取。");
+                Plugin.Log.LogInfo("[HS] 配置已通过 /reload 重新读取。");
+            }
+            catch (global::System.Exception ex)
+            {
+                Reply(player, deviceId, "重载失败，详见日志。");
+                Plugin.Log.LogWarning($"[HS] /reload 失败 — {ex.Message}");
+            }
+        }
         private static void Handle(GameRoom room, GamePlayer player, string name, int deviceId)
         {
             switch (name)
             {
                 case "help":
-                    Reply(player, deviceId, WhiteHelp);
+                    Reply(player, deviceId, BuildWhiteHelp());
                     break;
 
                 case "rad": case "radar":
@@ -206,6 +241,10 @@ namespace HideAndSeek.Features.Rule
                 case "rep": case "repair":
                     DoRepair(room, player, deviceId);
                     break;
+
+                    case "reload":
+                        DoReload(player, deviceId);
+                        break;
 
                 default:
                     // 未知命令不公开发言，避免刷屏（只有本人能看到自己的输入被吞）
