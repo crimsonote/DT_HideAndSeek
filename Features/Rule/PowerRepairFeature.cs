@@ -44,6 +44,10 @@ namespace HideAndSeek.Features.Rule
         /// <summary>本次断电观察到的最大断电数，即"总共坏了几个"。</summary>
         private static int _peak;
 
+        /// <summary>ForceRepairAll 重入保护：它内部逐个调 ConnetCable，而 ConnetCable 会调
+        /// RefreshLight → 再读一次计数 → 再次进入本类的 Postfix。</summary>
+        private static bool _repairing;
+
         /// <summary>
         /// 把所有电箱真的恢复成"好的"。
         ///
@@ -59,52 +63,32 @@ namespace HideAndSeek.Features.Rule
                 if (dm?.Fuseboxes == null)
                     return;
 
-                var setter = AccessTools.PropertySetter(typeof(GameFusebox), "IsLight");
+                // 走**原版路径**：对每个还坏着的电箱调一次 Fusebox.ConnetCable()。
+                //
+                // 不要手工复刻它的副作用（反射设 IsLight、改 StateList[0]、自己 BroadcastStateInArea
+                // 与 S_REMOVE_ARROW）—— 那样会漏掉它内部的最后一步 AreaManager.RefreshLight()，
+                // 而那是复位 Area.IsLight 的唯一入口：它广播 S_AREA_PUBLIC，客户端据此把
+                // Darkness 置回 false，并连带触发"全亮音效 + 60 秒后重新派发电箱"。
+                // 漏掉它的表现就是"服务端已恢复、客户端仍然全黑"。
+                //
+                // 走原版还有一个好处：这套后续行为是原版自己维护的，不必我们跟着抄。
                 int fixedCount = 0;
 
                 foreach (var fb in dm.Fuseboxes)
                 {
                     if (fb?.DeviceInfo == null)
                         continue;
-                    if (fb.IsLight && fb.DeviceInfo.StateList != null
-                        && fb.DeviceInfo.StateList.Count > 0 && fb.DeviceInfo.StateList[0] == 0)
-                        continue;
+                    if (fb.IsLight)
+                        continue;                     // 本来就好的，跳过（ConnetCable 内部也只处理坏的）
 
-                    setter?.Invoke(fb, new object[] { true });
-                    if (fb.DeviceInfo.StateList != null && fb.DeviceInfo.StateList.Count > 0)
-                        fb.DeviceInfo.StateList[0] = 0;
-
-                    // 原版 ConnetCable 改完状态后会做这几件事，缺一不可 ——
-                    // 只写字段客户端不会知道，表现就是"服务端已恢复、本地仍显示没修"。
-                    try { fb.BroadcastStateInArea(); } catch { }
-                    try
-                    {
-                        GameRoom.Instance?.BroadcastAlivePlayers(new S_REMOVE_ARROW
-                        {
-                            Type = EArrowType.FuseboxArrow,
-                            Pos = fb.DeviceInfo.Pos
-                        });
-                    }
-                    catch { }
-
+                    fb.ConnetCable();
                     fixedCount++;
                 }
 
                 // 清掉"可拆"任务标记，避免地图上留下点不掉的图钉
                 try { dm.ClearFuseboxSabotage(); } catch { }
 
-                // 关键：复位"全图黑"。上面那些步骤只修了**个体电箱**，
-                // 而「断电造成全图黑」是另一套状态：Darkness 的唯一来源是 Area.IsLight 的 setter
-                // （它会广播 S_AREA_PUBLIC → 客户端 Darkness = !pkt.IsLight），
-                // 而 Area.IsLight 全游戏只有 AreaManager.RefreshLight() 会重算 ——
-                // 调用点只有 ConnetCable(:162756) 与 DisconnetCable(:162775) 两处。
-                //
-                // /rep 这条路上 RefreshLight 不在调用栈上（DoRepair 先读 GetDisconnectFuseCount，
-                // 我们的 Postfix 把结果改写成 0，于是后面真正会调 ConnetCable 的循环成了死代码），
-                // 所以表现是"服务端已恢复、客户端仍然全黑" —— 玩家因此反复敲 /rep。
-                try { Server.Game.AreaManager.Instance?.RefreshLight(); } catch { }
-
-                Plugin.Log.LogInfo($"[HS] PowerRepair：已强制恢复 {fixedCount} 个电箱，并复位全图光照。");
+                Plugin.Log.LogInfo($"[HS] PowerRepair：已按原版路径恢复 {fixedCount} 个电箱。");
             }
             catch (global::System.Exception ex)
             {
@@ -144,10 +128,32 @@ namespace HideAndSeek.Features.Rule
                 if (repaired < need)
                     return;                       // 还没修够，交给原版
 
-                // 已修够：先把电箱真的修好，再把计数压成 0 让原版走 case 0（全亮 + 音效 + 重派发）
-                ForceRepairAll();
-                Plugin.Log.LogInfo($"[HS] PowerRepair：已修 {repaired} 个 >= {need}，已恢复全部电箱并上报 0。");
-                __result = 0;
+                // 已修够：让**其余电箱也走原版路径**真的被修好（ForceRepairAll 内部逐个调
+                // Fusebox.ConnetCable），然后**重新读一次真实计数**当作结果。
+                //
+                // 这里不硬写 __result = 0 —— 那只是骗过 RefreshLight 让它以为全好了，
+                // 而 ConnetCable 有 `if (!area.IsLight)` 这道门：一旦 area 被误判成"已亮"，
+                // 其余电箱就再也修不动（本文件类注释里的"实测第二个被拦截"就是这个）。
+                // 不压计数时 area.IsLight 只在**真的全好了**之后才变 true，门就不会误拦。
+                //
+                // 防重入：ConnetCable 内部会调 RefreshLight → 又读一次计数 → 再次进入本 Postfix。
+                // 若不管，本轮修好一个就会再触发一次 ForceRepairAll（有限递归，但会重复广播与修）。
+                if (_repairing)
+                    return;
+
+                _repairing = true;
+                try
+                {
+                    ForceRepairAll();
+                    __result = GameDeviceManager.Instance?.GetDisconnectFuseCount() ?? 0;
+                }
+                finally
+                {
+                    _repairing = false;
+                }
+
+                Plugin.Log.LogInfo(
+                    $"[HS] PowerRepair：已修 {repaired} 个 >= {need}，其余电箱已按原版路径恢复，当前断电数 {__result}。");
             }
         }
 
