@@ -170,26 +170,25 @@ namespace HideAndSeek.Features.Vision
             }
         }
 
-        /// <summary>下发或撤销一个 pin。pos 为 null 表示撤销（(0,0) 是客户端的删除哨兵）。</summary>
-        internal static void SendPin(GamePlayer to, int pinId, PosInfo pos)
+        /// <summary>
+        /// 下发或撤销一个 pin。pos 为 null 表示撤销（(0,0) 是客户端的删除哨兵）。
+        ///
+        /// isForce 决定客户端走哪条路（RefreshComplyRulesPin :74749、UI_MinimapSubItem :86096-86118）：
+        ///   true  → SetLocalPosition：直接 set，**无补间**。控件刚 CreatePin 出来时控件位置与目标
+        ///           位置不同，只有这一条路不会"从原地滑入"（实测过的滑动入场动画）；
+        ///   false → SetTargetPosition：0.1 秒 DOLocalMove，已存在的控件据此平滑跟随。
+        /// 两者坐标换算逐字相同（:86099 vs Util.GetMinimapPosition :26494），差别只在补间。
+        /// 默认 true = 保持雷达原有的"立即定位"行为；美幸自动扫描按"首包 true / 后续 false"传。
+        /// </summary>
+        internal static void SendPin(GamePlayer to, int pinId, PosInfo pos, bool isForce = true)
         {
             try
             {
-                // IsForce = true 是关键：客户端 RefreshComplyRulesPin 在 isForce 时走
-                // SetLocalPosition（立即定位），否则走 SetTargetPosition（平滑补间）——
-                // 而补间靠 LateUpdate 驱动，白方的 LateUpdate 在 :74673（小地图）与
-                // :53579（平板）都提前 return，补间永远不会执行，pin 就停在初始位置看不见。
-                                // IsForce 必须为 false，与原版 SendTraceTarget 一致：
-                //   false → SetTargetPosition(:86096)：position*0.094 - (896,1456)*0.094 + DOLocalMove
-                //   true  → SetLocalPosition(:86104)：改走 Util.GetMinimapPosition
-                // 两者坐标系不同，传 true 会让位置算错、pin 反而全部不可见。
-                // 补间由 DOTween 驱动，不受白方 LateUpdate 早退影响 ——
-                // 那个"延迟跟随"正是这段 0.1s DOLocalMove 正常工作的表现。
                 to.Session?.Send(new S_PIN_MOVE
                 {
                     Type = pinId,
                     Pos = pos ?? new PosInfo(),          // (0,0) = 删除哨兵
-                    IsForce = true                      // SetLocalPosition：换算与 SetTargetPosition 完全相同（Util.GetMinimapPosition），且无 0.1s 补间 → 不会飘
+                    IsForce = isForce
                 });
             }
             catch (global::System.Exception ex)

@@ -11,28 +11,27 @@ namespace HideAndSeek.Features.Vision
     /// <summary>
     /// 美幸（Miyuki, CharacterId 107）的捉迷藏被动：每 15 秒扫描一次全图。
     ///
-    /// 为什么黑方必须走「临时解除 AOI」而不是只发地图 pin：
-    ///   黑方的小地图/平板只渲染**游戏内可见的人**（有 Player 对象的人才会有 pin 可更新）。
-    ///   所以要让远处的人出现在地图上，必须先让他们在游戏内可见 ——
-    ///   即在 AoiCullingFeature.PrefixAddPlayer 那个闸门上临时放行。
+    /// 黑方美幸有两种方案（[MiyukiScan] BlackMode，白方永远走后者 ——
+    /// 原版对白方不画任何他人的原生点（UI_GameScene :74673 早退），pin 是白方唯一来源）：
+    ///   WhiteLike（默认） 不解封 AOI，完全靠 S_PIN_MOVE 画点：
+    ///     前 UnlockSeconds 秒按真实位置每秒重发（可动段），其余 MarkerSeconds-UnlockSeconds 秒
+    ///     用快照重发（静止段），只标 BlackPinRange 之外的人（范围内原版本来就在画）。
+    ///   Unseal            扫描期临时解封 AOI（UnlockSeconds 秒）：在 AoiCullingFeature.PrefixAddPlayer
+    ///     那个闸门上放行并主动 AddPlayer 所有人 ⇒ 客户端拿到真实 Player 对象（世界模型出现、
+    ///     原生小地图点每帧平滑跟随、可索敌）。解封撤销后原生点随即消失，再用快照 pin 把标记留
+    ///     MarkerSeconds-UnlockSeconds 秒（"延迟消失"）。解封期间**不发** pin —— 原生点已覆盖全图，
+    ///     再发就是同一个人身上两个白点。
     ///
-    /// 时间线（按需求：1 秒实时 + 约 2 秒静止 + 消失）：
-    ///   t=0     触发扫描
-    ///           · 记录所有存活玩家的位置快照
-    ///           · 黑方：Unlocking.Add → AOI 放行；主动 AddPlayer 所有人
-    ///           · 发 pin（复用 WhiteRadarFeature 的 S_PIN_MOVE 通道）
-    ///   t=0~1s  每秒重发 pin → 地图上实时跟随
-    ///   t=1s    撤销解锁：Unlocking.Remove → 再把超范围的人 RemovePlayer 收回
-    ///           · 此后不再发 pin，地图标记停在上一次位置（静止段）
-    ///   t=3s    发删除哨兵 → pin 消失
-    ///   AOI 范围内的人不受影响：他们本就在视野内，pin 撤销不动他们的正常显示。
-    ///
-    /// 白方美幸走同一套 pin 通道，但不碰 AOI（白方本来就没有 AOI 裁剪）；
-    /// 用 /radar 打开的实时地图会覆盖这段自动扫描（两者共用同一批 pin id）。
+    /// 两个客户端事实（反编译 :74731 RefreshComplyRulesPin / :86096-86118 UI_MinimapSubItem）：
+    ///   IsForce=true  → SetLocalPosition：直接 set，**无补间**。新建的控件用它 ⇒ 不会从预制体
+    ///                   位置"滑入"（实测过的滑动入场动画）；
+    ///   IsForce=false → SetTargetPosition：0.1 秒 DOLocalMove ⇒ 已存在的控件平滑跟随。
+    ///   两者坐标换算逐字相同（:86099 vs Util.GetMinimapPosition :26494），所以这个开关只决定
+    ///   "补不补间"、不影响位置。故每个 pin **首包用 true、后续包用 false**。
     /// </summary>
     [PatchFeature(
         section: "MiyukiScan",
-        description: "美幸被动：每 15 秒扫描全图。黑方临时解除 AOI，地图标记 1 秒实时 + 2 秒静止后消失。",
+        description: "美幸被动：每 15 秒扫描全图，在地图上标出所有人的位置（白方与黑方都可用）。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class MiyukiScanFeature
@@ -55,6 +54,24 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(900f, "黑美幸只标记该距离之外的人（0 = 全部标记）。",
             Min = 0f, Max = 3000f)]
         public static ConfigEntry<float> BlackPinRange;
+
+        /// <summary>
+        /// 黑方美幸的扫描方案。白方没有这个选择 —— 原版不给白方画他人的原生点，
+        /// pin 是白方地图上唯一的信息来源，只能走 WhiteLike。
+        /// 默认 WhiteLike（= 与白方一致），Unseal 是可选的原版黑方地图方案。
+        /// </summary>
+        [ConfigField("WhiteLike",
+            "黑方美幸的扫描方案：\n" +
+            "WhiteLike = 与白方一致：不解封 AOI，纯 pin（UnlockSeconds 秒可动 + 其余静止），只标 BlackPinRange 之外的人\n" +
+            "Unseal    = 原版黑方地图：扫描期临时解封 AOI，解封撤销后 pin 再留一会儿（需 MarkerSeconds > UnlockSeconds）")]
+        public static ConfigEntry<string> BlackMode;
+
+        private const string ModeUnseal = "Unseal";
+
+        /// <summary>黑方是否走「临时解封 AOI」方案。白方与配置缺失/写错时都是 false（= 纯 pin）。</summary>
+        private static bool UseUnseal()
+            => string.Equals(BlackMode?.Value?.Trim(), ModeUnseal,
+                             global::System.StringComparison.OrdinalIgnoreCase);
 
         /// <summary>实时跟随时长（秒）。</summary>
         private static float LiveSecs() => UnlockSeconds?.Value ?? 1;
@@ -172,12 +189,15 @@ namespace HideAndSeek.Features.Vision
 
                     int pid = p.PublicInfo.PlayerId;
 
-                    // ① 解封到点 → 收回 AOI
+                    // ① 解封到点 → 收回 AOI，并抓一次快照供后面的"延迟消失"段重发
                     if (Unlocking.Contains(pid) && UnlockUntil.TryGetValue(pid, out float uu) && now >= uu)
                     {
                         Unlocking.Remove(pid);
                         UnlockUntil.Remove(pid);
                         ReapplyCull(__instance, p);
+                        // 解封撤销的这一刻原生点就没了，用这一帧的位置把标记留住
+                        //（"延迟消失"；范围内的人 ReapplyCull 保留了原生点，由 BlackPinRange 过滤）。
+                        SnapshotPins(__instance, p, onlyOutsideAoi: true);
                     }
 
                     // ② 标记到点 → 撤销 pin
@@ -187,23 +207,21 @@ namespace HideAndSeek.Features.Vision
                         ClearPins(__instance, p);
                     }
 
-                    // ②b 实时段：解封/标记开始后的前 UnlockSeconds 秒内每秒重发 pin，
-                    //     让地图标记跟随真实位置；之后停止发包，标记就静止在原地（需求里的"停留两秒"）。
-                    // 实时段：仅白方需要重发 pin（黑方靠 AOI 解封由原版刷新）。
-                    // 只在 LiveUntil 之前重发 → 之后停止发包，标记静止在原地（需求里的"停留两秒"）。
+                    // ②b 可动段（now < LiveUntil）：按真实位置每秒重发 → 地图上跟随；
+                    //     静止段：继续重发但用快照位置 —— 客户端控件没有 TTL，不重发会提前消失，
+                    //     用快照重发则既存活又静止。
                     if (MarkerUntil.ContainsKey(pid))
                     {
                         if (LiveUntil.TryGetValue(pid, out float live) && now < live)
                         {
-                            // 实时段：跟随真实位置，并记录快照供静止段复用
-                            SendAllPins(__instance, p, onlyOutsideAoi: p.Color == EPlayerColor.Black);
+                            // 正在解封中的黑方由原生点负责显示（每帧跟随），再发 pin 就是同一个人
+                            // 身上两个白点；快照照常记录，解封撤销后按它重发。
+                            if (!Unlocking.Contains(pid))
+                                SendAllPins(__instance, p, onlyOutsideAoi: p.Color == EPlayerColor.Black);
                             SnapshotPins(__instance, p, onlyOutsideAoi: p.Color == EPlayerColor.Black);
                         }
                         else
                         {
-                            // 静止段：客户端 pin 有存活时间，不重发就会提前消失
-                            // （实测"1 秒刚过白点就没了"）。这里继续重发，但用快照位置，
-                            // 于是既能存活，又保持静止 —— 即需求里的"停留两秒"。
                             SendSnapshotPins(__instance, p);   // 用已过滤的快照，无需再判
                         }
                     }
@@ -223,41 +241,49 @@ namespace HideAndSeek.Features.Vision
         {
             int pid = miyuki.PublicInfo.PlayerId;
             bool isBlack = miyuki.Color == EPlayerColor.Black;
+            bool unseal = isBlack && UseUnseal();          // 方案 A 只对黑方有意义
+            float live = LiveSecs();
 
-            if (isBlack)
+            if (unseal)
             {
+                // 方案 A：扫描期临时解封 AOI。闸门放行后主动把所有人介绍给黑方 ——
+                // 客户端因此拿到真实 Player 对象：世界模型出现、原生小地图点每帧平滑跟随、可索敌。
                 Unlocking.Add(pid);
-                // 解封时长用 MarkerSeconds（默认 3 秒），不是 UnlockSeconds(1)。
-                // 黑方没有 pin 通道，"地图上能看到人"完全依赖 AOI 解封；
-                // 用 1 秒的话解封一结束人就消失，观感就是"只有一瞬间"。
-                UnlockUntil[pid] = now + TotalSecs();
+                UnlockUntil[pid] = now + live;
 
-                // 主动把所有人介绍给黑方：AoiCullingFeature 的闸门此刻已放行
                 var all = room.Players;
                 for (int i = 0; i < all.Count; i++)
                 {
                     var other = all[i];
                     if (other == null || other == miyuki)
                         continue;
-                    if (other.State == EPlayerState.Hide)     // 幽灵/死亡跳过，与原版一致
+                    if (other.State == EPlayerState.Hide)     // 幽灵/死亡/躲柜子跳过，与原版一致
                         continue;
                     other.AddPlayer(miyuki);
                 }
             }
 
-            // 实时段 = "持续把所有人介绍给美幸"的窗口。黑方必须覆盖整个解封期，
-            // 否则中途站定不动的人会因为没有新的 Move 事件而不再被刷新。
-            // 白方靠 pin 维持，实时段保持 UnlockSeconds 即可。
-            // 黑方需覆盖整个解封期持续重发 AddPlayer（否则站定不动的人会被剔除）；
-            // 白方只需覆盖"跟随段"，之后靠快照重发维持静止。
-            LiveUntil[pid] = now + (isBlack ? TotalSecs() : LiveSecs());
+            // 新一轮扫描开始：丢掉上一轮遗留的"客户端已有该控件"标记。
+            // 正常路径下 ClearPins 已经清过；这里是兜底 —— 美幸在窗口内阵亡时 TickHook
+            // 的存活守卫会把 ClearPins 一起跳过（那是本文件既有的缺陷，本次不动）。
+            PinAlive.Remove(pid);
 
-            // 双方都发 pin；黑方只发 AOI 范围外的（范围内原版地图已经会显示）
-            SendAllPins(room, miyuki, onlyOutsideAoi: isBlack);
+            // 可动段 = 解封期（方案 A）或 pin 跟随段（白方 / 方案 B），两端都是 UnlockSeconds。
+            LiveUntil[pid] = now + live;
             MarkerUntil[pid] = now + TotalSecs();
 
+            if (!unseal)
+            {
+                // 纯 pin 方案：立刻发首包并记录快照。黑方只标 AOI 范围外的
+                //（范围内原版地图已经会画，再发会在同一个人身上叠一个白色方块）。
+                SendAllPins(room, miyuki, onlyOutsideAoi: isBlack);
+                SnapshotPins(room, miyuki, onlyOutsideAoi: isBlack);
+            }
+            // 方案 A 这里不发 pin：原生点已覆盖全图，再发就是两个白点。
+            // 标记由 ① 撤销解封那一 tick 抓的快照 + 静止段重发完成。
+
             Plugin.Log.LogInfo(
-                $"[HS] MiyukiScan：美幸 #{pid} 扫描（{(isBlack ? "黑方：解封 AOI" : "白方：仅地图")}）。");
+                $"[HS] MiyukiScan：美幸 #{pid} 扫描（{(isBlack ? (unseal ? "黑方：解封 AOI" : "黑方：纯 pin") : "白方：纯 pin")}）。");
         }
 
         /// <summary>把所有人的位置发给该美幸（pin 通道与白方雷达一致）。</summary>
@@ -279,12 +305,63 @@ namespace HideAndSeek.Features.Vision
                     float __range = ResolveBlackPinRange();   // <0 跟随视野；0 不过滤
                     if (__range > 0f
                         && Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __range * __range)
+                    {
+                        // 走进视野的人身上若还留着上一秒发的 pin，必须显式撤销 ——
+                        // 只 `continue` 的话那个点会冻在他上一秒的位置（人已经进范围），
+                        // 地图上就多一个位置对不上的"幽灵点"。
+                        // 但只在 pin 确实还在时才发：客户端对"删不存在的 pin"会先 CreatePin
+                        // 再 DeletePin（:74734-74742），每秒空发就是每秒一次 Instantiate/Destroy。
+                        if (PinExists(miyuki, other.PublicInfo.PlayerId))
+                            SendPinTracked(miyuki, other.PublicInfo.PlayerId, null);
                         continue;
+                    }
                 }
-                WhiteRadarFeature.SendPin(miyuki,
-                    WhiteRadarFeature.PinIdBase + other.PublicInfo.PlayerId,
+                SendPinTracked(miyuki, other.PublicInfo.PlayerId,
                     visible ? other.PublicInfo.Pos : null);
             }
+        }
+
+        /// <summary>
+        /// 客户端"这个 pin 控件已经存在"的集合：miyukiPid → 目标 pid。
+        /// 首包必须 isForce=true（控件是 CreatePin 新建的，直接 set 才不滑入）；
+        /// 已存在的控件再传 false 才是 0.1 秒补间。删除哨兵会把控件 Destroy，故必须同步移除。
+        /// </summary>
+        private static readonly Dictionary<int, HashSet<int>> PinAlive = new Dictionary<int, HashSet<int>>();
+
+        /// <summary>客户端此刻是否还有这个 pin 控件。</summary>
+        private static bool PinExists(GamePlayer miyuki, int targetPid)
+        {
+            int mpid = miyuki.PublicInfo?.PlayerId ?? 0;
+            return mpid != 0
+                && PinAlive.TryGetValue(mpid, out var set)
+                && set.Contains(targetPid);
+        }
+
+        /// <summary>发一个玩家标记：首包直接定位（无入场动画），后续包走 0.1 秒补间（平滑跟随）。</summary>
+        private static void SendPinTracked(GamePlayer miyuki, int targetPid, PosInfo pos)
+        {
+            int mpid = miyuki.PublicInfo?.PlayerId ?? 0;
+            if (mpid == 0)
+                return;
+
+            if (pos == null)
+            {
+                // 删除哨兵：客户端在 IsForce 分支之前就 DeletePin 并 return，isForce 无意义
+                if (PinAlive.TryGetValue(mpid, out var alive))
+                    alive.Remove(targetPid);
+                WhiteRadarFeature.SendPin(miyuki, WhiteRadarFeature.PinIdBase + targetPid, null);
+                return;
+            }
+
+            if (!PinAlive.TryGetValue(mpid, out var set))
+            {
+                set = new HashSet<int>();
+                PinAlive[mpid] = set;
+            }
+
+            bool first = set.Add(targetPid);       // true = 客户端还没有这个控件 ⇒ 首包
+            WhiteRadarFeature.SendPin(miyuki, WhiteRadarFeature.PinIdBase + targetPid, pos,
+                isForce: first);
         }
 
         /// <summary>
@@ -343,7 +420,7 @@ namespace HideAndSeek.Features.Vision
             foreach (var kv in snap)
             {
                 if (kv.Value != null)
-                    WhiteRadarFeature.SendPin(miyuki, WhiteRadarFeature.PinIdBase + kv.Key, kv.Value);
+                    SendPinTracked(miyuki, kv.Key, kv.Value);
             }
 
             // 快照里没有的人，确保其 pin 已清除（可能在这 2 秒内死亡/躲进柜子）
@@ -354,7 +431,7 @@ namespace HideAndSeek.Features.Vision
                 if (other?.PublicInfo == null || other == miyuki)
                     continue;
                 if (!snap.ContainsKey(other.PublicInfo.PlayerId))
-                    WhiteRadarFeature.SendPin(miyuki, WhiteRadarFeature.PinIdBase + other.PublicInfo.PlayerId, null);
+                    SendPinTracked(miyuki, other.PublicInfo.PlayerId, null);
             }
         }
         private static void ClearPins(GameRoom room, GamePlayer miyuki)
@@ -366,8 +443,7 @@ namespace HideAndSeek.Features.Vision
                 if (other?.PublicInfo == null || other == miyuki)
                     continue;
 
-                WhiteRadarFeature.SendPin(miyuki,
-                    WhiteRadarFeature.PinIdBase + other.PublicInfo.PlayerId, null);
+                SendPinTracked(miyuki, other.PublicInfo.PlayerId, null);
             }
         }
 
@@ -431,6 +507,7 @@ namespace HideAndSeek.Features.Vision
             MarkerUntil.Clear();
             LiveUntil.Clear();
             PinSnapshot.Clear();      // 跨局 PlayerId 会复用，不清会读到上一局的快照位置
+            PinAlive.Clear();         // 跨局的客户端控件也早已随场景销毁
         }
     }
 }
