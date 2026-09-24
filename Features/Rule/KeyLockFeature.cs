@@ -183,14 +183,20 @@ namespace HideAndSeek.Features.Rule
         /// <summary>这扇门是否被提灯合过。</summary>
         internal static bool IsSealed(int doorId) => Seals.ContainsKey(doorId);
 
-        /// <summary>这扇门上的提灯锁还剩多少秒（没锁返回 0）。</summary>
+        /// <summary>
+        /// 这扇门上的鱼胶锁还剩多少秒（没锁返回 0）。
+        ///
+        /// 用 Ceiling 而不是直接截断：这里算的是"剩余"，截断会少算不到 1 秒，
+        /// 而调用方拿它跟别处的剩余比大小（取较长者），
+        /// 少算的这点正好会让 15.9 秒 vs 16 秒这种边界判错方向。
+        /// </summary>
         internal static int RemainingSeconds(int doorId)
         {
             Seal seal;
             if (!Seals.TryGetValue(doorId, out seal))
                 return 0;
 
-            int left = (int)(seal.ExpireAt - Now);
+            int left = (int)global::System.Math.Ceiling(seal.ExpireAt - Now);
             return left > 0 ? left : 0;
         }
 
@@ -319,7 +325,12 @@ namespace HideAndSeek.Features.Rule
                 int seconds = SealSeconds?.Value ?? 20;
                 float now = Now;
 
-                // 门当前的剩余锁定（可能来自更长的广域锁）：按需求取较长者
+                // 同一扇门上可能已经有锁（广域锁 /lck，或别人先黏的一次）。按需求：
+                // **两把锁重叠时取"剩余时间更长"的那个**，而不是比"初始总长"。
+                //
+                // 门这一侧的剩余 = StateList[1]（总时长） - StateList[2]（已流逝）；
+                // 鱼这一侧还要看自己记的 ExpireAt —— 两侧可能因 TickDoor 的秒级步进而有偏差，
+                // 所以跟 LockAround 一样**两边都取**，否则会把更长的旧锁缩短。
                 int existing = info.StateList[0] == 2 ? info.StateList[1] - info.StateList[2] : 0;
 
                 Seal seal;
@@ -328,6 +339,13 @@ namespace HideAndSeek.Features.Rule
                     seal = new Seal();
                     Seals[doorId] = seal;
                 }
+                else if (seal.ExpireAt > now)
+                {
+                    int leftBySeal = (int)global::System.Math.Ceiling(seal.ExpireAt - now);
+                    if (leftBySeal > existing)
+                        existing = leftBySeal;
+                }
+
                 seal.Owners.Add(pid);
                 seal.SetAt = now + (SettingSeconds?.Value ?? 3f);
                 seal.ExpireAt = now + (existing > seconds ? existing : seconds);
