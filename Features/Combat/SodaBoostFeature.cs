@@ -121,10 +121,10 @@ namespace HideAndSeek.Features.Combat
             float sec = SodaSeconds?.Value ?? 30f;
             float mul = SodaSpeedMul?.Value ?? 1.8f;
 
+            // 回执只讲"命令的结果"：申领到了什么、怎么用。
+            // "手上满所以掉地上了"不是命令结果，不进回执（日志里有）。
             text = Text("SodaTaken")
                  + "\n" + Text("SodaHowTo", "sec", sec.ToString("F0"), "mul", (mul * 100f).ToString("F0"));
-            if (dropped)
-                text += "\n" + Text("ItemDropped");
 
             Plugin.Log.LogInfo(
                 $"[HS] SodaBoost：玩家 #{pid} 申领了汽水 {id}" +
@@ -164,11 +164,9 @@ namespace HideAndSeek.Features.Combat
                     return true;                          // 没有生效中的加速 → 正常喝
 
                 int left = (int)(expireAt - Now) + 1;
+                // 静默吞掉：这是"使用物品"的动作，不是命令的报告（日志里有）。
                 Plugin.Log.LogInfo(
                     $"[HS] SodaBoost：玩家 #{pid} 在有效期（还剩 {left} 秒）内又用了汽水，已吞掉。");
-
-                Reply(__instance,
-                    HideAndSeek.Features.Rule.CommandFeature.Text("SodaAlready", "sec", left.ToString()));
                 return false;
             }
 
@@ -193,10 +191,9 @@ namespace HideAndSeek.Features.Combat
                 __instance.BuffComponent?.RefreshSpeed();
                 __instance.SendChangeSpeed();
 
+                // 静默：喝下汽水是"使用物品"，不是命令的报告（日志里有）
                 Plugin.Log.LogInfo(
                     $"[HS] SodaBoost：玩家 #{pid} 喝下了汽水 {id}，{seconds:F0} 秒内移速 ×{SodaSpeedMul?.Value ?? 1.8f:F2}。");
-
-                Reply(__instance, HideAndSeek.Features.Rule.CommandFeature.Text("SodaDrunk", "sec", seconds.ToString("F0")));
             }
         }
 

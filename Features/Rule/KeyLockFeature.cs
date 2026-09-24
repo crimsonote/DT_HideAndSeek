@@ -326,13 +326,12 @@ namespace HideAndSeek.Features.Rule
 
                 ConsumeLantern(player);
 
+                // 不给玩家任何文字：黏门不是"命令的报告"，而是用物品做的一个动作。
+                // 只有日志留痕（下面这行），玩家侧静默。
                 Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：#{pid} 合上了门 #{doorId}（{seconds} 秒" +
+                    $"[HS] KeyLock：#{pid} 黏住了门 #{doorId}（{seconds} 秒" +
                     (existing > seconds ? $"，沿用更长剩余 {existing} 秒" : "") +
-                    $"，合门者共 {seal.Owners.Count} 人）。");
-
-                Reply(player, CommandFeature.Text("FishSealed")
-                            + "\n" + CommandFeature.Text("FishReturned"));
+                    $"，黏门者共 {seal.Owners.Count} 人）。");
             }
             catch (global::System.Exception ex)
             {

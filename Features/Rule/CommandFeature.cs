@@ -133,20 +133,18 @@ namespace HideAndSeek.Features.Rule
             "SpendInsufficient = 进度不足（现有 {x}，需要 {y}）\n" +
             "SpendUnavailable = 读不到任务进度\n" +
             // ── 鱼（KeyLockFeature 复用本表；同一张表才能统一热改）──
+            // 只保留"命令执行结果"类的文案：打 /fish 会看到什么。
+            // 门被黏住 / 鱼被消耗 / 胶未干 / 两把锁咬死 这些**不是命令结果**，一律静默。
             "FishTaken = 一条普通的鱼，或许可以把门黏住\n" +
             "FishEmpty = 鱼已售罄\n" +
             "FishTooEarly = 非售货时间，请稍候再来\n" +
             "FishCooldown = 超出限额，请稍候重试\n" +
-            "FishSealed = 门被黏住了，现在只认你\n" +
-            "FishReturned = 鱼用完了，手上空了\n" +
             // ── 汽水（SodaBoostFeature 复用本表）──
+            // 同理：只留 /soda 的结果。喝下汽水、上一罐还没过 这些**不是命令结果**，静默。
             "SodaTaken = 汽水申领成功\n" +
             "SodaHowTo = 按使用键喝掉：{sec} 秒内移速提升到 {mul}%\n" +
-            "SodaDrunk = 汽水下肚 —— {sec} 秒内你会快得多\n" +
-            "SodaAlready = 上一罐还在起作用（还剩 {sec} 秒）\n" +
             "SodaQuota = 汽水申领超过配额\n" +
-            "SodaCooldown = 你暂时不能申领第二瓶汽水\n" +
-            "ItemDropped = 手上正拿着东西，它掉在了你脚边";
+            "SodaCooldown = 你暂时不能申领第二瓶汽水";
 
         [ConfigField(DefaultTexts,
             "命令对玩家显示的全部文案。格式：每条一行 `<键> = <文本>`，行首 # 为注释。\n" +
