@@ -400,12 +400,25 @@ namespace HideAndSeek.Features.Rule
                 // 时间：num2 = |Point| * (15 / 剩余人数) * TimeLimitIncreaseWeight
                 // (15 / remain) 是原版的整数除法，刻意保持一致 —— 否则与真任务的加时量不同。
                 float num2 = point * (float)(15 / remain) * timeWeight;
-                TimeManager.Instance?.UpdateRemainTime(num2);
+
+                // 跟随 MissionTimePenalty 房规。
+                // 那个功能挂在 ClearMission 上、靠"ClearMission 期间拦截 UpdateRemainTime"来补扣，
+                // 而本命令刻意不走 ClearMission，于是它的捕获永远不会触发 ——
+                // 不在这里自己折算，/refresh 就成了绕过"完成任务反而扣时"这条房规的后门。
+                // 原版净效果 = -(倍率 × 原版加时量)，这里直接算出同样的净值。
+                float applied = num2;
+                if (MissionTimePenaltyFeature.PenaltyOn?.Value == true)
+                {
+                    float mul = MissionTimePenaltyFeature.Multiplier?.Value ?? 1f;
+                    if (mul > 0f)
+                        applied = -num2 * mul;
+                }
+                TimeManager.Instance?.UpdateRemainTime(applied);
                 room.Broadcast(new S_MISSION_CLEAR
                 {
                     ClearedType = (RefreshPopup == null || RefreshPopup.Value) ? (RefreshPopupType?.Value ?? 17) : 0,
                     NextType = 0,
-                    AddTime = (int)num2,
+                    AddTime = (int)applied,          // 浮字显示实际生效的秒数（扣时时为负）
                     CompleterId = player.PublicInfo.PlayerId
                 });
 
@@ -812,10 +825,10 @@ namespace HideAndSeek.Features.Rule
             private static void Postfix()
             {
                 Uses.Clear();
-            RefreshLastUse.Clear();
+                RefreshLastUse.Clear();
                 LastUse.Clear();
-            CmdLastUse.Clear();   // 修既有 bug：不清会让新局开局就判"冷却中"
-            CdNotice.Clear();
+                CmdLastUse.Clear();   // 修既有 bug：不清会让新局开局就判"冷却中"
+                CdNotice.Clear();
             }
         }
 
@@ -826,10 +839,10 @@ namespace HideAndSeek.Features.Rule
             private static void Postfix()
             {
                 Uses.Clear();
-            RefreshLastUse.Clear();
+                RefreshLastUse.Clear();
                 LastUse.Clear();
-            CmdLastUse.Clear();   // 修既有 bug：不清会让新局开局就判"冷却中"
-            CdNotice.Clear();
+                CmdLastUse.Clear();   // 修既有 bug：不清会让新局开局就判"冷却中"
+                CdNotice.Clear();
             }
         }
     }
