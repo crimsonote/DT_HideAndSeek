@@ -150,6 +150,15 @@ namespace HideAndSeek.Features.Rule
             return true;
         }
 
+        /// <summary>
+        /// <c>TimeManager.SurviveTime</c> 每局的起始值。
+        ///
+        /// 它不是 0 —— <c>TimeManager.ResetSurvival()</c> 把计时器设回 420，之后每秒 +1。
+        /// 所以 <c>SurviveTime</c> 是"绝对值"，而 <c>elapsed&gt;=N</c> 要的是"已经过去多少秒"，
+        /// 两者相差这个基数。写错的表现是条件恒真/恒假，而且很难看出来。
+        /// </summary>
+        private const float SurviveTimeBase = 420f;
+
         private static bool Matches(string cond, GameRoom room)
         {
             if (cond.StartsWith("time<=", global::System.StringComparison.OrdinalIgnoreCase))
@@ -161,8 +170,26 @@ namespace HideAndSeek.Features.Rule
 
             if (cond.StartsWith("elapsed>=", global::System.StringComparison.OrdinalIgnoreCase))
             {
-                // 本局**已经过去**的生存秒数 ≥ N。与 time<=N（剩余时间）互补：
+                // 本局**已经过去**的生存秒数 ≥ N（与 time<=N「剩余时间」互补）：
                 // 「开局 60 秒内不能用」= elapsed>=60。
+                //
+                // ⚠ 这里必须减掉基数。TimeManager.SurviveTime 的初值是 420（不是 0），
+                // 由 TimeManager.ResetSurvival() 每局设回 420 —— 所以它本身是"绝对值"。
+                // 以前直接拿它跟 N 比，于是 elapsed>=60 在开局那一瞬就已经为真
+                //（420 >= 60），"开局 60 秒保护"从来没生效过；而为了让条件成立只能写
+                // elapsed>=480 这种把 420 泄漏进配置的怪数字。
+                //
+                // 若游戏改了初值，只需改这个常量（同步 TimeManager.ResetSurvival）。
+                if (!TryFloat(cond.Substring(9), out float n))
+                    return false;
+                return TimeManager.Instance != null
+                    && TimeManager.Instance.SurviveTime - SurviveTimeBase >= n;
+            }
+
+            // 绝对值写法：survive>=N 直接比 TimeManager.SurviveTime（保留原能力，
+            // 需要"不管初值是多少、只要计数器到 N"时用它）。
+            if (cond.StartsWith("survive>=", global::System.StringComparison.OrdinalIgnoreCase))
+            {
                 if (!TryFloat(cond.Substring(9), out float n))
                     return false;
                 return TimeManager.Instance != null && TimeManager.Instance.SurviveTime >= n;

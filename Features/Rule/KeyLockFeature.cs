@@ -492,7 +492,7 @@ namespace HideAndSeek.Features.Rule
             _outstanding = 0;
 
             // 配额与冷却**必须一起清**：它们记的是 TimeManager.SurviveTime，
-            // 而那个值每局从 0 重新计时。不清的话，上一局记下的时刻（例如 250 秒）
+            // 而那个值每局由 ResetSurvival() 设回 420（不是从 0）。不清的话，上一局记下的时刻（例如 250 秒）
             // 在新局里算出来是负数，RemoveAll 的 `now - t > window` 永远不成立
             // ⇒ 记录永不过期 ⇒ 第二局开局就"已售罄"、"CD 中"，人数再少也拿不到。
             _issuedTimes.Clear();
