@@ -310,15 +310,25 @@ namespace HideAndSeek.Features.Vision
                 if (other?.PublicInfo == null || other == miyuki)
                     continue;
                 bool visible = other.IsAlive && other.State != EPlayerState.Hide && !other.IsSpectator;
-                if (visible)
-                if (visible && onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
+
+                // ⚠ 这里以前是 `if (visible)` 后面紧跟另一个 `if (visible && …) { … continue; }`，
+                // 而 `snap[…] = …` 排在两个 if **之外**、缩进却像是被包住的 —— C# 不看缩进，
+                // 所以那一行是 for 体的最后一句，**无条件执行** ⇒ 死者 / 躲藏者 / 观战者
+                // 全都被写进快照，再由 SendSnapshotPins 重发成 pin
+                //（玩家实测：地图上能看到尸体或幽灵）。
+                if (!visible)
+                    continue;
+
+                // 黑美幸只标记该距离之外的人；__range <= 0 表示不过滤
+                if (onlyOutsideAoi && miyuki.PublicInfo?.Pos != null && other.PublicInfo.Pos != null)
                 {
-                    float __range = ResolveBlackPinRange();   // <0 跟随视野；0 不过滤
+                    float __range = ResolveBlackPinRange();
                     if (__range > 0f
                         && Util.CalculateDistanceSquared(other.PublicInfo.Pos, miyuki.PublicInfo.Pos) <= __range * __range)
                         continue;
                 }
-                    snap[other.PublicInfo.PlayerId] = other.PublicInfo.Pos?.Clone();
+
+                snap[other.PublicInfo.PlayerId] = other.PublicInfo.Pos?.Clone();
             }
             PinSnapshot[mpid] = snap;
         }
