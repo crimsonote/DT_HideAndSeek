@@ -390,6 +390,25 @@ namespace HideAndSeek.Features.Rule
                 // 进度：num = |Point| * EscapeGaugeWeight * 0.8
                 float num = point * escape * 0.8f;
                 float after = global::System.Math.Clamp(cur + num, 0f, goal);
+
+                // 不允许本命令把进度顶到 100%。
+                //
+                // 原版 ClearMission 在"这一次会顶满"时走的是另一条分支：
+                //     CheckAllClear(num) → AllClear = true → TriggerAllClearEnd()
+                // 而 TriggerAllClearEnd 会去 DiscoverByTimeOver 一具尸体（进审判），
+                // 本玩法禁止尸体报告，所以不能照搬那条路。
+                //
+                // 但**什么都不做**同样不行：进度停在 100% 而 AllClear 仍为 false，
+                // 之后 ClearMission 的首行 `if (CurrentPoint >= GoalPoint) return;`
+                // 会让每一次真实任务都变成空操作（不加时、不加分、不派新任务）。
+                // 因此把最后一格留给真实任务 —— 由它去走原版那条 AllClear 分支。
+                float cap = goal * 0.99f;
+                if (after > cap)
+                {
+                    if (cur <= cap)
+                        Plugin.Log.LogInfo($"[HS] /refresh：进度只补到上限 {cap:F1}/{goal:F1}（最后一格留给真实任务）");
+                    after = cur > cap ? cur : cap;      // 已在 cap 之上则不倒退
+                }
                 curProp.SetValue(inst, after);
                 int percent = (int)(after / goal * 100f);
                 room.Broadcast(new S_MISSION_PROGRESS_PERCENT { Percent = percent });
