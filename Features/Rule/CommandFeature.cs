@@ -136,7 +136,7 @@ namespace HideAndSeek.Features.Rule
             // 只保留"命令执行结果"类的文案：打 /fish 会看到什么。
             // 门被黏住 / 鱼被消耗 / 胶未干 / 两把锁咬死 这些**不是命令结果**，一律静默。
             "FishTaken = 一条普通的鱼，或许可以把门黏住\n" +
-            "FishEmpty = 鱼已售罄\n" +
+            "FishEmpty = 鱼已售罄，请稍候重试。\n" +
             "FishTooEarly = 非售货时间，请稍候再来\n" +
             "FishCooldown = 超出限额，请稍候重试\n" +
             // ── 汽水（SodaBoostFeature 复用本表）──
