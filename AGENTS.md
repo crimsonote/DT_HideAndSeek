@@ -1,4 +1,4 @@
-﻿# HideAndSeek 开发规范
+# HideAndSeek 开发规范
 
 《Deadly Trick》的**房主端**捉迷藏玩法模块，参照 DT_Tools 的框架实现。
 
@@ -163,6 +163,61 @@ PatchAll —— 该段里**所有**钩子都不会挂上，包括与"自动行�
 - 游戏运行时 `HideAndSeek.dll` 被锁，`Copy-Item` 会失败 —— 但**不检查返回值就会误报成功**。
 - 上游 DT_Tools 需要 `MonoMod.Backports.dll` 与 `MonoMod.ILHelpers.dll` 在
   `BepInEx\core`，缺了它 `Awake` 静默失败、WebConsole 根本不启动（19450 无监听）。
+
+---
+
+## 改默认值时必须同时改 `.cfg`
+
+**不要**为"升级用户"写配置迁移去覆盖旧值 —— 那可能覆盖用户自己的定制，而且会无限膨胀
+（每改一次默认值就往迁移表塞一条，几年后没人敢删）。
+
+正确做法：
+
+- 改 `[ConfigField]` 默认值的**同一次提交**里，把 `.cfg` 对应的键一起改掉；
+- 并在提交说明里**列出改了哪些键、新值是什么**；
+- 代码只管"键不存在时用默认值"，**不猜用户意图**。
+
+**为什么**：BepInEx 的 `ConfigFile` 只在键**不存在**时才用默认值写入；一旦 `.cfg` 里已有该键，
+之后改代码默认值**完全不会生效**。实机踩过两次：
+
+- 段名从 `[BreakCommand]`/`[WhiteCommand]` 改成 `[Command]` 后，旧键留在 `.cfg` 里，
+  新默认值进不去（这次是"迁移整段空转"，见 `ConfigMigration` 的注释）；
+- `[KeyLock] LanternItemId` 是 v0.3.3 首次启动时生成的（当时默认 `4006`），
+  后来代码改成 `1059` 也进不去 ⇒ 症状是"发蓝提灯（图标缺失→白方块）+ 永远黏不了门"
+  （判定是"手里 ID 在 1059~1061 才算鱼"，而手里是 4006）。
+
+`ConfigVersion` 只在**真的需要搬键**（段名/键名变动、类型变更）时 +1；
+单纯改默认值不动它。
+
+---
+
+## 补丁的嵌套层级只有一层
+
+`PatchLoader` 用 `GetNestedTypes()` 扫的是**一层**，`Harmony.PatchAll(Type)` 也只处理
+该类型**声明**的方法。所以：
+
+```csharp
+[PatchFeature(section: "Xxx", ...)]
+internal static class XxxFeature            // L0
+{
+    [HarmonyPatch(typeof(T), "M")]
+    internal static class SomeHook          // L1 ✅ 会挂上
+    {
+        [HarmonyPatch(typeof(T2), "M2")]
+        internal static class InnerHook     // L2 ❌ 永远不会挂载
+        { ... }
+    }
+}
+```
+
+**L2 静默失效，而且日志里的「失败 0」也不会反映** —— `FailedCount++` 只统计已扫到的那一层。
+实机踩过：`FuseboxRevealFeature` 的 `BecomeBlackHook`（"黑方诞生时补发电箱标记"）
+嵌在 `SendSabotageMissionHook` 里面，从未挂载，于是"黑方看不到电箱"一直存在，
+日志里连它那行无条件的 `LogInfo` 都没有。
+
+- 需要多个补丁就**平级**放（都是 L1）；
+- 工具方法放**最外层**（L0）—— C# 里嵌套类能访问外层 private，**兄弟嵌套类之间不能**；
+- `verify.ps1` 有检查盯这个。排查顺序见"已踩过的坑"第 8 条。
 
 ---
 

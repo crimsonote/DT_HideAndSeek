@@ -94,7 +94,47 @@ if ((Test-Path $cmdFeature) -and (Test-Path $migration)) {
     if ($extra.Count -gt 0) { Fail ("迁移表指向了不存在的配置项：" + ($extra -join ', ')) }
 }
 
-# ── 6) 死配置：声明了但全仓没有第二处引用 ────────────────────────────
+# ── 6) 补丁嵌套层级：带 [HarmonyPatch] 的补丁类必须只嵌一层 ──────────
+# PatchLoader 用 GetNestedTypes() 只扫一层，Harmony.PatchAll(Type) 也只处理该类型声明的
+# 方法 —— 二级嵌套的补丁类**永远不会挂载**，而且日志里的「失败 0」不会反映
+#（FailedCount++ 只统计已扫到的那一层）。实机踩过：FuseboxRevealFeature 的
+# BecomeBlackHook 嵌在 SendHook 里面，导致"黑方看不到电箱"一直存在且毫无日志。
+$deep = @()
+foreach ($f in $cs) {
+    # 必须先把 ReadText 的结果落到变量再用 -split 拆 ——
+    # 写成 `ReadText $f.FullName -split "..."` 的话，PowerShell 会把 -split 当成
+    # ReadText 的**参数名**（函数调用后面的 -xxx 一律解析为参数），于是 $lines 是
+    # 整个文件的一个字符串、循环只跑一次、往后几行找 class 永远找不到 ——
+    # 检查会静默通过（假阴性，实测造个 L2 也不报）。
+    $text = ReadText $f.FullName
+    $lines = $text -split "`r?`n"
+    $depth = 0
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match '\[HarmonyPatch\(') {
+            # 只看"类级"的 [HarmonyPatch]（后面几行内跟 class）；方法级的不算。
+            #
+            # 阈值 1 是**类嵌套层数**，不是大括号总数 —— 本仓库统一用 block-scoped
+            # namespace（`namespace X { ... }`），它自己占一层，所以：
+            #   namespace(1) + 功能类(2) + 补丁类 ⇒ 遇到 [HarmonyPatch] 时 depth == 2 ✅
+            #   namespace(1) + 功能类(2) + 补丁类(3) + 再套一层 ⇒ depth == 3 ❌ 报错
+            # 若将来改成 file-scoped namespace（`namespace X;`），这里要跟着减 1。
+            for ($j = $i + 1; $j -le [Math]::Min($i + 4, $lines.Count - 1); $j++) {
+                if ($lines[$j] -match '^\s*(internal|private|public)?\s*static\s+class\s+(\w+)') {
+                    if ($depth -gt 2) { $deep += ($f.Name + " 的 " + $Matches[2] + "（嵌套深度 " + ($depth - 1) + "，上限 1）") }
+                    break
+                }
+                if ($lines[$j] -match '\[Harmony(Prefix|Postfix|Transpiler|Finalizer)\]') { break }
+            }
+        }
+        $depth += ([regex]::Matches($line, '\{')).Count
+        $depth -= ([regex]::Matches($line, '\}')).Count
+    }
+}
+if ($deep.Count -eq 0) { Ok "补丁嵌套层级：所有带 [HarmonyPatch] 的补丁类都只嵌一层" }
+else { Fail ("有二级嵌套的补丁类（永远不会挂载）：" + ($deep -join '；')) }
+
+# ── 7) 死配置：声明了但全仓没有第二处引用 ────────────────────────────
 function StripComments([string]$t) {
     $t = [regex]::Replace($t, '(?m)^\s*///?.*$', '')
     $t = [regex]::Replace($t, '//.*$', '')
