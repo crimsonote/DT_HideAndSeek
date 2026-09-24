@@ -36,24 +36,29 @@ namespace HideAndSeek.Features.Rule
         side: FeatureSide.Host)]
     internal static class KeyLockFeature
     {
-[ConfigField(1059, "命令发放的物品 ID。默认 1059 fish_normal（普通的鱼）—— 蓝/紫/金三种鱼都能用来黏门。",
+        [ConfigField(1059, "命令发放的物品 ID。默认 1059 fish_normal（普通的鱼）—— 蓝/紫/金三种鱼都能用来黏门。",
             Min = 1f, Max = 9999f)]
         public static ConfigEntry<int> LanternItemId;
 
-[ConfigField(true, "允许申领鱼。关掉后这个命令直接不存在。")]
+        [ConfigField(true, "允许申领鱼。关掉后这个命令直接不存在。")]
         public static ConfigEntry<bool> AllowIssue;
 
-[ConfigField(300f, "配额窗口秒数。默认 300 = 每 5 分钟。", Min = 10f, Max = 3600f)]
+        [ConfigField(300f, "配额窗口秒数。默认 300 = 每 5 分钟。", Min = 10f, Max = 3600f)]
         public static ConfigEntry<float> QuotaWindowSeconds;
 
         [ConfigField(4, "配额窗口内全房最多发几条（只统计命令发放的，钓鱼等原版途径不算）。", Min = 1f, Max = 100f)]
         public static ConfigEntry<int> QuotaMax;
 
-[ConfigField(3, "黏门需要开合几次。3 = 开-关-开（每次状态切换算一次；原版每玩家 1 秒冷却，最快约 3 秒）。",
+        [ConfigField(150f, "同一个人的两次申领之间要隔多少秒。配额是全房 300 秒 4 条，" +
+            "150 秒意味着一个人在窗口内最多拿 2 条（0/150），其余留给别人。",
+            Min = 0f, Max = 3600f)]
+        public static ConfigEntry<float> FishCooldown;
+
+        [ConfigField(3, "黏门需要开合几次。3 = 开-关-开（每次状态切换算一次；原版每玩家 1 秒冷却，最快约 3 秒）。",
             Min = 2f, Max = 6f)]
         public static ConfigEntry<int> SealsNeeded;
 
-[ConfigField(6f, "开合计数的有效窗口（秒）。3 次开合最快跨 3 秒，留出反应余量。", Min = 1f, Max = 60f)]
+        [ConfigField(6f, "开合计数的有效窗口（秒）。3 次开合最快跨 3 秒，留出反应余量。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SealWindow;
 
         [ConfigField(20f, "合门后的锁定秒数。若同门已有更长的锁，取较长者。", Min = 1f, Max = 300f)]
@@ -116,6 +121,8 @@ namespace HideAndSeek.Features.Rule
             // 注：「开局 N 秒内不能申领」由命令注册表上的 `elapsed>=N` 条件承担（见 CommandFeature），
             // 不在这里判 —— 那样才能在 .cfg 里改，而不是写死在代码里。
 
+            // 顺序有讲究：**总配额卖空优先于"个人冷却中"**（需求明确要求）——
+            // 配额是全局状态，先告诉玩家"没货了"比"你还在冷却"更有信息量。
             PruneQuota();
             int max = QuotaMax?.Value ?? 4;
             if (_issuedTimes.Count >= max)
@@ -124,15 +131,26 @@ namespace HideAndSeek.Features.Rule
                 return false;
             }
 
+            int pid = player.PublicInfo.PlayerId;
+            float now = Now;
+            float cd = FishCooldown?.Value ?? 150f;
+            float last;
+            if (cd > 0f && _lastIssue.TryGetValue(pid, out last) && now - last < cd)
+            {
+                text = CommandFeature.Text("FishCooldown");
+                return false;
+            }
+
             try
             {
                 if (!HideAndSeek.Features.Combat.ItemGrant.Give(player, IssueFishId, out bool dropped))
                     return false;
 
-                _issuedTimes.Add(Now);
+                _issuedTimes.Add(now);
+                _lastIssue[pid] = now;
 
                 Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：玩家 #{player.PublicInfo.PlayerId} 申领了一条鱼" +
+                    $"[HS] KeyLock：玩家 #{pid} 申领了一条鱼" +
                     (dropped ? "（手上已有物品，已落在脚下）" : "") +
                     $"，本窗口内已发 {_issuedTimes.Count}/{max} 条。");
 
@@ -148,6 +166,9 @@ namespace HideAndSeek.Features.Rule
 
         /// <summary>滚动窗口内的"命令发放"时刻。原版途径（钓鱼等）不进这里。</summary>
         private static readonly List<float> _issuedTimes = new List<float>();
+
+        /// <summary>PlayerId → 上次申领时刻。每人冷却（默认 150 秒）用。</summary>
+        private static readonly Dictionary<int, float> _lastIssue = new Dictionary<int, float>();
 
         /// <summary>把滑出窗口的发放记录丢掉。</summary>
         private static void PruneQuota()
@@ -210,43 +231,38 @@ namespace HideAndSeek.Features.Rule
                 int state = info.StateList[0];
 
                 // ── ① 门是锁定态：判断要不要放行 ──
+                // 这里一律**静默**：锁门/开门这类动作不该刷一堆文字提示，
+                // 玩家按 E 没反应本身就是"打不开"的反馈（与"不是主人"那条一致）。
                 if (state == 2)
                 {
                     Seal seal;
                     if (!Seals.TryGetValue(doorId, out seal))
-                        return true;                 // 不是提灯锁（纯广域锁）→ 交还原版与 LockDoorFeature
+                        return true;                 // 不是鱼胶锁（纯广域锁）→ 交还原版与 LockDoorFeature
 
                     if (IsTangled(doorId))
-                    {
-                        Reply(player, CommandFeature.Text("FishTangled"));
                         return false;                // 两把锁 → 谁都不放行
-                    }
 
                     if (Now < seal.SetAt)
-                    {
-                        Reply(player, CommandFeature.Text("FishNotSet"));
-                        return false;                // 膜未凝
-                    }
+                        return false;                // 胶未干 → 连黏门者也不能开
 
                     if (!seal.Owners.Contains(pid))
-                        return false;                // 不是合门者 → 无反应
+                        return false;                // 不是黏门者 → 无反应
 
                     Seals.Remove(doorId);
                     __instance.UnlockDoor();
                     __instance.OpenDoor();
-                    Reply(player, CommandFeature.Text("FishOpened"));
-                    Plugin.Log.LogInfo($"[HS] KeyLock：合门者 #{pid} 打开了门 #{doorId}。");
+                    Plugin.Log.LogInfo($"[HS] KeyLock：黏门者 #{pid} 打开了门 #{doorId}。");
                     return false;
                 }
 
-                // ── ② 门是开着/关着：手持提灯才算一次"开合" ──
+                // ── ② 门是开着/关着：手持鱼才算一次"开合" ──
                 if (!HasLantern(player))
                     return true;
 
                 if (CountSwing(pid, doorId))
                     TrySeal(__instance, player, doorId, pid);
 
-                return true;                          // 无论是否合门，原版开关门照常发生
+                return true;                          // 无论是否黏门，原版开关门照常发生
             }
         }
 

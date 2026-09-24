@@ -134,12 +134,10 @@ namespace HideAndSeek.Features.Rule
             "SpendUnavailable = 读不到任务进度\n" +
             // ── 鱼（KeyLockFeature 复用本表；同一张表才能统一热改）──
             "FishTaken = 一条普通的鱼，或许可以把门黏住\n" +
-            "FishEmpty = 鱼篓空了 —— 五分钟内最多四条\n" +
-            "FishTooEarly = 刚开局，还没到用鱼的时候\n" +
+            "FishEmpty = 鱼已售罄\n" +
+            "FishTooEarly = 非售货时间，请稍候再来\n" +
+            "FishCooldown = 超出限额，请稍候重试\n" +
             "FishSealed = 门被黏住了，现在只认你\n" +
-            "FishNotSet = 胶还没干，碰了会白黏\n" +
-            "FishTangled = 两团鱼胶黏死了，谁都开不了\n" +
-            "FishOpened = 鱼胶松了，门开了\n" +
             "FishReturned = 鱼用完了，手上空了\n" +
             // ── 汽水（SodaBoostFeature 复用本表）──
             "SodaTaken = 汽水申领成功\n" +
@@ -721,13 +719,13 @@ namespace HideAndSeek.Features.Rule
                 },
                 new CommandDef
                 {
-                    // 鱼：公共命令，黑白都能申领。发放配额在 KeyLockFeature 里（全房滑窗），
-                    // CD 交引擎管 —— 150 秒是为"防止一个人把鱼全拿走"：配额是全房 300 秒 4 条，
-                    // CD 150 意味着一个人在窗口内最多拿 2 条（0 / 150），其余留给别人。
+                    // 鱼：公共命令，黑白都能申领。
+                    // 配额（全房 300 秒 4 条）与每人冷却（150 秒，防一个人拿光）都在
+                    // KeyLockFeature 里自己管 —— 不走引擎的 uses=/cd=，因为冷却提示要用
+                    // 自定义文案（"超出限额，请稍候重试"），而且总配额卖空要优先于冷却提示。
                     Name = "fish", Aliases = new[] { "lamp", "lantern", "key", "lt" },
                     Side = CommandSide.Any, Channel = CommandChannel.Public,
-                    Action = "GiveFish", UsesPerPlayer = true,
-                    Cooldown = 150,
+                    Action = "GiveFish",
                     Condition = "elapsed>=60",           // 开局 60 秒内不可申领
                     IsAvailable = () => KeyLockFeature.AllowIssue == null || KeyLockFeature.AllowIssue.Value
                 },

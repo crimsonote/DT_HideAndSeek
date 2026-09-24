@@ -88,18 +88,21 @@ namespace HideAndSeek.Features.Combat
             IssuedTimes.RemoveAll(t => now - t > window);
 
             int pid = player.PublicInfo.PlayerId;
+
+            // 顺序：**总配额卖空优先于"个人冷却中"** —— 配额是全局状态，
+            // 先告诉玩家"没货了"比"你还在冷却"更有信息量。
+            int max = QuotaMax?.Value ?? 4;
+            if (IssuedTimes.Count >= max)
+            {
+                text = Text("SodaQuota");
+                return false;
+            }
+
             float cd = IssueCooldown?.Value ?? 240f;
             float last;
             if (cd > 0f && LastIssue.TryGetValue(pid, out last) && now - last < cd)
             {
                 text = Text("SodaCooldown");
-                return false;
-            }
-
-            int max = QuotaMax?.Value ?? 4;
-            if (IssuedTimes.Count >= max)
-            {
-                text = Text("SodaQuota");
                 return false;
             }
 
