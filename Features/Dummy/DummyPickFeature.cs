@@ -57,5 +57,31 @@ namespace HideAndSeek.Features.Dummy
                 DummyManager.ApplyPickedCharacters(__instance);
             }
         }
+
+        /// <summary>
+        /// 每局回大厅时清理假人的跨局状态。**无条件执行，没有开关** ——
+        /// 清理是基础能力，不该让用户去配"清不清理"。
+        ///
+        /// ⚠ 它必须在**本段**（默认启用），不能留在 [Dummy]（默认关闭）：
+        /// 同本类开头那段理由 —— 段一旦 Enabled=false，PatchLoader 对整类跳过 PatchAll，
+        /// 这里的钩子根本不会挂。原来 [Dummy] 里那个 StartLobbyHook 就因此形同不存在，
+        /// 等于把"要不要清理"变成了一个藏在段开关里的意外配置，后果是：
+        ///   · DummyManager.SpawnedIds 只增不减（它的判据是"座位号上还有人"，
+        ///     而座位号跨局复用、真人坐进去后那条永远不移除）
+        ///     ⇒ hs_dummy 报「人数已达出生点上限 12」；
+        ///   · DummyManager.DesiredCharacter 残留 ⇒ 座位号被真人占用时误选真人。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), "StartLobby")]
+        internal static class StartLobbyHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+
+                DummyManager.ResyncTracking();
+            }
+        }
     }
 }

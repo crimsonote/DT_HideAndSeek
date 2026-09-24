@@ -244,8 +244,44 @@ namespace HideAndSeek.Features.Dummy
                 return;
             }
 
+            // ⚠ 判据必须带 IsDummy。
+            //
+            // SpawnedIds 里存的是**座位号**，而座位号是跨局复用的
+            //（ObjectUtils.PlayerSeatList 就是这么设计的）。只判「这个座位号上还有没有人」的话，
+            // 假人消失、真人坐进同一座位号之后这一条永远不移除 ⇒ SpawnedIds 只增不减
+            // ⇒ Spawn() 的 `realCount + SpawnedIds.Count >= StartPositionCapacity` 很快触顶
+            // ⇒ hs_dummy 报「人数已达出生点上限 12」（用户实测：第一局加 2 个、第二局加 7 个就爆）。
             SpawnedIds.RemoveAll(id =>
-                !room.Players.Any(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id));
+                !room.Players.Any(p => p?.PublicInfo != null
+                                    && p.PublicInfo.PlayerId == id
+                                    && p.IsDummy));
+
+            // 同理，我们在 Spawn() 里会写 ObjectUtils.PlayerSeatList[id-1] = true 占座，
+            // 而这里以前**完全没碰座位表** ⇒ 假人走了座位还占着，最终报「没有空闲座位（上限 16）」。
+            // 按 SpawnedIds 反查：不再对应假人的座位一律释放。
+            try
+            {
+                var seats = ObjectUtils.PlayerSeatList;
+                if (seats != null)
+                {
+                    for (int i = 0; i < seats.Count; i++)
+                    {
+                        int seatId = i + 1;
+                        if (SpawnedIds.Contains(seatId))
+                            continue;                       // 这个座位确实还坐着假人
+
+                        bool occupiedByReal = room.Players.Any(p => p?.PublicInfo != null
+                                                                 && p.PublicInfo.PlayerId == seatId
+                                                                 && !p.IsDummy);
+                        if (!occupiedByReal && seats[i])
+                            seats[i] = false;
+                    }
+                }
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] Dummy：释放座位失败 — {ex.Message}");
+            }
         }
 
         /// <summary>
