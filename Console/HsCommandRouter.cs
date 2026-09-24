@@ -508,7 +508,7 @@ namespace HideAndSeek.Console
                     return Error("用法: hs_debug exec <玩家ID> <命令文本>");
 
                 string cmd = string.Join(" ", args, 2, args.Length - 2);
-                HideAndSeek.Features.Rule.BreakCommandFeature.ExecForDebug(room, target, cmd);
+                HideAndSeek.Features.Rule.CommandFeature.ExecForDebug(room, target, cmd);
                 return $"{{\"ok\":true,\"player\":{pid},\"exec\":\"{cmd.Replace("\"", "'")}\"}}";
             }
 
