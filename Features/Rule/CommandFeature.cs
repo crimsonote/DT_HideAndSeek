@@ -17,7 +17,7 @@ namespace HideAndSeek.Features.Rule
     /// 命令系统（全模组唯一实现）：一份注册表 + 三个分层 + 两条频道。
     ///
     /// 分层（side）—— 谁能用：
-    ///   any    公共 —— 黑白都能用（/help /reload /refresh）
+    ///   any    公共 —— 黑白都能用（/help /refresh）
     ///   white  白方 —— 只有白方（/rad /sta /rep）
     ///   black  黑方 —— 只有黑方（/brk /lck /tp /ls /cre）
     /// 频道（ch）—— 从哪发：
@@ -33,15 +33,18 @@ namespace HideAndSeek.Features.Rule
     /// 校验顺序对所有命令一致：可用开关 → 阶段/存活 → 次数 → 冷却 → 条件 → 效果，
     /// 任一不过即拒绝（并说明原因）。条件复用 RuleRewriteFeature.MatchesAll。
     ///
-    /// 自定义命令写在 [BreakCommand].Commands 里（格式见该配置项）。内置命令即使配置里没注册
+    /// 自定义命令写在 [Command].Commands 里（格式见该配置项）。内置命令即使配置里没注册
     /// 也始终可用 —— 让用户为了拿到 /lck 去手改文件是设计缺陷。
     ///
-    /// 段名保留 "BreakCommand" 而不改成 "Command"：注册表键是用户**手改过**的
-    /// （brk→break、lck→lock、cd 调过），而 ConfigMigration 的文本迁移只认前缀，
-    /// 搬段会直接把这份定制丢掉。段名与文件名的错位在下面这条注释里说清即可。
+    /// 段名 [Command] 是无偏的：此前黑白各有一个段（[BreakCommand] / [WhiteCommand]），
+    /// 合并成一份实现之后段名也该只有一份。旧段的值由 ConfigMigration v16 原地搬运，
+    /// 因此用户手改过的注册表（brk→break、lck→lock、cd 调过）不会丢。
+    ///
+    /// 这里只放玩家在游戏内该看到的命令。运维/调试动作（例如重读 .cfg）不放这里，
+    /// 走控制台的 hs_* 命令。
     /// </summary>
     [PatchFeature(
-        section: "BreakCommand",
+        section: "Command",
         description: "命令系统：公共 / 白方 / 黑方三层，注册表可热改。含拆电、锁门、传送、雷达、时停、秒修、刷新等。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
@@ -50,10 +53,10 @@ namespace HideAndSeek.Features.Rule
         // ══ 通道开关 ═══════════════════════════════════════════════════
 
         [ConfigField(true, "启用密聊命令通道（黑方）。关闭后以 / 开头的密聊会被当作普通聊天。")]
-        public static ConfigEntry<bool> AllowBreakBySecretChat;
+        public static ConfigEntry<bool> AllowSecretChat;
 
         [ConfigField(true, "启用公开聊天命令通道（公共 + 白方）。关闭后公开聊天里的 / 命令不再被吞掉。")]
-        public static ConfigEntry<bool> EnabledWhiteCommands;
+        public static ConfigEntry<bool> AllowPublicChat;
 
         [ConfigField("brk = fusebox -> Disconnect ; cd=90\n" +
                      "lck = -> Lock ; cd=60\n" +
@@ -64,7 +67,7 @@ namespace HideAndSeek.Features.Rule
             "      time<=N（剩余秒）kills>=N（黑方击杀）alive<=N（白方存活），多个用 & 连接。\n" +
             "效果：配置键=值（键同规则引擎：SpeedMul/EnterRange/ExitRange/Cooldown/KillLimit/RepairCount/MinProgress），\n" +
             "      或特殊动作：Disconnect（拆最近可拆电箱）/ Lock（锁住附近的门）/ Teleport（预警数秒后传送，可跟玩家 ID）/\n" +
-            "      ListPlayers / Credit / Help / Reload / Refresh / Radar / Stasis / Repair。多个动作用 , 连接。\n" +
+            "      ListPlayers / Credit / Help / Refresh / Radar / Stasis / Repair。多个动作用 , 连接。\n" +
             "cd / uses 可省略，0 或省略 = 不限。行首 # 为注释。\n" +
             "side / ch 省略时按黑方密聊处理（与旧格式一致）：side=black、ch=secret。\n" +
             "例（给白方加一条公开频道的命令）：scan = -> Radar ; side=white ; ch=pub ; cd=120\n" +
@@ -93,7 +96,6 @@ namespace HideAndSeek.Features.Rule
             "HelpCondition = 条件:{cond}\n" +
             // ── 帮助：每条命令的说明，键 = Desc_<动作名小写> ──
             "Desc_help = 查看这份帮助\n" +
-            "Desc_reload = 重新读取配置文件\n" +
             "Desc_refresh = 刷新网络连接 CD{cd}\n" +
             "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
             "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
@@ -104,9 +106,6 @@ namespace HideAndSeek.Features.Rule
             "Desc_credit = 查看/消耗积分升级 v|s|t|help\n" +
             "Desc_listplayers = 列出玩家 ID 与昵称\n" +
             // ── 动作回执 ──
-            "ReloadNoConfig = 配置句柄不可用（DT_Tools 未就绪）。\n" +
-            "ReloadDone = 配置已重新读取。\n" +
-            "ReloadFailed = 重载失败，详见日志。\n" +
             "LockNone = 附近没有可锁的门。\n" +
             "LockDone = 已锁住 {n} 扇门（半径 {radius}）。\n" +
             "DisconnectBadId = 电箱 ID 必须是数字。\n" +
@@ -227,9 +226,17 @@ namespace HideAndSeek.Features.Rule
 
             /// <summary>
             /// true = 不受「必须在生存阶段且存活」这道闸门约束。
-            /// 只有 /help 与 /reload 需要 —— 改完 .cfg 想立刻重读，通常人还在大厅里。
+            /// 只有 /help 需要：它在旧实现里走的是 Handle 的 switch，从来没有阶段检查 ——
+            /// 这里是保留原行为，而不是新增一个闸门再豁免它。
             /// </summary>
             public bool AllowOutsideSurvive;
+
+            /// <summary>
+            /// 阶段/存活不满足时保持静默（不回执）。
+            /// 白方命令（/rad /sta /rep）是旧实现里就静默的那几条 —— 非生存阶段客户端不处理
+            /// 这类消息，发了也是冗余；黑方密聊命令与 /refresh 在旧实现里本来就回执，故默认 false。
+            /// </summary>
+            public bool QuietWhenBlocked;
 
             /// <summary>该命令当前是否可用（由功能开关决定）。null = 始终可用。</summary>
             public global::System.Func<bool> IsAvailable;
@@ -269,7 +276,7 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session, Packet packet)
             {
-                Diagnostics.Hit("BreakCommand");
+                Diagnostics.Hit("Command");
                 if (ModeRuntime.Bypass)
                     return true;
 
@@ -282,13 +289,13 @@ namespace HideAndSeek.Features.Rule
                     CommandChannel channel;
                     if (msg.Type == EChatType.SecretChat)
                     {
-                        if (AllowBreakBySecretChat == null || !AllowBreakBySecretChat.Value)
+                        if (AllowSecretChat == null || !AllowSecretChat.Value)
                             return true;
                         channel = CommandChannel.Secret;
                     }
                     else if (msg.Type == EChatType.NormalChat || msg.Type == EChatType.DeviceChat)
                     {
-                        if (EnabledWhiteCommands == null || !EnabledWhiteCommands.Value)
+                        if (AllowPublicChat == null || !AllowPublicChat.Value)
                             return true;
                         channel = CommandChannel.Public;
                     }
@@ -484,13 +491,13 @@ namespace HideAndSeek.Features.Rule
         {
             try
             {
-                if (room.State != EGameState.Survive || !player.IsAlive)
+                if (!def.AllowOutsideSurvive
+                    && (room.State != EGameState.Survive || !player.IsAlive))
                 {
-                    if (!def.AllowOutsideSurvive)
-                    {
+                    // 白方命令静默：非生存阶段客户端不处理这类消息，发了也是冗余。
+                    if (!def.QuietWhenBlocked)
                         Reply(player, deviceId, channel, T("PhaseBlocked"));
-                        return;
-                    }
+                    return;
                 }
 
                 int pid = player.PublicInfo?.PlayerId ?? 0;
@@ -568,10 +575,6 @@ namespace HideAndSeek.Features.Rule
                     special = true;
                     Reply(player, deviceId, channel, BuildHelp(player, channel));
                     return true;
-
-                case "reload":
-                    special = true;
-                    return DoReload(player, deviceId, channel);
 
                 case "refresh":
                     special = true;
@@ -662,12 +665,6 @@ namespace HideAndSeek.Features.Rule
                 },
                 new CommandDef
                 {
-                    Name = "reload",
-                    Side = CommandSide.Any, Channel = CommandChannel.Public,
-                    Action = "Reload", AllowOutsideSurvive = true
-                },
-                new CommandDef
-                {
                     Name = "refresh",
                     Side = CommandSide.Any, Channel = CommandChannel.Public,
                     Action = "Refresh", UsesPerPlayer = true,
@@ -678,7 +675,7 @@ namespace HideAndSeek.Features.Rule
                 {
                     Name = "rad", Aliases = new[] { "radar" },
                     Side = CommandSide.White, Channel = CommandChannel.Public,
-                    Action = "Radar", UsesPerPlayer = true,
+                    Action = "Radar", UsesPerPlayer = true, QuietWhenBlocked = true,
                     Cooldown = RadarCooldownSeconds?.Value ?? 75,
                     MaxUses = RadarUsesPerPlayer?.Value ?? 2,
                     // 次数配成 0 时该命令直接不存在 —— 原版把它当"次数已用尽"，
@@ -689,7 +686,7 @@ namespace HideAndSeek.Features.Rule
                 {
                     Name = "sta", Aliases = new[] { "stasis" },
                     Side = CommandSide.White, Channel = CommandChannel.Public,
-                    Action = "Stasis", UsesPerPlayer = true,
+                    Action = "Stasis", UsesPerPlayer = true, QuietWhenBlocked = true,
                     Cooldown = StasisCooldown?.Value ?? 90,
                     IsAvailable = () => AllowStasis == null || AllowStasis.Value
                 },
@@ -697,7 +694,7 @@ namespace HideAndSeek.Features.Rule
                 {
                     Name = "rep", Aliases = new[] { "repair" },
                     Side = CommandSide.White, Channel = CommandChannel.Public,
-                    Action = "Repair", UsesPerPlayer = true,
+                    Action = "Repair", UsesPerPlayer = true, QuietWhenBlocked = true,
                     IsAvailable = () => AllowRepair == null || AllowRepair.Value
                 },
                 new CommandDef
@@ -1282,36 +1279,6 @@ namespace HideAndSeek.Features.Rule
             Plugin.Log.LogInfo($"[HS] 命令：黑方 #{player.PublicInfo?.PlayerId} 拆除了电箱 #{target.ID}。");
             // 成功不回复：断电本身就有全图黑 + FuseOffSfx + 电箱箭头，文字是噪音
             return true;
-        }
-
-        /// <summary>
-        /// 重新读取 .cfg。
-        ///
-        /// 必需：BepInEx **不监听**配置文件变化，ConfigEntry.Value 是启动时读入的内存副本；
-        /// 手动编辑 .cfg 后，除非重启游戏或显式 Reload()，代码里读到的仍是旧值 ——
-        /// 表现就是"改了配置但 /help、冷却、开关全都没变"。
-        /// </summary>
-        private static bool DoReload(GamePlayer player, int deviceId, CommandChannel channel)
-        {
-            try
-            {
-                if (Plugin.HsConfig == null)
-                {
-                    Reply(player, deviceId, channel, T("ReloadNoConfig"));
-                    return false;
-                }
-
-                Plugin.HsConfig.Reload();
-                Reply(player, deviceId, channel, T("ReloadDone"));
-                Plugin.Log.LogInfo("[HS] 配置已通过 /reload 重新读取。");
-                return true;
-            }
-            catch (global::System.Exception ex)
-            {
-                Reply(player, deviceId, channel, T("ReloadFailed"));
-                Plugin.Log.LogWarning($"[HS] /reload 失败 — {ex.Message}");
-                return false;
-            }
         }
 
         /// <summary>

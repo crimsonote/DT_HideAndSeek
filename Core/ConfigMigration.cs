@@ -1,5 +1,10 @@
 ﻿using BepInEx.Configuration;
 using BepInEx.Logging;
+// 段重命名迁移需要引用目标配置项本身，才能拿到它的类型与默认值（见 MoveKey）。
+// 取舍：这确实是 Core 层引用了 Features 层的类型，但迁移表本来就"知道"具体的段名与键名
+// （见下面各条硬编码的 "Section", "Key"），多一个类型引用换来的是默认值只有一份定义 ——
+// 比为了分层好看而在迁移表里再抄一遍默认值可靠。
+using HideAndSeek.Features.Rule;
 
 namespace HideAndSeek.Core
 {
@@ -20,7 +25,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 15;
+        private const int CurrentVersion = 16;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -36,6 +41,38 @@ namespace HideAndSeek.Core
 
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
+
+            // v15 → v16
+            if (from < 16)
+            {
+                // 命令系统由黑白两个段（[BreakCommand] / [WhiteCommand]）合并为无偏的 [Command]。
+                // 各键**逐个原值搬家**：用户手改过的 Commands（brk→break、lck→lock、cd 调过）、
+                // 以及任何在旧段里调过的参数，都不能因为换段而丢。
+                // MoveKey 只在"新段仍是代码默认值"时才写入，所以重复执行是幂等的。
+                MoveKey(config, log, "BreakCommand", "Commands", CommandFeature.Commands);
+                MoveKey(config, log, "BreakCommand", "AllowBreakBySecretChat", CommandFeature.AllowSecretChat);
+                MoveKey(config, log, "WhiteCommand", "EnabledWhiteCommands", CommandFeature.AllowPublicChat);
+
+                // 白方命令的运行参数
+                MoveKey(config, log, "WhiteCommand", "RadarUsesPerPlayer", CommandFeature.RadarUsesPerPlayer);
+                MoveKey(config, log, "WhiteCommand", "RadarCooldownSeconds", CommandFeature.RadarCooldownSeconds);
+                MoveKey(config, log, "WhiteCommand", "RadarDurationSeconds", CommandFeature.RadarDurationSeconds);
+                MoveKey(config, log, "WhiteCommand", "AllowStasis", CommandFeature.AllowStasis);
+                MoveKey(config, log, "WhiteCommand", "StasisCostPercent", CommandFeature.StasisCostPercent);
+                MoveKey(config, log, "WhiteCommand", "StasisSeconds", CommandFeature.StasisSeconds);
+                MoveKey(config, log, "WhiteCommand", "StasisCooldown", CommandFeature.StasisCooldown);
+                MoveKey(config, log, "WhiteCommand", "StasisSfxRange", CommandFeature.StasisSfxRange);
+                MoveKey(config, log, "WhiteCommand", "AllowRepair", CommandFeature.AllowRepair);
+                MoveKey(config, log, "WhiteCommand", "RepairCostPercent", CommandFeature.RepairCostPercent);
+
+                // /refresh
+                MoveKey(config, log, "WhiteCommand", "AllowRefresh", CommandFeature.AllowRefresh);
+                MoveKey(config, log, "WhiteCommand", "RefreshCooldown", CommandFeature.RefreshCooldown);
+                MoveKey(config, log, "WhiteCommand", "RefreshPoint", CommandFeature.RefreshPoint);
+                MoveKey(config, log, "WhiteCommand", "RefreshDelayMs", CommandFeature.RefreshDelayMs);
+                MoveKey(config, log, "WhiteCommand", "RefreshPopupType", CommandFeature.RefreshPopupType);
+                MoveKey(config, log, "WhiteCommand", "RefreshPopup", CommandFeature.RefreshPopup);
+            }
 
             // v14 → v15
             if (from < 15)
@@ -339,6 +376,50 @@ namespace HideAndSeek.Core
                 log.LogWarning($"[HS]   迁移 {section}.{key} 失败：{ex.Message}");
             }
         }
+        /// <summary>
+        /// 把某个键的值从旧段**原值**搬到新段（段重命名专用，v16 起用）。
+        ///
+        /// 幂等：只在「新段仍是代码默认值」且「旧段不是代码默认值」时才写入。
+        /// 因此重复执行安全，也不会覆盖用户在新段里已经调好的值。
+        ///
+        /// 类型与默认值都取自目标 ConfigEntry 本身 —— 迁移表里不必再抄一份默认值，
+        /// 也就不会出现"代码改了默认值、迁移表里的旧默认值没跟着改"的漂移。
+        /// </summary>
+        private static void MoveKey<T>(ConfigFile config, ManualLogSource log,
+            string fromSection, string fromKey, ConfigEntry<T> target)
+        {
+            if (target == null)
+                return;
+
+            try
+            {
+                var fromDef = new ConfigDefinition(fromSection, fromKey);
+                if (!config.ContainsKey(fromDef))
+                    return;                       // 旧段里没有这个键 → 无需搬
+
+                // 注意 ConfigEntryBase.DefaultValue / BoxedValue 都是 object，故用 object.Equals 比较。
+                // 不要用 EqualityComparer<T>.Default —— 它的 Equals(T,T) 是显式接口实现，
+                // 在具体类型引用上不可见，会被解析成静态 object.Equals(object,object)。
+                if (!global::System.Object.Equals(target.BoxedValue, target.DefaultValue))
+                    return;                       // 新段已被改过 → 不动
+
+                // 显式指定 T：DefaultValue 的静态类型是 object，
+                // 不指定会被推断成 ConfigEntry<object>，from.Value 拿不到 T。
+                var from = config.Bind<T>(fromSection, fromKey, (T)target.DefaultValue);
+
+                if (global::System.Object.Equals(from.Value, target.DefaultValue))
+                    return;                       // 旧段本来就是默认值 → 搬过去没有意义
+
+                target.Value = from.Value;
+                log.LogInfo(
+                    $"[HS]   搬家 {fromSection}.{fromKey} → {target.Definition.Section}.{target.Definition.Key}");
+            }
+            catch (global::System.Exception ex)
+            {
+                log.LogWarning($"[HS]   搬家 {fromSection}.{fromKey} 失败：{ex.Message}");
+            }
+        }
+
         private static void EnsureInt(ConfigFile config, ManualLogSource log,
             string section, string key, int expected)
         {

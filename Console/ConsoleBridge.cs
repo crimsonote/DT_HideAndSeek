@@ -35,6 +35,7 @@ namespace HideAndSeek.Console
         {
             ("hs",           "hs",                                                "捉迷藏模式：总览当前状态"),
             ("hs_check",     "hs_check",                                          "自检：各功能的挂载状态与触发次数"),
+            ("hs_reload",    "hs_reload",                                         "重新读取 .cfg（BepInEx 不监听文件变化，改完配置需执行一次）"),
             ("hs_mode",      "hs_mode <on|off>",                                  "捉迷藏模式总开关（含可见性与光照回滚）"),
             ("hs_aoi",       "hs_aoi [on|off] [enter=750] [exit=1100] [min=3]",   "黑方视野裁剪参数"),
             ("hs_cd",        "hs_cd <秒>",                                        "黑方击杀后的冷却秒数"),

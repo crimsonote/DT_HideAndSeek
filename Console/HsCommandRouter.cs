@@ -42,7 +42,7 @@ namespace HideAndSeek.Console
                 string sub = "hs_" + args[0].ToLowerInvariant();
                 switch (sub)
                 {
-                    case "hs_check": case "hs_mode": case "hs_aoi": case "hs_cd":
+                    case "hs_check": case "hs_reload": case "hs_mode": case "hs_aoi": case "hs_cd":
                     case "hs_killlimit": case "hs_dummy": case "hs_flash":
                     case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar": case "hs_debug": case "hs_upgrade":
                         name = sub;
@@ -54,6 +54,7 @@ namespace HideAndSeek.Console
             {
                 case "hs":           return Status();
                 case "hs_check":     return Diagnostics.Report();
+                case "hs_reload":    return ReloadConfig();
                 case "hs_dummy":     return Dummy(args);
                 case "hs_flash":     return Flash(args);
                 case "hs_roomname":  return RoomName(args);
@@ -66,7 +67,7 @@ namespace HideAndSeek.Console
                 case "hs_radar":     return Radar(args);
                 case "hs_debug":     return Debug(args);
                 case "hs_upgrade":   return Upgrade(args);
-                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
+                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_reload / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
             }
         }
 
@@ -86,6 +87,28 @@ namespace HideAndSeek.Console
               .Append(",\"killLimit\":").Append(Num(KillLimitFeature.MaxKills, 9999))
               .Append("}");
             return sb.ToString();
+        }
+
+        // ── /hs_reload ──────────────────────────────────────────────
+        // 从游戏内 /reload 迁移过来：BepInEx 不监听 .cfg 变化，ConfigEntry.Value 是启动时
+        // 读入的内存副本，手动改文件后必须显式 Reload() 才会重读到内存。
+        // 它是运维动作、不是玩家命令，所以只留在这里（控制台/房主侧），不再出现在游戏内 /help。
+        private static string ReloadConfig()
+        {
+            if (Plugin.HsConfig == null)
+                return Error("配置句柄不可用（DT_Tools 未就绪）");
+
+            try
+            {
+                Plugin.HsConfig.Reload();
+                Plugin.Log.LogInfo("[HS] 配置已通过 hs_reload 重新读取。");
+                return "{\"ok\":true,\"reloaded\":true}";
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] hs_reload 失败 — {ex.Message}");
+                return Error("重载失败，详见日志");
+            }
         }
 
         // ── /hs_mode on|off ─────────────────────────────────────────
