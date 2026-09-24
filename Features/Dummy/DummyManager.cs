@@ -322,7 +322,21 @@ namespace HideAndSeek.Features.Dummy
                     p?.PublicInfo != null && p.PublicInfo.PlayerId == id);
 
                 if (player == null)
+                    continue;                         // 还没入座，下个 tick 再试
+
+                // ⚠ 座位号会跨局复用：假人消失之后，同一个座位号可能坐进**真人**
+                //（`ObjectUtils.PlayerSeatList` 就是这么设计的）。而 DesiredCharacter
+                // 是进程级残留 —— 唯一的清理入口在 [Dummy] 段里，那段一旦 Enabled=false
+                // 整类都不会挂载，于是残留会一直带着。
+                //
+                // 只判「这个座位现在有人」就会把真人也选掉：玩家实测到的
+                //「被强制随机、自己取消了又被他抢回来、总是自动随机」就是这个。
+                // 所以这里必须确认那还是**假人**，不是就出队、不再管这个座位。
+                if (!player.IsDummy)
+                {
+                    handled.Add(id);
                     continue;
+                }
 
                 try
                 {
