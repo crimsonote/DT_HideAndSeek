@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 14;
+        private const int CurrentVersion = 15;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,18 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v14 → v15
+            if (from < 15)
+            {
+                // lck / tp 的冷却 60 → 90（brk 保持 90）。前缀用当前默认值，
+                // 用户改过其它行则不动。
+                MigrateString(config, log, "BreakCommand", "Commands",
+                    "brk = fusebox -> Disconnect ; cd=90\\nlck = -> Lock ; cd=60",
+                    "brk = fusebox -> Disconnect ; cd=90\\nlck = -> Lock ; cd=90\\ntp  = -> Teleport ; cd=90");
+            }
+
             // v13 → v14
+
             if (from < 14)
             {
                 // 同期被一并改成 0 的还有分条间隔；大厅恢复拆条后，间隔也该恢复，
