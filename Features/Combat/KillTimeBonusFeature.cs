@@ -28,12 +28,10 @@ namespace HideAndSeek.Features.Combat
         [ConfigField(30, "每次击杀给倒计时增加的秒数。0 = 关闭本效果。", Min = 0f, Max = 600f)]
         public static ConfigEntry<int> BonusSeconds;
 
-        [ConfigField(true, "击杀加时时向全场播报一行提示。")]
-        public static ConfigEntry<bool> Announce;
-
-        [ConfigField("击杀成功，倒计时增加 {sec} 秒",
-            "击杀加时的播报文本。占位符：{sec} 增加秒数。")]
-        public static ConfigEntry<string> AnnounceText;
+        // 这里曾有两个配置项 Announce / AnnounceText（击杀加时的播报开关与文本）。
+        // 它们从未被代码读过 —— 下面的 Postfix 里写明"击杀加时不再公开播报"，
+        // 但两个开关一直留在 .cfg 与 DT CONFIG 页面上，等于给了用户一个无效旋钮。
+        // 已随本次复查删除（同 v0.2.0 删掉的 WhiteCommand.AnnounceOnUse 一类）。
 
         [HarmonyPatch(typeof(GamePlayer), "OnDeadMurder")]
         [HarmonyPostfix]

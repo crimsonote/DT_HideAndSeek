@@ -81,6 +81,10 @@ namespace HideAndSeek.Core
                     harmony.PatchAll(desc.Type);
 
                     // 支持嵌套补丁类（与 DT_Tools 相同的写法）
+                    // nestedFailed 要传给 Diagnostics：段级 MarkLoaded 只能说明"这个功能加载了"，
+                    // 无法反映"其中某个钩子没挂上"。以前那种情况 hs_check 仍显示 loaded=true，
+                    // 只能靠翻启动日志才发现路径静默失效。
+                    int nestedFailed = 0;
                     foreach (var nested in desc.Type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
                     {
                         if (!nested.IsClass || nested.IsGenericTypeDefinition)
@@ -95,13 +99,14 @@ namespace HideAndSeek.Core
                         catch (Exception nestedEx)
                         {
                             result.FailedCount++;
+                            nestedFailed++;
                             log.LogError($"[HS] 嵌套补丁加载失败: {desc.Type.Name}.{nested.Name} ([{desc.Section}]) — " +
                                          $"{nestedEx.GetType().Name}: {nestedEx.Message}");
                         }
                     }
 
                     result.EnabledCount++;
-                    Diagnostics.MarkLoaded(desc.Section);
+                    Diagnostics.MarkLoaded(desc.Section, nestedFailed);
                     log.LogInfo($"[HS] 已启用功能: {desc.Type.Name} ([{desc.Section}], {desc.Side})");
                 }
                 catch (Exception ex)

@@ -70,9 +70,17 @@ namespace HideAndSeek.Features.Rule
             => action != null && action.Target is GameCorpse && action.Method.Name == "EndSurvival";
 
         // ── 路径 ①：自动进入调查的排程时间 ──────────────────────────────
-        // 已知边界（刻意不改，属既存漏洞）：Corpse.OnMigrationResume(:169026) 会在房主迁移后
-        // 按 StateList[5] 的剩余时间重排同一个回调，其延迟不一定落在 50~70 内，因此下面的
-        // 区间过滤挡不住它 —— 迁移后仍可能自动报告。
+        // 判据只用「回调目标是尸体 + 方法是 EndSurvival」，不按延迟秒数过滤。
+        //
+        // 全文件 60+ 个 PushSurvivalJob 调用点里，传 EndSurvival 的只有两处：
+        // Corpse 构造函数(:168824) 与 Corpse.OnMigrationResume(:169026) —— 两处都是要拦的。
+        // 而字面量落在 [50,70] 的另有两处（StartFuseboxSabotage :173511、ResetMarionette
+        // :177304，都是 60 秒），它们的目标类型不是 GameCorpse，已被 IsAutoDetectiveJob 挡掉。
+        //
+        // 所以区间过滤没有排除任何"不该拦的"，它的唯一净效果是**放过迁移分支**：
+        // OnMigrationResume 的延迟是 StateList[5] − SurviveTime，随迁移时机取值不定，
+        // 余量 >70 或 <50 时就穿过了区间 → 房主迁移后仍会自动报告进审判。
+        // 因此只保留 IsAutoDetectiveJob。
         [HarmonyPatch(typeof(TimeManager), nameof(TimeManager.PushSurvivalJob), new[] { typeof(int), typeof(Action) })]
         internal static class PushSurvivalJobHook
         {
@@ -80,8 +88,6 @@ namespace HideAndSeek.Features.Rule
             private static void Prefix(ref int secondAfter, Action action)
             {
                 if (ModeRuntime.Bypass)
-                    return;
-                if (secondAfter < 50 || secondAfter > 70)   // 原版取值范围 Util.GetRandomNumber(50, 71)
                     return;
                 if (!IsAutoDetectiveJob(action))
                     return;
@@ -203,9 +209,13 @@ namespace HideAndSeek.Features.Rule
                 // ClearAllMission(:166889) 逐行等价，因此直接复用它并保留同样的 3 秒延迟。
                 room.PushAfter(3000, delegate
                 {
+                    // 复检：这 3 秒里可能已经退房或进了结算 —— 那样不该把新一局拽进白方胜利。
+                    // JobSerializer 的挂起任务不会被退房清理，所以这道守卫是必要的。
                     GameRoom target = GameRoom.Instance;
-                    if (target != null)
-                        WhiteWinFeature.TriggerWhiteWin(target);
+                    if (target == null || target.State != EGameState.Survive)
+                        return;
+
+                    WhiteWinFeature.TriggerWhiteWin(target);
                 });
                 return false;
             }

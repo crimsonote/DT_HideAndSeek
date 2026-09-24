@@ -17,6 +17,9 @@ namespace HideAndSeek.Core
             public string Section = "";
             public bool Loaded;
             public int Hits;
+
+            /// <summary>该段里没挂上的嵌套补丁数。大于 0 表示"段加载了，但有钩子失效"。</summary>
+            public int FailedNested;
         }
 
         private static readonly Dictionary<string, Entry> Map =
@@ -33,11 +36,14 @@ namespace HideAndSeek.Core
         }
 
         /// <summary>PatchLoader 成功挂载某功能时调用。</summary>
-        public static void MarkLoaded(string section)
+        public static void MarkLoaded(string section, int failedNested = 0)
         {
             if (string.IsNullOrEmpty(section))
                 return;
-            Get(section).Loaded = true;
+
+            var entry = Get(section);
+            entry.Loaded = true;
+            entry.FailedNested = failedNested;
         }
 
         /// <summary>功能被触发时调用（放在 Prefix/Postfix 首行）。</summary>
@@ -63,6 +69,7 @@ namespace HideAndSeek.Core
                 sb.Append("{\"section\":\"").Append(entry.Section).Append('"')
                   .Append(",\"loaded\":").Append(entry.Loaded ? "true" : "false")
                   .Append(",\"hits\":").Append(entry.Hits)
+                  .Append(",\"failed\":").Append(entry.FailedNested)
                   .Append('}');
             }
 

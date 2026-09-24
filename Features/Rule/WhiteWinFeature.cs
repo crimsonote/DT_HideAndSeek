@@ -177,6 +177,11 @@ namespace HideAndSeek.Features.Rule
 
             room.PushAfter(13700, delegate
             {
+                // 复检：这 13.7 秒里可能已经退房。JobSerializer 的挂起任务不会被退房清理，
+                // 不复检就会把新一局也推进结算界面。
+                if (room.State != EGameState.Survive)
+                    return;
+
                 room.ChangeGameState(EGameState.TotalResult);
                 room.Broadcast(new S_ENDING_CAMERA { IsEnd = false });
             });

@@ -428,9 +428,16 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static CommandDef Resolve(string name, CommandChannel channel, GamePlayer player)
         {
-            var def = FindIn(GetCommands(), name, channel, player);
-            if (def == null)
-                def = FindIn(Builtins(), name, channel, player);
+            // 先用内置别名把长名归一成主名，再查注册表 —— 否则会出现这种不对称：
+            // 注册表写 `brk = ... ; uses=2` 时，`/brk` 命中注册表，而 `/break` 在注册表里
+            // 查不到（那一行没写 alias=），于是落到内置 —— 同一个命令两个名字两套参数，
+            // 而且 uses= 被绕过。旧实现是在查表**之前**做 Normalize(name)，这里保持一致。
+            string canonical = CanonicalName(name);
+
+            var def = FindIn(GetCommands(), name, channel, player)
+                   ?? FindIn(GetCommands(), canonical, channel, player)
+                   ?? FindIn(Builtins(), name, channel, player)
+                   ?? FindIn(Builtins(), canonical, channel, player);
 
             if (def == null)
                 return null;
@@ -440,6 +447,20 @@ namespace HideAndSeek.Features.Rule
                 return null;
 
             return def;
+        }
+
+        /// <summary>用内置命令的别名表把长名归一成主名（break→brk、lock→lck、list→ls…）；不是别名则原样返回。</summary>
+        private static string CanonicalName(string name)
+        {
+            foreach (var def in Builtins())
+            {
+                foreach (var alias in def.Aliases)
+                {
+                    if (alias == name)
+                        return def.Name;
+                }
+            }
+            return name;
         }
 
         private static CommandDef FindIn(List<CommandDef> defs, string name,

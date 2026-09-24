@@ -250,6 +250,16 @@ namespace HideAndSeek.Features.Rule
                 return false;
             }
 
+            // 原版 ClearMission 的首行是 `if (CurrentPoint >= GoalPoint) return;` —— 它不抛异常，
+            // 反射 Invoke 会正常返回，于是调用方以为成功、回执"刷新完成"，而实际什么都没发生
+            // （冷却却已经写掉了）。这里按同一条件先判一次，让"没做成"能被如实报告。
+            float goal = GoalPoint;
+            if (goal > 0f && CurrentPoint >= goal)
+            {
+                error = "任务进度已满";
+                return false;
+            }
+
             var synthetic = new MissionData
             {
                 Type = missionType,
