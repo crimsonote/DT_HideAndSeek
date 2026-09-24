@@ -48,6 +48,7 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPostfix]
             private static void Postfix(ESchoolMission type, int deviceId, PosInfo pos, bool isAdd)
             {
+                Diagnostics.Hit("FuseboxReveal");
                 if (ModeRuntime.Bypass)
                     return;
                 if (RevealToBlack == null || !RevealToBlack.Value)

@@ -91,6 +91,7 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session, Packet packet)
             {
+                Diagnostics.Hit("BreakCommand");
                 if (ModeRuntime.Bypass)
                     return true;
                 if (AllowBreakBySecretChat == null || !AllowBreakBySecretChat.Value)

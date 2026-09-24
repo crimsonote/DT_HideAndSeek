@@ -147,6 +147,7 @@ namespace HideAndSeek.Features.Vision
             [HarmonyPostfix]
             private static void Postfix(GamePlayer player)
             {
+                Diagnostics.Hit("StartFlash");
                 if (ModeRuntime.Bypass)
                     return;
                 if (OnWeaponTaken == null || !OnWeaponTaken.Value)

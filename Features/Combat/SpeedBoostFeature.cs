@@ -38,6 +38,7 @@ namespace HideAndSeek.Features.Combat
             [HarmonyPostfix]
             private static void Postfix(BuffComponent __instance)
             {
+                Diagnostics.Hit("SpeedBoost");
                 if (ModeRuntime.Bypass)
                     return;
 

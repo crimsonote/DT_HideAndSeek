@@ -182,6 +182,7 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPrefix]
             private static bool Prefix(GameDoor __instance, GamePlayer player)
             {
+                Diagnostics.Hit("LockDoor");
                 if (ModeRuntime.Bypass)
                     return true;
                 if (__instance?.DeviceInfo?.StateList == null

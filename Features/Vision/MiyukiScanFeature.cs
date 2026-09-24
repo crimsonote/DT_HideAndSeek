@@ -212,6 +212,7 @@ namespace HideAndSeek.Features.Vision
                     if (!NextScanAt.TryGetValue(pid, out float next) || now >= next)
                     {
                         NextScanAt[pid] = now + (ScanIntervalSeconds?.Value ?? 15);
+                        Diagnostics.Hit("MiyukiScan");
                         TriggerScan(__instance, p, now);
                     }
                 }

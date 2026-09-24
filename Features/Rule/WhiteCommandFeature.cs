@@ -195,6 +195,7 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session, Packet packet)
             {
+                Diagnostics.Hit("WhiteCommand");
                 if (ModeRuntime.Bypass)
                     return true;
                 if (EnabledWhiteCommands == null || !EnabledWhiteCommands.Value)

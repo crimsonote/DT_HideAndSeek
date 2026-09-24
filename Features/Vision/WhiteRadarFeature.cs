@@ -207,6 +207,10 @@ namespace HideAndSeek.Features.Vision
                 if (ModeRuntime.Bypass || __instance == null || !IsActive)
                     return;
 
+                // 放在守卫之后：hits 才代表"雷达真的激活过"，
+                // 放在 tick 首行会变成每帧自增，hs_check 里就看不出功能有没有被触发。
+                Diagnostics.Hit("WhiteRadar");
+
                 // 非 Survive 阶段下发会让客户端 NRE，必须停手并清干净
                 if (__instance.State != EGameState.Survive)
                 {
