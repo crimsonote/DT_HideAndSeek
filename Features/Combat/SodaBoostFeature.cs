@@ -48,10 +48,90 @@ namespace HideAndSeek.Features.Combat
         [ConfigField(30f, "加速持续秒数。", Min = 1f, Max = 300f)]
         public static ConfigEntry<float> SodaSeconds;
 
+        // ── 申领配额与冷却（都由本类管，不走命令引擎的 uses=/cd=，这样才能用自定义文案）──
+
+        [ConfigField(300f, "配额窗口秒数。默认 300 = 每 5 分钟。", Min = 10f, Max = 3600f)]
+        public static ConfigEntry<float> QuotaWindowSeconds;
+
+        [ConfigField(4, "配额窗口内全房最多发几瓶。", Min = 1f, Max = 100f)]
+        public static ConfigEntry<int> QuotaMax;
+
+        [ConfigField(240f, "同一个人的两次申领之间要隔多少秒。", Min = 0f, Max = 3600f)]
+        public static ConfigEntry<float> IssueCooldown;
+
         /// <summary>PlayerId → 加速到期时刻（SurviveTime 秒）。</summary>
         private static readonly Dictionary<int, float> Active = new Dictionary<int, float>();
 
+        /// <summary>滚动窗口内"已发出"的时刻（全房共享）。</summary>
+        private static readonly List<float> IssuedTimes = new List<float>();
+
+        /// <summary>PlayerId → 上次申领时刻，用于每人冷却。</summary>
+        private static readonly Dictionary<int, float> LastIssue = new Dictionary<int, float>();
+
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
+
+        // ══ 申领 ════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 申领一瓶汽水（随机一种口味）。全房滑窗配额 + 每人冷却都在这里判，
+        /// 因为要用自定义文案（"你暂时不能申领第二瓶汽水"），引擎那句通用冷却提示不合适。
+        /// 返回 false 时 <paramref name="text"/> 说明原因。
+        /// </summary>
+        internal static bool TryIssue(GamePlayer player, out string text)
+        {
+            text = null;
+            if (player?.PublicInfo == null)
+                return false;
+
+            float now = Now;
+            float window = QuotaWindowSeconds?.Value ?? 300f;
+            IssuedTimes.RemoveAll(t => now - t > window);
+
+            int pid = player.PublicInfo.PlayerId;
+            float cd = IssueCooldown?.Value ?? 240f;
+            float last;
+            if (cd > 0f && LastIssue.TryGetValue(pid, out last) && now - last < cd)
+            {
+                text = Text("SodaCooldown");
+                return false;
+            }
+
+            int max = QuotaMax?.Value ?? 4;
+            if (IssuedTimes.Count >= max)
+            {
+                text = Text("SodaQuota");
+                return false;
+            }
+
+            int from = SodaIdFrom?.Value ?? 3001;
+            int to = SodaIdTo?.Value ?? 3005;
+            if (to < from)
+                to = from;
+            int id = from + UnityEngine.Random.Range(0, to - from + 1);
+
+            if (!ItemGrant.Give(player, id, out bool dropped))
+                return false;
+
+            IssuedTimes.Add(now);
+            LastIssue[pid] = now;
+
+            float sec = SodaSeconds?.Value ?? 30f;
+            float mul = SodaSpeedMul?.Value ?? 1.8f;
+
+            text = Text("SodaTaken")
+                 + "\n" + Text("SodaHowTo", "sec", sec.ToString("F0"), "mul", (mul * 100f).ToString("F0"));
+            if (dropped)
+                text += "\n" + Text("ItemDropped");
+
+            Plugin.Log.LogInfo(
+                $"[HS] SodaBoost：玩家 #{pid} 申领了汽水 {id}" +
+                (dropped ? "（手上已有物品，已落在脚下）" : "") +
+                $"，本窗口内已发 {IssuedTimes.Count}/{max} 瓶。");
+            return true;
+        }
+
+        private static string Text(string key, params string[] pairs)
+            => HideAndSeek.Features.Rule.CommandFeature.Text(key, pairs);
 
         // ══ 喝了汽水 ════════════════════════════════════════════════════
 

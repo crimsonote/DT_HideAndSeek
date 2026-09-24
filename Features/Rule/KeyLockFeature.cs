@@ -36,21 +36,24 @@ namespace HideAndSeek.Features.Rule
         side: FeatureSide.Host)]
     internal static class KeyLockFeature
     {
-        [ConfigField(4006, "提灯用的物品 ID。默认借用未启用的 4006 LanternBlue（蓝提灯，Passive，不与任何玩法冲突）。",
+[ConfigField(1059, "命令发放的物品 ID。默认 1059 fish_normal（普通的鱼）—— 蓝/紫/金三种鱼都能用来黏门。",
             Min = 1f, Max = 9999f)]
         public static ConfigEntry<int> LanternItemId;
 
-        [ConfigField(true, "允许申领提灯。关掉后 /lamp 这个命令直接不存在。")]
+[ConfigField(true, "允许申领鱼。关掉后这个命令直接不存在。")]
         public static ConfigEntry<bool> AllowIssue;
 
-        [ConfigField(3, "全场同时最多几盏提灯。合门消耗视为归还，名额随之释放。", Min = 1f, Max = 20f)]
-        public static ConfigEntry<int> MaxLanterns;
+[ConfigField(300f, "配额窗口秒数。默认 300 = 每 5 分钟。", Min = 10f, Max = 3600f)]
+        public static ConfigEntry<float> QuotaWindowSeconds;
 
-        [ConfigField(2, "合门需要开合几次（原版对每个玩家的开门/关门有 1 秒冷却，所以 2 次最快约 2 秒）。",
+        [ConfigField(4, "配额窗口内全房最多发几条（只统计命令发放的，钓鱼等原版途径不算）。", Min = 1f, Max = 100f)]
+        public static ConfigEntry<int> QuotaMax;
+
+[ConfigField(3, "黏门需要开合几次。3 = 开-关-开（每次状态切换算一次；原版每玩家 1 秒冷却，最快约 3 秒）。",
             Min = 2f, Max = 6f)]
         public static ConfigEntry<int> SealsNeeded;
 
-        [ConfigField(5f, "开合计数的有效窗口（秒）。窗口内凑够次数才合门。", Min = 1f, Max = 30f)]
+[ConfigField(6f, "开合计数的有效窗口（秒）。3 次开合最快跨 3 秒，留出反应余量。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SealWindow;
 
         [ConfigField(20f, "合门后的锁定秒数。若同门已有更长的锁，取较长者。", Min = 1f, Max = 300f)]
@@ -83,15 +86,26 @@ namespace HideAndSeek.Features.Rule
 
         private static MethodInfo _tickDoor;
 
-        private static int LanternId => LanternItemId?.Value ?? 4004;
+        /// <summary>命令发放的鱼（默认 1059 = fish_normal，它的图标是"普通的鱼"）。</summary>
+        private static int IssueFishId => LanternItemId?.Value ?? 1059;
+
+        // 三种鱼都能用来黏门：1059 fish_normal / 1060 fish_rare / 1061 fish_gold。
+        // 需求是"只发蓝鱼，但紫鱼金鱼具有相同效果" —— 发放固定一种，判定接受三种。
+        private const int FishIdFrom = 1059;
+        private const int FishIdTo = 1061;
+
+        private static bool IsFish(int dataId) => dataId >= FishIdFrom && dataId <= FishIdTo;
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
         // ══ 对外：申领 ══════════════════════════════════════════════════
 
         /// <summary>
-        /// 申领一盏提灯。手上已有别的物品时**掉在脚下**（原版 CreateAndInsertInven 会强占手里）。
+        /// 申领一条鱼。手上已有别的物品时**掉在脚下**（原版 CreateAndInsertInven 会强占手里）。
         /// 返回 false 时 <paramref name="text"/> 说明原因（已按文案表生成）。
+        ///
+        /// 配额是**全房**的滚动窗口（默认每 300 秒 4 条），且只统计"命令发放的" ——
+        /// 钓鱼等原版途径拿到的鱼不受影响、也不占配额。
         /// </summary>
         internal static bool TryIssue(GamePlayer player, out string text)
         {
@@ -102,37 +116,45 @@ namespace HideAndSeek.Features.Rule
             // 注：「开局 N 秒内不能申领」由命令注册表上的 `elapsed>=N` 条件承担（见 CommandFeature），
             // 不在这里判 —— 那样才能在 .cfg 里改，而不是写死在代码里。
 
-            int max = MaxLanterns?.Value ?? 3;
-            if (_outstanding >= max)
+            PruneQuota();
+            int max = QuotaMax?.Value ?? 4;
+            if (_issuedTimes.Count >= max)
             {
-                text = CommandFeature.Text("LampEmpty");
+                text = CommandFeature.Text("FishEmpty");
                 return false;
             }
 
             try
             {
-                if (!HideAndSeek.Features.Combat.ItemGrant.Give(player, LanternId, out bool dropped))
+                if (!HideAndSeek.Features.Combat.ItemGrant.Give(player, IssueFishId, out bool dropped))
                     return false;
 
-                _outstanding++;
-                int left = max - _outstanding;
+                _issuedTimes.Add(Now);
 
                 Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：玩家 #{player.PublicInfo.PlayerId} 申领提灯" +
+                    $"[HS] KeyLock：玩家 #{player.PublicInfo.PlayerId} 申领了一条鱼" +
                     (dropped ? "（手上已有物品，已落在脚下）" : "") +
-                    $"，场上还有 {left} 盏。");
+                    $"，本窗口内已发 {_issuedTimes.Count}/{max} 条。");
 
-                // 回执里顺带把玩法讲清楚（三行，正好一条消息）
-                text = CommandFeature.Text("LampTaken", "n", left.ToString())
-                     + "\n" + CommandFeature.Text("LampHowTo")
-                     + "\n" + CommandFeature.Text("LampTaboo");
+                text = CommandFeature.Text("FishTaken");
                 return true;
             }
             catch (global::System.Exception ex)
             {
-                Plugin.Log.LogWarning($"[HS] KeyLock：发放提灯失败 — {ex.Message}");
+                Plugin.Log.LogWarning($"[HS] KeyLock：发放鱼失败 — {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>滚动窗口内的"命令发放"时刻。原版途径（钓鱼等）不进这里。</summary>
+        private static readonly List<float> _issuedTimes = new List<float>();
+
+        /// <summary>把滑出窗口的发放记录丢掉。</summary>
+        private static void PruneQuota()
+        {
+            float window = QuotaWindowSeconds?.Value ?? 300f;
+            float now = Now;
+            _issuedTimes.RemoveAll(t => now - t > window);
         }
 
         // ══ 对外：给 LockDoorFeature 查询 ═══════════════════════════════
@@ -196,13 +218,13 @@ namespace HideAndSeek.Features.Rule
 
                     if (IsTangled(doorId))
                     {
-                        Reply(player, CommandFeature.Text("LampTangled"));
+                        Reply(player, CommandFeature.Text("FishTangled"));
                         return false;                // 两把锁 → 谁都不放行
                     }
 
                     if (Now < seal.SetAt)
                     {
-                        Reply(player, CommandFeature.Text("LampNotSet"));
+                        Reply(player, CommandFeature.Text("FishNotSet"));
                         return false;                // 膜未凝
                     }
 
@@ -212,7 +234,7 @@ namespace HideAndSeek.Features.Rule
                     Seals.Remove(doorId);
                     __instance.UnlockDoor();
                     __instance.OpenDoor();
-                    Reply(player, CommandFeature.Text("LampOpened"));
+                    Reply(player, CommandFeature.Text("FishOpened"));
                     Plugin.Log.LogInfo($"[HS] KeyLock：合门者 #{pid} 打开了门 #{doorId}。");
                     return false;
                 }
@@ -293,8 +315,8 @@ namespace HideAndSeek.Features.Rule
                     (existing > seconds ? $"，沿用更长剩余 {existing} 秒" : "") +
                     $"，合门者共 {seal.Owners.Count} 人）。");
 
-                Reply(player, CommandFeature.Text("LampSealed")
-                            + "\n" + CommandFeature.Text("LampReturned"));
+                Reply(player, CommandFeature.Text("FishSealed")
+                            + "\n" + CommandFeature.Text("FishReturned"));
             }
             catch (global::System.Exception ex)
             {
@@ -387,10 +409,11 @@ namespace HideAndSeek.Features.Rule
 
         // ══ 辅助 ════════════════════════════════════════════════════════
 
+        /// <summary>手上是不是拿着一条能用的鱼（三种鱼都算）。</summary>
         private static bool HasLantern(GamePlayer player)
         {
             var hand = player?.Hand;
-            return hand?.Info != null && hand.Info.DataId == LanternId;
+            return hand?.Info != null && IsFish(hand.Info.DataId);
         }
 
         private static void Reply(GamePlayer player, string text)
