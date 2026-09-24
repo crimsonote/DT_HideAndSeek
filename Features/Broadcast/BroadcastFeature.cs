@@ -90,7 +90,7 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField(52f, "聊天栏单行宽度上限（半角单位，中文按 2 计，52 = 26 个汉字）。超出会另起一行；设 0 关闭自动折行。",
             Min = 0f, Max = 200f)]
         public static ConfigEntry<float> MaxLineWidth;
-        [ConfigField(0, "进房介绍每条消息之间的间隔（毫秒）。0 = 一次性发完。仅在 MaxLinesPerMessage > 0（会拆条）时才有意义。", Min = 0f, Max = 15000f)]
+        [ConfigField(2500, "进房介绍每条消息之间的间隔（毫秒）。0 = 一次性发完。仅在会拆条时才有意义。", Min = 0f, Max = 15000f)]
         public static ConfigEntry<int> MessageIntervalMs;
 
         [ConfigField(10000, "进房介绍的延迟毫秒数（等客户端把场景加载完，过早发送会丢失）。", Min = 0f, Max = 60000f)]
@@ -180,7 +180,7 @@ namespace HideAndSeek.Features.Broadcast
                         {
                             var p = GameRoom.Instance?.Players?.Find(x => x?.PublicInfo?.PlayerId == pid);
                             if (p != null)
-                                SendWrappedTo(p, EChatType.NormalChat, joinText, MessageIntervalMs?.Value ?? 0);
+                                SendWrappedTo(p, EChatType.NormalChat, joinText, MessageIntervalMs?.Value ?? 2500);
                         }
                     });
                 }
@@ -272,7 +272,7 @@ namespace HideAndSeek.Features.Broadcast
         /// 弹泡底层是 TMP_Text，支持 \n 多行 —— 一颗气泡能完整承载整段文本；
         /// 拆成多颗反而互相顶掉（UI_SecretChatOverlay.Spawn 会先 KillImmediate 上一条）。
         /// </summary>
-        [ConfigField(0, "一条消息最多合并几行。0 = 不拆（整段一颗气泡）。", Min = 0f, Max = 20f)]
+        [ConfigField(3, "一条消息最多合并几行（仅作用于聊天栏，即大厅的进房介绍）。0 = 不拆。", Min = 0f, Max = 20f)]
         public static ConfigEntry<int> MaxLinesPerMessage;
         /// <summary>把整段文本按行宽折好后，逐条发给某人（避免聊天栏截断）。</summary>
         /// <summary>
@@ -384,7 +384,7 @@ namespace HideAndSeek.Features.Broadcast
                 if (__instance.State == EGameState.Lobby)
                 {
                     int delay = WelcomeDelayMs?.Value ?? 10000;
-                    __instance.PushAfter(delay < 0 ? 0 : delay, () => SendWrappedTo(player, EChatType.NormalChat, text, MessageIntervalMs?.Value ?? 0));
+                    __instance.PushAfter(delay < 0 ? 0 : delay, () => SendWrappedTo(player, EChatType.NormalChat, text, MessageIntervalMs?.Value ?? 2500));
                 }
                 else
                 {

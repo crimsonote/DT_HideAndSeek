@@ -20,7 +20,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 12;
+        private const int CurrentVersion = 14;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -37,7 +37,26 @@ namespace HideAndSeek.Core
             int from = version.Value;
             log.LogInfo($"[HS] 配置迁移：v{from} → v{CurrentVersion}");
 
+            // v13 → v14
+            if (from < 14)
+            {
+                // 同期被一并改成 0 的还有分条间隔；大厅恢复拆条后，间隔也该恢复，
+                // 否则多条消息一次性刷出、前面的会被顶掉。
+                MigrateInt(config, log, "Broadcast", "MessageIntervalMs", 0, 2500);
+            }
+
+            // v12 → v13
+
+            if (from < 13)
+            {
+                // MaxLinesPerMessage 一度被设为 0（不拆），但它作用的是**聊天栏**（大厅进房介绍），
+                // 当时误以为它管的是局内气泡。局内气泡已改走 SendRawTo（原样发送），
+                // 本参数应回归 3，让大厅的介绍仍然按每 3 行分条。
+                MigrateInt(config, log, "Broadcast", "MaxLinesPerMessage", 0, 3);
+            }
+
             // v11 → v12
+
             if (from < 12)
             {
                 // BreakCommand.Commands 里 brk 的 cd 一直是 0（配置默认值），
