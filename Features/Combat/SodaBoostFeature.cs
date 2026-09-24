@@ -215,6 +215,16 @@ namespace HideAndSeek.Features.Combat
                 if (!player.IsAlive || player.State == EPlayerState.Hide)
                     return;
 
+                // 阶段闸门：只在生存阶段加成。
+                //
+                // 不能只靠"到期时清理"——那是挂在 GameRoom.SurvivalTick 上的，
+                // 而对局一旦结束 SurvivalTick 就不再跑（它自己有 State != Survive 的早退），
+                // 于是 Active 里的残留会让加成一直挂着：实机表现就是"结算阶段跑得飞快"。
+                // 加这一道闸门后，即使清理漏了也不会继续加成。
+                var room = GameRoom.Instance;
+                if (room == null || room.State != EGameState.Survive)
+                    return;
+
                 float expireAt;
                 if (!Active.TryGetValue(player.PublicInfo.PlayerId, out expireAt) || Now >= expireAt)
                     return;
@@ -270,18 +280,66 @@ namespace HideAndSeek.Features.Combat
 
         // ══ 生命周期 ════════════════════════════════════════════════════
 
+        /// <summary>
+        /// 清空记录**并让受影响的人真正恢复基础速度**。
+        ///
+        /// 光 <c>Active.Clear()</c> 是不够的：加速是**直接写进** <c>player.PrivateInfo.Speed</c> 的，
+        /// 清掉记录不会把那个值改回去 —— 它要等下一次 <c>BuffComponent.RefreshSpeed()</c> 才重算。
+        /// 而开新局/回大厅这条路上，玩家可能一直不站定/起跑（原版就在那两个时机才重算），
+        /// 于是会带着加成进新局。所以这里主动重算并下发。
+        /// </summary>
+        private static void ClearAndRestore()
+        {
+            if (Active.Count == 0)
+                return;
+
+            List<int> affected = new List<int>(Active.Keys);
+            Active.Clear();
+
+            var room = GameRoom.Instance;
+            if (room?.Players == null)
+                return;
+
+            foreach (var player in room.Players)
+            {
+                if (player?.PublicInfo == null)
+                    continue;
+                if (!affected.Contains(player.PublicInfo.PlayerId))
+                    continue;
+
+                player.BuffComponent?.RefreshSpeed();
+                player.SendChangeSpeed();
+            }
+        }
+
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         internal static class StartHook
         {
             [HarmonyPostfix]
-            private static void Postfix() => Active.Clear();
+            private static void Postfix() => ClearAndRestore();
         }
 
         [HarmonyPatch(typeof(GameRoom), "StartLobby")]
         internal static class LobbyHook
         {
             [HarmonyPostfix]
-            private static void Postfix() => Active.Clear();
+            private static void Postfix() => ClearAndRestore();
+        }
+
+        /// <summary>
+        /// 一离开生存阶段就清 —— 这样"结算阶段还带着加速"的窗口也被关掉，
+        /// 不必等到回大厅或开新局。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
+        internal static class LeaveSurviveHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(EGameState state)
+            {
+                if (state == EGameState.Survive)
+                    return;
+                ClearAndRestore();
+            }
         }
 
         private static void Reply(GamePlayer player, string text)
