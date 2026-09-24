@@ -49,12 +49,16 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPostfix]
             private static void Postfix(ref int __result)
             {
+                Diagnostics.Hit("PowerRepair");
+
                 if (ModeRuntime.Bypass)
                     return;
 
                 // 记录本次断电的总量：读到的最大值就是坏掉的总数
                 if (__result > _peak)
                     _peak = __result;
+
+                Plugin.Log.LogInfo($"[HS] PowerRepair：读取断电数 {__result}（峰值 {_peak}）。");
 
                 // 全部修好时归零，为下一次断电重新计数
                 if (__result == 0)
@@ -70,6 +74,15 @@ namespace HideAndSeek.Features.Rule
                 int repaired = _peak - __result;
                 if (repaired >= need)
                     __result = 0;                 // 已修够 → 原版走 case 0（全亮 + 广播）
+                    // 关键：原版靠 DisconnetCable 里那句
+                    //   if (GetDisconnectFuseCount() == 2) ClearFuseboxSabotage();
+                    // 清理电箱任务标记。我们把结果压成 0 后那个条件永远不成立，
+                    // 于是标记残留 —— 表现就是"灯亮了但电箱还能继续修"。这里自己补上。
+                    try { GameDeviceManager.Instance?.ClearFuseboxSabotage(); }
+                    catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] PowerRepair：清理电箱标记失败 — {ex.Message}"); }
+
+                    Plugin.Log.LogInfo($"[HS] PowerRepair：已修 {repaired} 个 ≥ {need}，清标记并上报 0（原版走 case 0 全亮）。");
+                    __result = 0;
             }
         }
 
