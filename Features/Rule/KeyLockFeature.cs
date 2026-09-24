@@ -340,6 +340,22 @@ namespace HideAndSeek.Features.Rule
                 Seal seal;
                 if (!Seals.TryGetValue(door.ID, out seal))
                     return;
+
+                // 锁已作废 → 清掉记录、停止伪造。三种情况：
+                //   1) 门不再是锁定态（StateList[0] != 2）—— TickDoor 自然到期解锁、或合门者自己开了门。
+                //      用门状态判断比用时间可靠：TickDoor 由 PushSurvivalJob(1,...) 驱动，
+                //      与 SurviveTime 之间可能有约 1 秒的偏差，只比时间会漏掉那一次广播。
+                //   2) 锁的时间到了（兜底）。
+                //
+                // 这一步不能省：Seals 原本只在"合门者自己开门"和"开局/回大厅"时清理，
+                // 自然到期不经过任何一处。少了它就会出现 —— 门已经解锁，合门者一开门、
+                // 门广播新状态，这里又把伪造的"关着"发回去，于是**门永远打不开**。
+                if (door.DeviceInfo.StateList[0] != 2 || Now >= seal.ExpireAt)
+                {
+                    Seals.Remove(door.ID);
+                    return;
+                }
+
                 if (IsTangled(door.ID))
                     return;                          // 咬死 → 所有人看真实锁定态，谁都开不了
                 if (Now < seal.SetAt)
