@@ -58,6 +58,37 @@ namespace HideAndSeek.Features.Combat
         [HarmonyPatch(typeof(GamePlayer), "UseItem")]
         internal static class UseItemHook
         {
+            /// <summary>
+            /// 两罐汽水不叠加：有效期内的第二次使用在这里被**吞掉** —— 整个原方法跳过，
+            /// 于是不播音效、不消耗（IsConsumable 的 RemoveHand 不会执行）、不重新计时，
+            /// 也不动 CanUseItem（否则之后 2 秒会被原版 DelayUseItem 挡住，玩家更莫名其妙）。
+            /// </summary>
+            [HarmonyPrefix]
+            private static bool Prefix(GamePlayer __instance, GameItem item)
+            {
+                if (ModeRuntime.Bypass)
+                    return true;
+                if (__instance?.PublicInfo == null || item?.Data == null)
+                    return true;
+
+                int id = item.Data.DataId;
+                if (id < (SodaIdFrom?.Value ?? 3001) || id > (SodaIdTo?.Value ?? 3005))
+                    return true;                          // 不是汽水
+
+                int pid = __instance.PublicInfo.PlayerId;
+                float expireAt;
+                if (!Active.TryGetValue(pid, out expireAt) || Now >= expireAt)
+                    return true;                          // 没有生效中的加速 → 正常喝
+
+                int left = (int)(expireAt - Now) + 1;
+                Plugin.Log.LogInfo(
+                    $"[HS] SodaBoost：玩家 #{pid} 在有效期（还剩 {left} 秒）内又用了汽水，已吞掉。");
+
+                Reply(__instance,
+                    HideAndSeek.Features.Rule.CommandFeature.Text("SodaAlready", "sec", left.ToString()));
+                return false;
+            }
+
             [HarmonyPostfix]
             private static void Postfix(GamePlayer __instance, GameItem item)
             {

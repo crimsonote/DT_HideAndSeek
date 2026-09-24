@@ -147,6 +147,7 @@ namespace HideAndSeek.Features.Rule
             "SodaTaken = 你从器材柜取走了一罐汽水\n" +
             "SodaHowTo = 按使用键喝掉：{sec} 秒内移速提升到 {mul}%\n" +
             "SodaDrunk = 汽水下肚 —— {sec} 秒内你会快得多\n" +
+            "SodaAlready = 上一罐还在起作用（还剩 {sec} 秒）\n" +
             "ItemDropped = 手上正拿着东西，它掉在了你脚边";
 
         [ConfigField(DefaultTexts,
