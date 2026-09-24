@@ -45,33 +45,50 @@ namespace HideAndSeek.Core
             // v15 → v16
             if (from < 16)
             {
-                // 命令系统由黑白两个段（[BreakCommand] / [WhiteCommand]）合并为无偏的 [Command]。
-                // 各键**逐个原值搬家**：用户手改过的 Commands（brk→break、lck→lock、cd 调过）、
-                // 以及任何在旧段里调过的参数，都不能因为换段而丢。
-                // MoveKey 只在"新段仍是代码默认值"时才写入，所以重复执行是幂等的。
-                MoveKey(config, log, "BreakCommand", "Commands", CommandFeature.Commands);
-                MoveKey(config, log, "BreakCommand", "AllowBreakBySecretChat", CommandFeature.AllowSecretChat);
-                MoveKey(config, log, "WhiteCommand", "EnabledWhiteCommands", CommandFeature.AllowPublicChat);
+                // 命令系统由黑白两个段合并为无偏的 [Command]，各键**逐个原值搬家**。
+                //
+                // 每个键都要试**两个**旧段名，因为合并是分两步落地的：
+                //   v0.1.x      ：AllowBreakBySecretChat / Commands 在 [BreakCommand]，
+                //                 其余 18 个在 [WhiteCommand]
+                //   v0.2.0~0.2.1：20 个字段**全部**在 [BreakCommand]（那时段名还没去偏）
+                // 只写其中一个来源，就会漏掉从另一条路径升上来的用户。
+                // MoveFrom 对两个段名各试一次；MoveKey 幂等（新段已有非默认值就不再改），
+                // 所以第二条只会把那一段里剩下的孤儿键清掉。
+                MoveFrom(config, log, CommandFeature.Commands, "Commands");
+                MoveFrom(config, log, CommandFeature.AllowSecretChat, "AllowBreakBySecretChat");
+                MoveFrom(config, log, CommandFeature.AllowPublicChat, "EnabledWhiteCommands");
+                MoveFrom(config, log, CommandFeature.Texts, "Texts");
 
                 // 白方命令的运行参数
-                MoveKey(config, log, "WhiteCommand", "RadarUsesPerPlayer", CommandFeature.RadarUsesPerPlayer);
-                MoveKey(config, log, "WhiteCommand", "RadarCooldownSeconds", CommandFeature.RadarCooldownSeconds);
-                MoveKey(config, log, "WhiteCommand", "RadarDurationSeconds", CommandFeature.RadarDurationSeconds);
-                MoveKey(config, log, "WhiteCommand", "AllowStasis", CommandFeature.AllowStasis);
-                MoveKey(config, log, "WhiteCommand", "StasisCostPercent", CommandFeature.StasisCostPercent);
-                MoveKey(config, log, "WhiteCommand", "StasisSeconds", CommandFeature.StasisSeconds);
-                MoveKey(config, log, "WhiteCommand", "StasisCooldown", CommandFeature.StasisCooldown);
-                MoveKey(config, log, "WhiteCommand", "StasisSfxRange", CommandFeature.StasisSfxRange);
-                MoveKey(config, log, "WhiteCommand", "AllowRepair", CommandFeature.AllowRepair);
-                MoveKey(config, log, "WhiteCommand", "RepairCostPercent", CommandFeature.RepairCostPercent);
+                MoveFrom(config, log, CommandFeature.RadarUsesPerPlayer, "RadarUsesPerPlayer");
+                MoveFrom(config, log, CommandFeature.RadarCooldownSeconds, "RadarCooldownSeconds");
+                MoveFrom(config, log, CommandFeature.RadarDurationSeconds, "RadarDurationSeconds");
+                MoveFrom(config, log, CommandFeature.AllowStasis, "AllowStasis");
+                MoveFrom(config, log, CommandFeature.StasisCostPercent, "StasisCostPercent");
+                MoveFrom(config, log, CommandFeature.StasisSeconds, "StasisSeconds");
+                MoveFrom(config, log, CommandFeature.StasisCooldown, "StasisCooldown");
+                MoveFrom(config, log, CommandFeature.StasisSfxRange, "StasisSfxRange");
+                MoveFrom(config, log, CommandFeature.AllowRepair, "AllowRepair");
+                MoveFrom(config, log, CommandFeature.RepairCostPercent, "RepairCostPercent");
 
                 // /refresh
-                MoveKey(config, log, "WhiteCommand", "AllowRefresh", CommandFeature.AllowRefresh);
-                MoveKey(config, log, "WhiteCommand", "RefreshCooldown", CommandFeature.RefreshCooldown);
-                MoveKey(config, log, "WhiteCommand", "RefreshPoint", CommandFeature.RefreshPoint);
-                MoveKey(config, log, "WhiteCommand", "RefreshDelayMs", CommandFeature.RefreshDelayMs);
-                MoveKey(config, log, "WhiteCommand", "RefreshPopupType", CommandFeature.RefreshPopupType);
-                MoveKey(config, log, "WhiteCommand", "RefreshPopup", CommandFeature.RefreshPopup);
+                MoveFrom(config, log, CommandFeature.AllowRefresh, "AllowRefresh");
+                MoveFrom(config, log, CommandFeature.RefreshCooldown, "RefreshCooldown");
+                MoveFrom(config, log, CommandFeature.RefreshPoint, "RefreshPoint");
+                MoveFrom(config, log, CommandFeature.RefreshDelayMs, "RefreshDelayMs");
+                MoveFrom(config, log, CommandFeature.RefreshPopupType, "RefreshPopupType");
+                MoveFrom(config, log, CommandFeature.RefreshPopup, "RefreshPopup");
+
+                // 段级开关也是键，也得搬：曾把 [BreakCommand] 或 [WhiteCommand] 关掉的用户，
+                // 换段后 [Command].Enabled 会取 defaultEnabled = true —— 命令系统被静默重新打开。
+                // [Command].Enabled 由 PatchLoader 创建，这里 Bind 同段同键只会取回它。
+                var commandEnabled = config.Bind("Command", "Enabled", true);
+                MoveKey(config, log, "BreakCommand", "Enabled", commandEnabled);
+                MoveKey(config, log, "WhiteCommand", "Enabled", commandEnabled);
+
+                // WhiteCommand.AnnounceOnUse 是 v0.1.x 里的死配置（声明了但代码从不读），
+                // 字段已在 v0.2.0 删除 —— 因此**故意不搬**：它会作为孤儿键留在 .cfg 文本里，
+                // 但不会出现在 DT CONFIG 页面（那里只遍历 Entries）。
             }
 
             // v14 → v15
@@ -377,13 +394,34 @@ namespace HideAndSeek.Core
             }
         }
         /// <summary>
-        /// 把某个键的值从旧段**原值**搬到新段（段重命名专用，v16 起用）。
+        /// 对两个旧段名各试一次搬家。合并是分两步落地的（v0.1.x 分两段、v0.2.0~0.2.1 全在
+        /// [BreakCommand]），只写一个来源就会漏掉另一条升级路径。
+        /// </summary>
+        private static void MoveFrom<T>(ConfigFile config, ManualLogSource log,
+            ConfigEntry<T> target, string oldKey)
+        {
+            MoveKey(config, log, "BreakCommand", oldKey, target);
+            MoveKey(config, log, "WhiteCommand", oldKey, target);
+        }
+
+        /// <summary>
+        /// 把某个键的值从旧段**原值**搬到目标的 ConfigEntry（段重命名专用，v16 起用）。
         ///
-        /// 幂等：只在「新段仍是代码默认值」且「旧段不是代码默认值」时才写入。
-        /// 因此重复执行安全，也不会覆盖用户在新段里已经调好的值。
+        /// ⚠ 这里**不能**用 <c>config.ContainsKey</c> 判断旧键是否存在 —— 实测（反射解析实机
+        /// BepInEx 5.4.23.5 的 IL）确认它的实现是 `Entries.ContainsKey(key)`，**不含
+        /// OrphanedEntries**。而未被 Bind 过的键（旧段名正是如此）在 Reload 后全部停在
+        /// OrphanedEntries 里 ⇒ ContainsKey 恒为 false，整个迁移会静默空转（v16 第一版就是这么
+        /// 失效的：19 个键一个都没搬）。
         ///
-        /// 类型与默认值都取自目标 ConfigEntry 本身 —— 迁移表里不必再抄一份默认值，
-        /// 也就不会出现"代码改了默认值、迁移表里的旧默认值没跟着改"的漂移。
+        /// <c>Bind</c> 才是唯一能"看见"孤儿键的入口：它的 IL 是
+        /// `Entries.set_Item → OrphanedEntries.TryGetValue → SetSerializedValue →
+        /// OrphanedEntries.Remove`，即取孤儿值喂给新条目并把孤儿摘除。
+        ///
+        /// 搬完必须 <c>Remove</c>：<c>Save()</c> 写的是 `Entries ∪ OrphanedEntries`，
+        /// 不删的话旧键会作为孤儿被永久写回 .cfg。
+        ///
+        /// 幂等：新段已有非默认值时只清理旧键、不改新值；重复执行安全。
+        /// 类型与默认值都取自目标 ConfigEntry 本身 —— 迁移表里不必再抄一份默认值。
         /// </summary>
         private static void MoveKey<T>(ConfigFile config, ManualLogSource log,
             string fromSection, string fromKey, ConfigEntry<T> target)
@@ -393,26 +431,24 @@ namespace HideAndSeek.Core
 
             try
             {
-                var fromDef = new ConfigDefinition(fromSection, fromKey);
-                if (!config.ContainsKey(fromDef))
-                    return;                       // 旧段里没有这个键 → 无需搬
-
-                // 注意 ConfigEntryBase.DefaultValue / BoxedValue 都是 object，故用 object.Equals 比较。
-                // 不要用 EqualityComparer<T>.Default —— 它的 Equals(T,T) 是显式接口实现，
-                // 在具体类型引用上不可见，会被解析成静态 object.Equals(object,object)。
-                if (!global::System.Object.Equals(target.BoxedValue, target.DefaultValue))
-                    return;                       // 新段已被改过 → 不动
-
-                // 显式指定 T：DefaultValue 的静态类型是 object，
-                // 不指定会被推断成 ConfigEntry<object>，from.Value 拿不到 T。
+                // Bind 旧键：键不存在时会顺带在 Entries 里新建一个（下面 Remove 掉，净效果为零）；
+                // 键还在 OrphanedEntries 里时，这一步会把用户的旧值复活到 from.Value。
                 var from = config.Bind<T>(fromSection, fromKey, (T)target.DefaultValue);
 
-                if (global::System.Object.Equals(from.Value, target.DefaultValue))
-                    return;                       // 旧段本来就是默认值 → 搬过去没有意义
+                // 同段同键（不该出现）时 Remove 会把目标自己删掉，防御一下
+                bool sameKey = from.Definition.Equals(target.Definition);
+                bool targetAlreadySet = !global::System.Object.Equals(target.BoxedValue, target.DefaultValue);
 
-                target.Value = from.Value;
-                log.LogInfo(
-                    $"[HS]   搬家 {fromSection}.{fromKey} → {target.Definition.Section}.{target.Definition.Key}");
+                if (!sameKey && !targetAlreadySet
+                    && !global::System.Object.Equals(from.Value, target.DefaultValue))
+                {
+                    target.Value = from.Value;
+                    log.LogInfo(
+                        $"[HS]   搬家 {fromSection}.{fromKey} → {target.Definition.Section}.{target.Definition.Key}");
+                }
+
+                if (!sameKey)
+                    config.Remove(from.Definition);   // 清掉旧键（含它刚被摘出的孤儿身份）
             }
             catch (global::System.Exception ex)
             {
