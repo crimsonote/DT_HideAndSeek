@@ -36,7 +36,7 @@ namespace HideAndSeek.Features.Rule
         side: FeatureSide.Host)]
     internal static class KeyLockFeature
     {
-        [ConfigField(4004, "提灯用的物品 ID。默认借用未启用的 4004 Lantern（Passive，不与任何玩法冲突）。",
+        [ConfigField(4006, "提灯用的物品 ID。默认借用未启用的 4006 LanternBlue（蓝提灯，Passive，不与任何玩法冲突）。",
             Min = 1f, Max = 9999f)]
         public static ConfigEntry<int> LanternItemId;
 
