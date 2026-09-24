@@ -74,6 +74,24 @@ namespace HideAndSeek.Features.Rule
 
         private static readonly Dictionary<int, float> CmdLastUse = new Dictionary<int, float>();
 
+        // ── /refresh 刷新身份记录 ────────────────────────────────────
+        // 黑白双方都可用：它等价于"完成一个任务"，属于玩法动作而非白方阵营操作。
+        [ConfigField(true, "允许用 /refresh 刷新身份记录（黑白双方都可用）。")]
+        public static ConfigEntry<bool> AllowRefresh;
+
+        [ConfigField(300, "/refresh 的冷却秒数（每人独立）。", Min = 0f, Max = 3600f)]
+        public static ConfigEntry<int> RefreshCooldown;
+
+        [ConfigField(3, "/refresh 视为完成的任务点数档位。原版 MissionData.Point 只有 7/5/4/3/2 五档，" +
+            "3 分占 61.3% 为最常见档位。", Min = 0f, Max = 7f)]
+        public static ConfigEntry<int> RefreshPoint;
+
+        /// <summary>PlayerId → 上次 /refresh 时的 SurviveTime。</summary>
+        private static readonly Dictionary<int, float> RefreshLastUse = new Dictionary<int, float>();
+
+        /// <summary>S_MISSION_CLEAR.ClearedType 用的哨兵值：不在客户端任务文本表里，因此不弹"XXX 已完成"。</summary>
+        private const int RefreshClearedType = 999;
+
         private const float CdNoticeInterval = 10f;
 
         /// <summary>单条回执最多 3 行（聊天框上限）。</summary>
@@ -133,7 +151,8 @@ namespace HideAndSeek.Features.Rule
                 + $"\n/rad — 全图扫描{RadarDurationSeconds?.Value ?? 15}秒({uses}/{uses})CD{RadarCooldownSeconds?.Value ?? 75}"
                 + $"\n/sta — 冻结黑方{StasisSeconds?.Value ?? 5}秒，{(StasisCostPercent?.Value ?? 5f):F0}%任务进度CD{StasisCooldown?.Value ?? 90}"
                 + $"\n/rep — 立即恢复供电，{(RepairCostPercent?.Value ?? 10f):F0}%任务进度"
-                + "\n/reload — 重新读取配置文件（改了 .cfg 后不必重启）";
+                + "\n/reload — 重新读取配置文件（改了 .cfg 后不必重启）"
+                + "\n/refresh — 刷新身份记录";
         }
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
@@ -176,7 +195,9 @@ namespace HideAndSeek.Features.Rule
                         return true;
 
                     // 黑方 / 黑幕发命令 → 吞掉，不响应也不回执
-                    if (player.Color != EPlayerColor.White)
+                    // refresh 等价于"完成一个任务"，属于玩法动作而非白方阵营操作 → 黑白双方都可用。
+                    // 其余命令仍只限白方；黑方/黑幕发出来一律吞掉，不响应也不回执。
+                    if (player.Color != EPlayerColor.White && name != "refresh")
                         return false;
 
                     var room = GameRoom.Instance;
@@ -192,6 +213,129 @@ namespace HideAndSeek.Features.Rule
                     Plugin.Log.LogWarning($"[HS] 白方命令：解析失败 — {ex.Message}");
                     return true;
                 }
+            }
+        }
+
+        /// <summary>
+        /// /refresh —— 刷新身份记录：按「完成一个 Point 档任务」结算。
+        ///
+        /// 不走 MissionManager.ClearMission：它有 `ProgressMissionList.FirstOrDefault(Type==mission)`
+        /// 前置校验，只接受"当前正在进行的任务"，且完成后必定派下一个任务（会在地图上留下新标注）。
+        /// 这里按同一套公式自行结算，并且不派任何任务 —— 因此零地图标注、零平板条目。
+        /// 黑白双方都可用：它等价于完成一个任务，属于玩法动作而非白方阵营操作。
+        /// </summary>
+        private static void DoRefresh(GameRoom room, GamePlayer player, int deviceId)
+        {
+            if (AllowRefresh == null || !AllowRefresh.Value)
+                return;                                  // 与 AllowStasis / AllowRepair 一致：关闭时静默
+
+            if (room == null || player?.PublicInfo == null)
+                return;
+
+            if (room.State != EGameState.Survive)
+            {
+                Reply(player, deviceId, "只能在生存阶段刷新记录。");
+                return;
+            }
+            if (!player.IsAlive)
+            {
+                Reply(player, deviceId, "已阵亡，无法刷新记录。");
+                return;
+            }
+
+            int pid = player.PublicInfo.PlayerId;
+            float now = TimeManager.Instance?.SurviveTime ?? 0f;
+            int cd = RefreshCooldown?.Value ?? 300;
+
+            if (cd > 0 && RefreshLastUse.TryGetValue(pid, out float last) && now - last < cd)
+            {
+                // 与 /rad 一致的节流，避免连点刷屏
+                float lastNotice = CdNotice.TryGetValue(pid, out float ln) ? ln : -9999f;
+                if (now - lastNotice >= CdNoticeInterval)
+                {
+                    CdNotice[pid] = now;
+                    Reply(player, deviceId, "刷新间隔过短，暂时不能进行这个操作");
+                }
+                return;
+            }
+
+            if (RefreshRecord(room, player, RefreshPoint?.Value ?? 3))
+            {
+                RefreshLastUse[pid] = now;               // 只在成功时写，否则次次放行
+                Reply(player, deviceId, "记录已刷新");
+            }
+            else
+            {
+                Reply(player, deviceId, "任务系统不可用。");
+            }
+        }
+
+        /// <summary>
+        /// 自行结算一次「完成 Point 档任务」的奖励。公式逐行照抄原版 ClearMission（:166690）。
+        ///
+        /// 顶满处理也照抄原版首行 `if (CurrentPoint >= GoalPoint) return;` ——
+        /// 顶满时什么都不做，与真任务完成时完全一致，不做额外提示。
+        /// </summary>
+        private static bool RefreshRecord(GameRoom room, GamePlayer player, int point)
+        {
+            try
+            {
+                var mmType = AccessTools.TypeByName("Server.Game.MissionManager");
+                if (mmType == null)
+                    return false;
+
+                object inst = mmType.GetProperty("Instance",
+                    global::System.Reflection.BindingFlags.Public
+                    | global::System.Reflection.BindingFlags.Static)?.GetValue(null);
+                if (inst == null)
+                    return false;
+
+                var tr = Traverse.Create(inst);
+                float cur = tr.Property("CurrentPoint").GetValue<float>();
+                float goal = tr.Property("GoalPoint").GetValue<float>();
+                if (goal <= 0f)
+                    return false;
+
+                // 照抄原版首行：顶满即跳过
+                if (cur >= goal)
+                    return true;
+
+                float escape = tr.Property("EscapeGaugeWeight").GetValue<float>(1f);
+                float timeWeight = tr.Property("TimeLimitIncreaseWeight").GetValue<float>(1f);
+                int remain = tr.Property("PublicRemainPlayerCount").GetValue<int>(1);
+                if (remain < 1)
+                    remain = 1;
+
+                // 进度：num = |Point| * EscapeGaugeWeight * 0.8
+                float num = point * escape * 0.8f;
+                float after = global::System.Math.Clamp(cur + num, 0f, goal);
+                tr.Property("CurrentPoint").SetValue(after);
+                int percent = (int)(after / goal * 100f);
+                room.Broadcast(new S_MISSION_PROGRESS_PERCENT { Percent = percent });
+
+                // 音效：原版在 ClearMission 里发这一条
+                room.BroadcastSystemSFX(ESoundType.SuccessSfx);
+
+                // 时间：num2 = |Point| * (15 / 剩余人数) * TimeLimitIncreaseWeight
+                // (15 / remain) 是原版的整数除法，刻意保持一致 —— 否则与真任务的加时量不同。
+                float num2 = point * (float)(15 / remain) * timeWeight;
+                TimeManager.Instance?.UpdateRemainTime(num2);
+                room.Broadcast(new S_MISSION_CLEAR
+                {
+                    ClearedType = RefreshClearedType,     // 哨兵：客户端文本表里没有它 → 不弹"XXX 已完成"
+                    NextType = 0,
+                    AddTime = (int)num2,
+                    CompleterId = player.PublicInfo.PlayerId
+                });
+
+                // 累计分（决定结算奖章）
+                AwardManager.Instance?.OnMissionPoint(player.PublicInfo.PlayerId, num);
+                return true;
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] /refresh 结算失败 — {ex.Message}");
+                return false;
             }
         }
 
@@ -244,6 +388,10 @@ namespace HideAndSeek.Features.Rule
 
                     case "reload":
                         DoReload(player, deviceId);
+                        break;
+
+                    case "refresh":
+                        DoRefresh(room, player, deviceId);
                         break;
 
                 default:
@@ -578,7 +726,10 @@ namespace HideAndSeek.Features.Rule
             private static void Postfix()
             {
                 Uses.Clear();
+            RefreshLastUse.Clear();
                 LastUse.Clear();
+            CmdLastUse.Clear();   // 修既有 bug：不清会让新局开局就判"冷却中"
+            CdNotice.Clear();
             }
         }
 
@@ -589,7 +740,10 @@ namespace HideAndSeek.Features.Rule
             private static void Postfix()
             {
                 Uses.Clear();
+            RefreshLastUse.Clear();
                 LastUse.Clear();
+            CmdLastUse.Clear();   // 修既有 bug：不清会让新局开局就判"冷却中"
+            CdNotice.Clear();
             }
         }
     }
