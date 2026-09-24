@@ -165,6 +165,10 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(90f, "/stasis 的冷却秒数（每人独立）。", Min = 0f, Max = 600f)]
         public static ConfigEntry<int> StasisCooldown;
 
+        [ConfigField(896f, "/stasis 时停音效的半径（游戏单位，224 = 1 格）。" +
+            "以**被冻结的黑方**为圆心广播；默认 896 = 4 格。", Min = 0f, Max = 10000f)]
+        public static ConfigEntry<float> StasisSfxRange;
+
         [ConfigField(true, "允许白方用 /repair 消耗任务进度立即恢复供电（仅断电时可用）。")]
         public static ConfigEntry<bool> AllowRepair;
 
@@ -676,13 +680,18 @@ namespace HideAndSeek.Features.Rule
                 try
                 {
                     p.BuffComponent?.AddBuff(EBuffType.TheWorld, stasisMs);
+
+                    // 音效以**被冻结的黑方**为中心，而不是命令执行者。
+                    // 时停的表现发生在黑方身上，声音自然该在"被冻住的人"附近响起；
+                    // 原先以执行者为圆心，站在白方身边的人会先听到 —— 等于暴露了谁用了命令。
+                    room.BroadcastWorldSFX(ESoundType.TheWorldSfx, p.PublicInfo.Pos,
+                        StasisSfxRange?.Value ?? 896f);
                 }
                 catch (global::System.Exception ex)
                 {
                     Plugin.Log.LogWarning($"[HS] WhiteCommand：施加时停失败 — {ex.Message}");
                 }
             }
-            room.BroadcastWorldSFX(ESoundType.TheWorldSfx, player.PublicInfo?.Pos);
             Plugin.Log.LogInfo($"[HS] WhiteCommand：时停已施加（TheWorld {stasisMs}ms）。");
 
             _stasisUntil = now + (StasisSeconds?.Value ?? 5);
