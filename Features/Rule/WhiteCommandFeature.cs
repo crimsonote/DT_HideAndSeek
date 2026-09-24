@@ -90,7 +90,33 @@ namespace HideAndSeek.Features.Rule
         private static readonly Dictionary<int, float> RefreshLastUse = new Dictionary<int, float>();
 
         /// <summary>S_MISSION_CLEAR.ClearedType 用的哨兵值：不在客户端任务文本表里，因此不弹"XXX 已完成"。</summary>
-        private const int RefreshClearedType = 999;
+                [ConfigField(38, "弹窗用哪个任务的名称（ESchoolMission 枚举值）。默认 38 = ScFusebox。" +
+            "客户端弹窗文本取自本地化表，Host 端无法自定义，只能借用某个真实任务名。",
+            Min = 0f, Max = 60f)]
+        public static ConfigEntry<int> RefreshPopupType;
+
+        [ConfigField(true, "为 /refresh 弹任务完成弹窗。关掉则只有全房 +N SEC 浮字与进度条变化。")]
+        public static ConfigEntry<bool> RefreshPopup;
+
+        /// <summary>
+        /// 反射读 MissionManager 上的只读数值属性（PublicRemainPlayerCount 是 int，也经此读取）。
+        /// 返回 object 再转换，避免 Traverse 在 object 形参上解析不出类型。
+        /// </summary>
+        private static float ReadMissionFloat(global::System.Type mmType, object inst, string name, float fallback)
+        {
+            try
+            {
+                var pi = AccessTools.Property(mmType, name);
+                if (pi == null)
+                    return fallback;
+                object v = pi.GetValue(inst);
+                return v == null ? fallback : global::System.Convert.ToSingle(v);
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
 
         private const float CdNoticeInterval = 10f;
 
@@ -284,32 +310,47 @@ namespace HideAndSeek.Features.Rule
                 if (mmType == null)
                     return false;
 
-                object inst = mmType.GetProperty("Instance",
-                    global::System.Reflection.BindingFlags.Public
-                    | global::System.Reflection.BindingFlags.Static)?.GetValue(null);
+                object inst = AccessTools.PropertyGetter(mmType, "Instance")?.Invoke(null, null);
                 if (inst == null)
+                {
+                    Plugin.Log.LogWarning("[HS] /refresh：拿不到 MissionManager.Instance");
                     return false;
+                }
 
-                var tr = Traverse.Create(inst);
-                float cur = tr.Property("CurrentPoint").GetValue<float>();
-                float goal = tr.Property("GoalPoint").GetValue<float>();
-                if (goal <= 0f)
+                // 注意：这里必须用 AccessTools.Property(mmType, name)（显式传类型）取 PropertyInfo。
+                // 不能用 Traverse.Create(inst) —— 形参声明类型是 object，Traverse 解析不出属性，
+                // 运行期会抛 "cannot get method value without method"。
+                var curProp = AccessTools.Property(mmType, "CurrentPoint");
+                var goalProp = AccessTools.Property(mmType, "GoalPoint");
+                if (curProp == null || goalProp == null)
+                {
+                    Plugin.Log.LogWarning("[HS] /refresh：取不到 CurrentPoint / GoalPoint 属性");
                     return false;
+                }
+
+                float cur = global::System.Convert.ToSingle(curProp.GetValue(inst));
+                float goal = global::System.Convert.ToSingle(goalProp.GetValue(inst));
+                Plugin.Log.LogInfo($"[HS] /refresh：进度 {cur:F1}/{goal:F1}（点档 {point}）");
+                if (goal <= 0f)
+                {
+                    Plugin.Log.LogWarning($"[HS] /refresh：GoalPoint 为 {goal}（任务系统可能尚未初始化）");
+                    return false;
+                }
 
                 // 照抄原版首行：顶满即跳过
                 if (cur >= goal)
                     return true;
 
-                float escape = tr.Property("EscapeGaugeWeight").GetValue<float>(1f);
-                float timeWeight = tr.Property("TimeLimitIncreaseWeight").GetValue<float>(1f);
-                int remain = tr.Property("PublicRemainPlayerCount").GetValue<int>(1);
+                float escape = ReadMissionFloat(mmType, inst, "EscapeGaugeWeight", 1f);
+                float timeWeight = ReadMissionFloat(mmType, inst, "TimeLimitIncreaseWeight", 1f);
+                int remain = (int)ReadMissionFloat(mmType, inst, "PublicRemainPlayerCount", 1f);
                 if (remain < 1)
                     remain = 1;
 
                 // 进度：num = |Point| * EscapeGaugeWeight * 0.8
                 float num = point * escape * 0.8f;
                 float after = global::System.Math.Clamp(cur + num, 0f, goal);
-                tr.Property("CurrentPoint").SetValue(after);
+                curProp.SetValue(inst, after);
                 int percent = (int)(after / goal * 100f);
                 room.Broadcast(new S_MISSION_PROGRESS_PERCENT { Percent = percent });
 
@@ -322,7 +363,7 @@ namespace HideAndSeek.Features.Rule
                 TimeManager.Instance?.UpdateRemainTime(num2);
                 room.Broadcast(new S_MISSION_CLEAR
                 {
-                    ClearedType = RefreshClearedType,     // 哨兵：客户端文本表里没有它 → 不弹"XXX 已完成"
+                    ClearedType = (RefreshPopup == null || RefreshPopup.Value) ? (RefreshPopupType?.Value ?? 38) : 0,
                     NextType = 0,
                     AddTime = (int)num2,
                     CompleterId = player.PublicInfo.PlayerId
