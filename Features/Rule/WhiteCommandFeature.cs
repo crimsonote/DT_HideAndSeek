@@ -86,6 +86,10 @@ namespace HideAndSeek.Features.Rule
             "3 分占 61.3% 为最常见档位。", Min = 0f, Max = 7f)]
         public static ConfigEntry<int> RefreshPoint;
 
+        [ConfigField(5000, "/refresh 的联网耗时（毫秒）。发起时回\"网络刷新中\"，延迟结束后结算并回\"[刷新完成]\"。",
+            Min = 0f, Max = 30000f)]
+        public static ConfigEntry<int> RefreshDelayMs;
+
         /// <summary>PlayerId → 上次 /refresh 时的 SurviveTime。</summary>
         private static readonly Dictionary<int, float> RefreshLastUse = new Dictionary<int, float>();
 
@@ -178,7 +182,7 @@ namespace HideAndSeek.Features.Rule
                 + $"\n/sta — 冻结黑方{StasisSeconds?.Value ?? 5}秒，{(StasisCostPercent?.Value ?? 5f):F0}%任务进度CD{StasisCooldown?.Value ?? 90}"
                 + $"\n/rep — 立即恢复供电，{(RepairCostPercent?.Value ?? 10f):F0}%任务进度"
                 + "\n/reload — 重新读取配置文件（改了 .cfg 后不必重启）"
-                + "\n/refresh — 刷新身份记录";
+                + "\n/refresh — 刷新网络连接";
         }
 
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
@@ -243,7 +247,10 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// /refresh —— 刷新身份记录：按「完成一个 Point 档任务」结算。
+        /// /refresh —— 刷新网络连接：按「完成一个 Point 档任务」结算。
+        ///
+        /// 分两段反馈：发起时回"网络刷新中"，延迟 RefreshDelayMs 后再回"[刷新完成]"并结算，
+        /// 让这个动作看起来像一次真实的联网过程，而不是凭空加进度。
         ///
         /// 不走 MissionManager.ClearMission：它有 `ProgressMissionList.FirstOrDefault(Type==mission)`
         /// 前置校验，只接受"当前正在进行的任务"，且完成后必定派下一个任务（会在地图上留下新标注）。
@@ -260,12 +267,12 @@ namespace HideAndSeek.Features.Rule
 
             if (room.State != EGameState.Survive)
             {
-                Reply(player, deviceId, "只能在生存阶段刷新记录。");
+                Reply(player, deviceId, "只能在生存阶段刷新网络连接。");
                 return;
             }
             if (!player.IsAlive)
             {
-                Reply(player, deviceId, "已阵亡，无法刷新记录。");
+                Reply(player, deviceId, "已阵亡，无法刷新网络连接。");
                 return;
             }
 
@@ -280,19 +287,48 @@ namespace HideAndSeek.Features.Rule
                 if (now - lastNotice >= CdNoticeInterval)
                 {
                     CdNotice[pid] = now;
-                    Reply(player, deviceId, "刷新间隔过短，暂时不能进行这个操作");
+                    Reply(player, deviceId, "网络刷新过于频繁，请稍候重试");
                 }
                 return;
             }
 
-            if (RefreshRecord(room, player, RefreshPoint?.Value ?? 3))
+            // CD 在**发起时**就写入：否则延迟期间可以连点，攒出多次结算
+            RefreshLastUse[pid] = now;
+
+            int point = RefreshPoint?.Value ?? 3;
+            int delay = RefreshDelayMs?.Value ?? 5000;
+            Reply(player, deviceId, "网络刷新中");
+
+            if (delay <= 0)
             {
-                RefreshLastUse[pid] = now;               // 只在成功时写，否则次次放行
-                Reply(player, deviceId, "记录已刷新");
+                CompleteRefresh(room, player, deviceId, point);
+                return;
             }
-            else
+
+            room.PushAfter(delay, delegate
             {
-                Reply(player, deviceId, "任务系统不可用。");
+                CompleteRefresh(room, player, deviceId, point);
+            });
+        }
+
+        /// <summary>延迟结束后的第二次校验与结算。阶段/存活在等待期间可能已变化，需重新确认。</summary>
+        private static void CompleteRefresh(GameRoom room, GamePlayer player, int deviceId, int point)
+        {
+            try
+            {
+                if (room == null || player?.PublicInfo == null)
+                    return;
+                if (room.State != EGameState.Survive || !player.IsAlive)
+                    return;                              // 等待期间阶段变了或阵亡 → 静默收尾
+
+                if (RefreshRecord(room, player, point))
+                    Reply(player, deviceId, "[刷新完成]");
+                else
+                    Reply(player, deviceId, "网络连接异常，刷新失败。");
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] /refresh 延迟结算失败 — {ex.Message}");
             }
         }
 
