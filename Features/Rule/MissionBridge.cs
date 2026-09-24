@@ -74,6 +74,13 @@ namespace HideAndSeek.Features.Rule
 
         private static object Instance()
         {
+            // 必须先 Ensure()：_instance 只在那里赋值。
+            // 少了这一步，任何"先读 CurrentPoint/GoalPoint 再碰其它成员"的调用序列
+            // （例如本局第一条命令就是 /sta 或 /rep）都会在这里对 null 取属性 → NRE →
+            // Fail() 把 _failed 永久置真 → 之后连 Ensure() 都不再跑，任务系统整块失效。
+            if (!Ensure())
+                return null;
+
             try
             {
                 return _instance.GetValue(null);

@@ -19,13 +19,13 @@ namespace HideAndSeek.Features.Rule
     ///
     /// 原版有四条通往调查阶段的路径。本功能拦住其中三条，手法一致 —— **都拦在"进审判的触发动作"
     /// 的入口**；第四条（限时归零）由 WhiteWinFeature 在判定点接管：
-    ///   ① 首具尸体出现后 50~70 秒自动进入 —— Server.Game.Corpse 构造函数（:168820）
+    ///   ① 首具尸体出现后 50~70 秒自动进入 —— Server.Game.Corpse 构造函数（:168824）
     ///        TimeManager.PushSurvivalJob(WaitDetectiveSecond, EndSurvival)
     ///      拦在 PushSurvivalJob 入口把延迟改成极大值：保留原版代码路径不变，但实际不再触发。
     ///      注：StateList[5]（客户端显示的"预计发现时刻"）改不动 —— 尸体状态在构造函数内部
     ///      就已对外同步，Postfix 改的只是服务端之后没人再读的副本，客户端仍显示原版的 50~70 秒。
     ///   ② 玩家走到尸体旁手动报警 —— Server.Game.Corpse.Interact（:168866）
-    ///   ③ 任务进度顶满 100% —— MissionManager.ClearMission(:166741) 置 AllClear 后调
+    ///   ③ 任务进度顶满 100% —— MissionManager.ClearMission(:166690) 置 AllClear 后调
     ///        TriggerAllClearEnd(:166868)，由它取一具未发现尸体直接 DiscoverByTimeOver() 进审判。
     ///      这条既不过 PushSurvivalJob 也不过 Corpse.Interact，前两个闸门完全够不着；
     ///      拦法同样是拦入口 —— 丢弃原版这次取尸，改走 ④ 那一套结算。
@@ -173,7 +173,7 @@ namespace HideAndSeek.Features.Rule
         // 为什么拦入口、而不拦下游的 Corpse.DiscoverByTimeOver：后者是 ③ 与 ④ 的公共下游，
         // 拦它会把限时归零那条路径也一起接管（范围反而更大）。
         // TriggerAllClearEnd 只有 2 个调用点 —— ClearMission 的 `if (AllClear)` 分支(:166742)
-        // 与 ResumeAllClearAfterMigration(:173885) —— 两者都以 AllClear == true 为前提，
+        // 与 ResumeAllClearAfterMigration(:166885，房主迁移后恢复) —— 两者都以 AllClear == true 为前提，
         // 与限时归零路径完全不相交。
         //
         // MissionManager 是 internal，且 Harmony 无法把字符串类型名解析到 Assembly-CSharp，
