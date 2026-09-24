@@ -111,23 +111,15 @@ namespace HideAndSeek.Features.Rule
 
             try
             {
-                var manager = ItemManager.Instance;
-                if (manager == null)
+                if (!HideAndSeek.Features.Combat.ItemGrant.Give(player, LanternId, out bool dropped))
                     return false;
-
-                bool handsFull = player.HandItemObjectId != -1;
-
-                if (handsFull)
-                    manager.CreateAndDropItem(LanternId, player.PublicInfo.Pos);
-                else
-                    manager.CreateAndInsertInven(player, LanternId);
 
                 _outstanding++;
                 int left = max - _outstanding;
 
                 Plugin.Log.LogInfo(
                     $"[HS] KeyLock：玩家 #{player.PublicInfo.PlayerId} 申领提灯" +
-                    (handsFull ? "（手上已有物品，已落在脚下）" : "") +
+                    (dropped ? "（手上已有物品，已落在脚下）" : "") +
                     $"，场上还有 {left} 盏。");
 
                 // 回执里顺带把玩法讲清楚（三行，正好一条消息）

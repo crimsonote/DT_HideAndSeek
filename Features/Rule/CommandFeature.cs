@@ -106,6 +106,7 @@ namespace HideAndSeek.Features.Rule
             "Desc_credit = 查看/消耗积分升级 v|s|t|help\n" +
             "Desc_listplayers = 列出玩家 ID 与昵称\n" +
             "Desc_givelantern = 申请提灯（开合门2次封门）CD{cd}\n" +
+            "Desc_givesoda = 申请汽水（喝下后短暂加速）CD{cd}\n" +
             // ── 动作回执 ──
             "LockNone = 附近没有可锁的门。\n" +
             "LockDone = 已锁住 {n} 扇门（半径 {radius}）。\n" +
@@ -141,7 +142,12 @@ namespace HideAndSeek.Features.Rule
             "LampNotSet = 膜还没凝，碰了会白合\n" +
             "LampTangled = 两股以太咬死了，谁都开不了\n" +
             "LampOpened = 膜散了，门开了\n" +
-            "LampReturned = 提灯烧尽了，灯座已放回器材柜";
+            "LampReturned = 提灯烧尽了，灯座已放回器材柜\n" +
+            // ── 汽水（SodaBoostFeature 复用本表）──
+            "SodaTaken = 你从器材柜取走了一罐汽水\n" +
+            "SodaHowTo = 按使用键喝掉：{sec} 秒内移速提升到 {mul}%\n" +
+            "SodaDrunk = 汽水下肚 —— {sec} 秒内你会快得多\n" +
+            "ItemDropped = 手上正拿着东西，它掉在了你脚边";
 
         [ConfigField(DefaultTexts,
             "命令对玩家显示的全部文案。格式：每条一行 `<键> = <文本>`，行首 # 为注释。\n" +
@@ -613,6 +619,10 @@ namespace HideAndSeek.Features.Rule
                     special = true;
                     return GiveLantern(player, deviceId, channel);
 
+                case "givesoda":
+                    special = true;
+                    return GiveSoda(player, deviceId, channel);
+
                 case "refresh":
                     special = true;
                     return DoRefresh(room, player, deviceId, channel);
@@ -717,6 +727,15 @@ namespace HideAndSeek.Features.Rule
                     Cooldown = 120,
                     Condition = "elapsed>=60",           // 开局 60 秒内不可申领
                     IsAvailable = () => KeyLockFeature.AllowIssue == null || KeyLockFeature.AllowIssue.Value
+                },
+                new CommandDef
+                {
+                    // 汽水：公共命令。上限(uses=2)与 CD(240) 全部由引擎承担 ——
+                    // 效果与计时在 SodaBoostFeature 里，这里只管发一罐。
+                    Name = "soda", Aliases = new[] { "drink", "can", "cola" },
+                    Side = CommandSide.Any, Channel = CommandChannel.Public,
+                    Action = "GiveSoda", UsesPerPlayer = true,
+                    Cooldown = 240, MaxUses = 2
                 },
                 new CommandDef
                 {
@@ -1160,6 +1179,37 @@ namespace HideAndSeek.Features.Rule
             if (!string.IsNullOrEmpty(text))
                 Reply(player, deviceId, channel, text);
             return ok;
+        }
+
+        /// <summary>
+        /// 申请汽水。随机挑一种口味（Can01~Can05），手上已有物品则落在脚下。
+        /// 上限与冷却由引擎的 uses=/cd= 承担，这里不做任何计数。
+        /// </summary>
+        private static bool GiveSoda(GamePlayer player, int deviceId, CommandChannel channel)
+        {
+            int from = HideAndSeek.Features.Combat.SodaBoostFeature.SodaIdFrom?.Value ?? 3001;
+            int to = HideAndSeek.Features.Combat.SodaBoostFeature.SodaIdTo?.Value ?? 3005;
+            if (to < from)
+                to = from;
+
+            int id = from + UnityEngine.Random.Range(0, to - from + 1);
+
+            if (!HideAndSeek.Features.Combat.ItemGrant.Give(player, id, out bool dropped))
+            {
+                Reply(player, deviceId, channel, "发放失败，请查看房主日志。");
+                return false;
+            }
+
+            float sec = HideAndSeek.Features.Combat.SodaBoostFeature.SodaSeconds?.Value ?? 30f;
+            float mul = HideAndSeek.Features.Combat.SodaBoostFeature.SodaSpeedMul?.Value ?? 1.8f;
+
+            string text = Text("SodaTaken")
+                        + "\n" + Text("SodaHowTo", "sec", sec.ToString("F0"), "mul", (mul * 100f).ToString("F0"));
+            if (dropped)
+                text += "\n" + Text("ItemDropped");
+
+            Reply(player, deviceId, channel, text);
+            return true;
         }
 
         /// <summary>列出全部玩家（ID + 昵称 + 状态），便于 /tp 指定目标。</summary>
