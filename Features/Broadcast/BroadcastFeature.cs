@@ -82,6 +82,15 @@ namespace HideAndSeek.Features.Broadcast
         [ConfigField("捉迷藏开始了~", "拿刀通告（仅自行拿刀模式发出；自动指定黑方时不发）。")]
         public static ConfigEntry<string> WeaponTaken;
 
+        /// <summary>
+        /// 是否把黑方身份（显示名 + 玩家ID）公开出去。
+        /// 拿刀模式：换行追加进同一条拿刀通告；开局发刀模式：追加进开局白方提示，
+        /// 并额外单独发一条给白方本人。
+        /// ⚠ 默认值 true 为暂定，待用户确认。
+        /// </summary>
+        [ConfigField(true, "公开黑方身份（显示名 + 玩家ID）：拿刀通告内换行追加；开局发刀模式追加到白方提示并额外单发一条。默认值待用户确认。")]
+        public static ConfigEntry<bool> RevealBlackOnKnife;
+
         [ConfigField(true, "房主用 hs_* 命令改动玩法设置时，向全场播报这次调整（仅在生存阶段播报）。")]
         public static ConfigEntry<bool> AnnounceRuleChanges;
         [ConfigField(true, "有玩家进入房间时，单独向他播报玩法规则。")]
@@ -414,6 +423,45 @@ namespace HideAndSeek.Features.Broadcast
             __instance.PushAfter(delay < 0 ? 0 : delay, () => SendStartTips(__instance));
         }
 
+        /// <summary>是否把黑方身份公开出去。</summary>
+        private static bool RevealEnabled
+            => RevealBlackOnKnife != null && RevealBlackOnKnife.Value;
+
+        /// <summary>
+        /// 局内黑方（含 Dark）的实名标签，形如 <c>「露娜」(3)</c>。
+        ///
+        /// 身份只读 <see cref="GameRoom.Players"/> 的 Color，不向 WeaponGrantFeature 反查：
+        /// 两条产生黑方的路径最终都走 ItemManager.InsertWeapon，而它在写 Weapon **之前**
+        /// 就已把 Color 定为 Black（:172692-172697），所以调用方拿到的一定是最终值。
+        /// </summary>
+        private static List<string> BlackLabels(GameRoom room)
+        {
+            var labels = new List<string>();
+
+            if (room?.Players == null)
+                return labels;
+
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo == null)
+                    continue;
+                if (p.Color != EPlayerColor.Black && p.Color != EPlayerColor.Dark)
+                    continue;
+
+                string name = string.IsNullOrEmpty(p.Name) ? "某人" : p.Name;
+                labels.Add($"「{name}」({p.PublicInfo.PlayerId})");
+            }
+
+            return labels;
+        }
+
+        /// <summary>黑方身份一行文本，如 <c>黑方是「露娜」(3)</c>；多个黑方同行并列；一个都没有时返回 null。</summary>
+        private static string BlackRevealText(GameRoom room)
+        {
+            var labels = BlackLabels(room);
+            return labels.Count == 0 ? null : "黑方是" + string.Join("、", labels);
+        }
+
         private static void SendStartTips(GameRoom room)
         {
             if (room == null)
@@ -421,20 +469,42 @@ namespace HideAndSeek.Features.Broadcast
 
             bool auto = AutoAssignBlack;
 
+            // 自动发刀模式下黑方由 WeaponGrantFeature 指定。两条 PushAfter 进的是同一个
+            // JobTimer（按 execTick 排出队的优先队列），而发刀默认 2500ms 早于本提示默认
+            // 3200ms，所以此处读到的 Color 已是最终值；若用户把 GrantDelayMs 调到大于
+            // StartDelayMs，这里会拿不到人 —— 此时不猜、不编，只记一条警告。
+            string reveal = auto && RevealEnabled ? BlackRevealText(room) : null;
+            if (auto && RevealEnabled && string.IsNullOrEmpty(reveal))
+                Plugin.Log.LogWarning(
+                    "[HS] Broadcast：开局提示时还没有黑方（GrantDelayMs 是否大于 StartDelayMs？），本次不公开黑方身份。");
+
             foreach (var player in room.Players)
             {
                 if (player?.Session == null || player.PublicInfo == null)
                     continue;
 
+                bool isBlack = player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark;
+
                 string body;
                 if (!auto)
                     body = StartBodySelfServe?.Value;
-                else if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
+                else if (isBlack)
                     body = StartBodyBlack?.Value;
                 else
                     body = StartBodyWhite?.Value;
 
-                SendRawTo(player, EChatType.SecretChat, Titled(TextService.Format(body)));   // 局内气泡：原样，不折行
+                string tip = Titled(TextService.Format(body));
+
+                // 白方提示：同一条消息内换行追加黑方身份
+                bool toWhite = auto && !isBlack;
+                if (toWhite && !string.IsNullOrEmpty(reveal))
+                    tip = tip + "\n" + reveal;
+
+                SendRawTo(player, EChatType.SecretChat, tip);   // 局内气泡：原样，不折行
+
+                // 白方频道：再单独一条（只发给白方本人；黑方频道不给 —— 他自己知道）
+                if (toWhite && !string.IsNullOrEmpty(reveal))
+                    SendRawTo(player, EChatType.SecretChat, reveal);
             }
         }
 
@@ -493,7 +563,20 @@ namespace HideAndSeek.Features.Broadcast
             if (player == null || player.Color != EPlayerColor.Black)
                 return;
 
-            Notice(GameRoom.Instance, TextService.Format(WeaponTaken?.Value));
+            var room = GameRoom.Instance;
+            string text = TextService.Format(WeaponTaken?.Value);
+
+            // 同一条消息内换行追加黑方身份：读完黑方身份仍是当前这一位（Color 已在
+            // InsertWeapon 内先于 Weapon 赋值写好），因此不必等下一帧。
+            // 拼在 Format 之后 —— 名字里的反斜杠不该被当成 \n 转义。
+            if (RevealEnabled)
+            {
+                string reveal = BlackRevealText(room);
+                if (!string.IsNullOrEmpty(reveal))
+                    text = string.IsNullOrEmpty(text) ? reveal : text + "\n" + reveal;
+            }
+
+            Notice(room, text);
         }
     }
 }
