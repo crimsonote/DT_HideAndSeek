@@ -93,7 +93,18 @@ namespace HideAndSeek.Features.Rule
                 // 清掉"可拆"任务标记，避免地图上留下点不掉的图钉
                 try { dm.ClearFuseboxSabotage(); } catch { }
 
-                Plugin.Log.LogInfo($"[HS] PowerRepair：已强制恢复 {fixedCount} 个电箱。");
+                // 关键：复位"全图黑"。上面那些步骤只修了**个体电箱**，
+                // 而「断电造成全图黑」是另一套状态：Darkness 的唯一来源是 Area.IsLight 的 setter
+                // （它会广播 S_AREA_PUBLIC → 客户端 Darkness = !pkt.IsLight），
+                // 而 Area.IsLight 全游戏只有 AreaManager.RefreshLight() 会重算 ——
+                // 调用点只有 ConnetCable(:162756) 与 DisconnetCable(:162775) 两处。
+                //
+                // /rep 这条路上 RefreshLight 不在调用栈上（DoRepair 先读 GetDisconnectFuseCount，
+                // 我们的 Postfix 把结果改写成 0，于是后面真正会调 ConnetCable 的循环成了死代码），
+                // 所以表现是"服务端已恢复、客户端仍然全黑" —— 玩家因此反复敲 /rep。
+                try { Server.Game.AreaManager.Instance?.RefreshLight(); } catch { }
+
+                Plugin.Log.LogInfo($"[HS] PowerRepair：已强制恢复 {fixedCount} 个电箱，并复位全图光照。");
             }
             catch (global::System.Exception ex)
             {
