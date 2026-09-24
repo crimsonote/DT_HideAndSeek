@@ -159,6 +159,15 @@ namespace HideAndSeek.Features.Rule
                 return TimeManager.Instance != null && TimeManager.Instance.RemainTime <= n;
             }
 
+            if (cond.StartsWith("elapsed>=", global::System.StringComparison.OrdinalIgnoreCase))
+            {
+                // 本局**已经过去**的生存秒数 ≥ N。与 time<=N（剩余时间）互补：
+                // 「开局 60 秒内不能用」= elapsed>=60。
+                if (!TryFloat(cond.Substring(9), out float n))
+                    return false;
+                return TimeManager.Instance != null && TimeManager.Instance.SurviveTime >= n;
+            }
+
             if (cond.StartsWith("kills>=", global::System.StringComparison.OrdinalIgnoreCase))
             {
                 if (!TryFloat(cond.Substring(7), out float n))

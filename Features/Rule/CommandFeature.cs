@@ -105,6 +105,7 @@ namespace HideAndSeek.Features.Rule
             "Desc_disconnect = 破坏电闸 CD{cd}\n" +
             "Desc_credit = 查看/消耗积分升级 v|s|t|help\n" +
             "Desc_listplayers = 列出玩家 ID 与昵称\n" +
+            "Desc_givelantern = 申请提灯（开合门2次封门）CD{cd}\n" +
             // ── 动作回执 ──
             "LockNone = 附近没有可锁的门。\n" +
             "LockDone = 已锁住 {n} 扇门（半径 {radius}）。\n" +
@@ -129,7 +130,18 @@ namespace HideAndSeek.Features.Rule
             "RefreshFailed = 网络连接异常，刷新失败。\n" +
             "SpendNoProgress = 当前任务进度为 0\n" +
             "SpendInsufficient = 进度不足（现有 {x}，需要 {y}）\n" +
-            "SpendUnavailable = 读不到任务进度";
+            "SpendUnavailable = 读不到任务进度\n" +
+            // ── 以太提灯（KeyLockFeature 复用本表；同一张表才能统一热改）──
+            "LampTaken = 你从器材柜取走了一盏以太提灯（场上还有 {n} 盏）\n" +
+            "LampHowTo = 手持它、在门口开合两次即可「合门」：3 秒后这扇门只认你\n" +
+            "LampTaboo = 两人各合同一门会咬死，谁都开不了 —— 灯共三盏，用完归还\n" +
+            "LampEmpty = 器材柜空了 —— 三盏提灯都在外面\n" +
+            "LampTooEarly = 刚熄灯的头一分钟，还不该点灯\n" +
+            "LampSealed = 门轴咬合，这扇门现在只认你\n" +
+            "LampNotSet = 膜还没凝，碰了会白合\n" +
+            "LampTangled = 两股以太咬死了，谁都开不了\n" +
+            "LampOpened = 膜散了，门开了\n" +
+            "LampReturned = 提灯烧尽了，灯座已放回器材柜";
 
         [ConfigField(DefaultTexts,
             "命令对玩家显示的全部文案。格式：每条一行 `<键> = <文本>`，行首 # 为注释。\n" +
@@ -597,6 +609,10 @@ namespace HideAndSeek.Features.Rule
                     Reply(player, deviceId, channel, BuildHelp(player, channel));
                     return true;
 
+                case "givelantern":
+                    special = true;
+                    return GiveLantern(player, deviceId, channel);
+
                 case "refresh":
                     special = true;
                     return DoRefresh(room, player, deviceId, channel);
@@ -691,6 +707,16 @@ namespace HideAndSeek.Features.Rule
                     Action = "Refresh", UsesPerPlayer = true,
                     Cooldown = RefreshCooldown?.Value ?? 300,
                     IsAvailable = () => AllowRefresh == null || AllowRefresh.Value
+                },
+                new CommandDef
+                {
+                    // 以太提灯：公共命令，黑白都能申领。名额与锁逻辑都在 KeyLockFeature 里。
+                    Name = "lamp", Aliases = new[] { "lantern", "key", "lt" },
+                    Side = CommandSide.Any, Channel = CommandChannel.Public,
+                    Action = "GiveLantern", UsesPerPlayer = true,
+                    Cooldown = 120,
+                    Condition = "elapsed>=60",           // 开局 60 秒内不可申领
+                    IsAvailable = () => KeyLockFeature.AllowIssue == null || KeyLockFeature.AllowIssue.Value
                 },
                 new CommandDef
                 {
@@ -966,6 +992,22 @@ namespace HideAndSeek.Features.Rule
         private static string T(string key, string k1, string v1, string k2, string v2, string k3, string v3)
             => T(key, k1, v1, k2, v2).Replace("{" + k3 + "}", v3 ?? "");
 
+        /// <summary>
+        /// 供同程序集内其它功能复用这张文案表（目前是 KeyLockFeature 的提灯文案）。
+        /// 用法：<c>Text("LampTaken", "n", "2")</c>。
+        /// </summary>
+        internal static string Text(string key, params string[] pairs)
+        {
+            string text = T(key);
+            if (pairs == null)
+                return text;
+
+            for (int i = 0; i + 1 < pairs.Length; i += 2)
+                text = text.Replace("{" + pairs[i] + "}", pairs[i + 1] ?? "");
+
+            return text;
+        }
+
         // ══ 帮助 ══════════════════════════════════════════════════════
 
         /// <summary>动作串里的第一个动作（帮助文案按它归类）。</summary>
@@ -1107,6 +1149,18 @@ namespace HideAndSeek.Features.Rule
         }
 
         // ══ 动作实现 ══════════════════════════════════════════════════
+
+        /// <summary>
+        /// 申请以太提灯。名额、发放与"手上有东西就落地"都在 KeyLockFeature 里。
+        /// 没领到就返回 false —— 引擎据此不计次数、不写冷却。
+        /// </summary>
+        private static bool GiveLantern(GamePlayer player, int deviceId, CommandChannel channel)
+        {
+            bool ok = KeyLockFeature.TryIssue(player, out string text);
+            if (!string.IsNullOrEmpty(text))
+                Reply(player, deviceId, channel, text);
+            return ok;
+        }
 
         /// <summary>列出全部玩家（ID + 昵称 + 状态），便于 /tp 指定目标。</summary>
         private static string BuildPlayerList(GameRoom room)

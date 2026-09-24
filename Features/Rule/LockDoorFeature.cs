@@ -47,6 +47,12 @@ namespace HideAndSeek.Features.Rule
 
         internal static int LockedCount => LockedDoors.Count;
 
+        /// <summary>
+        /// 这扇门是否处于本功能登记的锁定中。
+        /// 供 KeyLockFeature 判断"提灯锁 + 广域锁叠加"——按需求那种情况谁都开不了。
+        /// </summary>
+        internal static bool IsLockingDoor(int doorId) => LockedDoors.Contains(doorId);
+
         /// <summary>锁定半径（地图短边 × 比例）。取不到地图数据时退化为 1000。</summary>
         internal static float GetRadius()
         {
@@ -97,14 +103,30 @@ namespace HideAndSeek.Features.Rule
                 // 我们的 Postfix 靠 LockedDoors 判断是否要给黑方伪造状态
                 LockedDoors.Add(door.ID);
 
-                info.StateList[1] = seconds;         // 锁定总时长
-                info.StateList[2] = 0;               // 已锁定进度归零
-                door.LockDoor();                     // State = 2（白方看到原生锁定）
+                // 同门已有更长的锁时不要缩短它 —— 需求：同一扇门上的锁，剩余时间取较长者。
+                // 提灯锁（KeyLockFeature）的剩余由它报过来；两把锁叠加导致"谁都开不了"
+                // 由下面的 DoorInteractHook / BroadcastStateHook 判断，与本段无关。
+                int existing = info.StateList[0] == 2 ? info.StateList[1] - info.StateList[2] : 0;
+                int lanternLeft = KeyLockFeature.RemainingSeconds(door.ID);
+                if (lanternLeft > existing)
+                    existing = lanternLeft;
 
-                // LockDoor 不会启动计时，反射跑一次 TickDoor；它会自续 PushSurvivalJob
-                if (_tickDoor == null)
-                    _tickDoor = AccessTools.Method(typeof(GameDoor), "TickDoor");
-                _tickDoor?.Invoke(door, null);
+                if (existing < seconds)
+                {
+                    info.StateList[1] = seconds;         // 锁定总时长
+                    info.StateList[2] = 0;               // 已锁定进度归零
+                    door.LockDoor();                     // State = 2（白方看到原生锁定）
+
+                    // LockDoor 不会启动计时，反射跑一次 TickDoor；它会自续 PushSurvivalJob
+                    if (_tickDoor == null)
+                        _tickDoor = AccessTools.Method(typeof(GameDoor), "TickDoor");
+                    _tickDoor?.Invoke(door, null);
+                }
+                else
+                {
+                    Plugin.Log.LogInfo(
+                        $"[HS] LockDoor：门 #{door.ID} 已有更长的锁（剩 {existing} 秒 ≥ 本次 {seconds} 秒），不覆盖。");
+                }
 
                 count++;
             }
@@ -159,6 +181,11 @@ namespace HideAndSeek.Features.Rule
                 if (!(__instance is GameDoor door) || !LockedDoors.Contains(door.ID))
                     return;
 
+                // 提灯锁与广域锁叠加 = 两把锁咬死 → 不给任何人伪造，让所有人看到真实的锁定态，
+                // 这样谁都发不出交互包（需求：谁都开不了）。
+                if (KeyLockFeature.IsSealed(door.ID))
+                    return;
+
                 SendFakeStateToBlack(door);
             }
         }
@@ -192,6 +219,15 @@ namespace HideAndSeek.Features.Rule
                     return true;                          // 不是锁定态 → 原版开关门
                 if (player == null || player.Color != EPlayerColor.Black)
                     return true;                          // 白方根本发不出这个包，走到这也不会是白方
+
+                // 提灯锁与广域锁叠加 = 两把锁咬死 → 黑方也不放行（需求：谁都开不了）。
+                // 注意这里**不能**把 door.ID 从 LockedDoors 移除：门仍然是锁着的。
+                if (KeyLockFeature.IsSealed(__instance.ID))
+                {
+                    Plugin.Log.LogInfo(
+                        $"[HS] LockDoor：门 #{__instance.ID} 同时有提灯锁与广域锁，拒绝黑方 #{player.PublicInfo?.PlayerId} 秒解。");
+                    return false;
+                }
 
                 LockedDoors.Remove(__instance.ID);
                 __instance.UnlockDoor();                  // State 2 → 1（同时广播，黑方此时可见真实状态也无妨）
