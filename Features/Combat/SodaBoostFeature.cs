@@ -73,9 +73,14 @@ namespace HideAndSeek.Features.Combat
         // ══ 申领 ════════════════════════════════════════════════════════
 
         /// <summary>
-        /// 申领一瓶汽水（随机一种口味）。全房滑窗配额 + 每人冷却都在这里判，
-        /// 因为要用自定义文案（"你暂时不能申领第二瓶汽水"），引擎那句通用冷却提示不合适。
-        /// 返回 false 时 <paramref name="text"/> 说明原因。
+        /// 申领一瓶汽水（随机一种口味）。
+        ///
+        /// 配额与冷却**已交给命令引擎的「四层空间」执行**（soda 的定义里写着
+        /// QuotaMax/QuotaWindow/Cooldown/UsesPerPlayer）—— 原先在这里自管，是因为引擎的
+        /// UsesPerPlayer 一个 bool 同时决定「次数按谁算」与「冷却按谁算」，表达不了
+        /// 「全房配额 + 每人冷却」这种混合归属。引擎侧的校验顺序本来就是
+        /// 「配额 → 冷却」，所以"卖空提示优先"这个需求照旧成立。
+        /// 这里**只负责发放**；被拒的情况根本走不到（引擎已拦并回执）。
         /// </summary>
         internal static bool TryIssue(GamePlayer player, out string text)
         {
@@ -84,34 +89,7 @@ namespace HideAndSeek.Features.Combat
                 return false;
 
             float now = Now;
-            float window = QuotaWindowSeconds?.Value ?? 300f;
-            IssuedTimes.RemoveAll(t => now - t > window);
-
             int pid = player.PublicInfo.PlayerId;
-
-            // 顺序：**总配额卖空优先于"个人冷却中"** —— 配额是全局状态，
-            // 先告诉玩家"没货了"比"你还在冷却"更有信息量。
-            int max = QuotaMax?.Value ?? 4;
-            if (IssuedTimes.Count >= max)
-            {
-                // 命令被吞时两端零痕迹，日志是唯一能自证"到底哪条判据拒的"。
-                // 只在**拒绝**时记，不会刷屏。
-                Plugin.Log.LogInfo(
-                    $"[HS] SodaBoost：拒绝 #{pid} 申领汽水 — 配额已满（已发 {IssuedTimes.Count}/{max}，" +
-                    $"窗口 {window:F0}s，now {now:F1}s）。");
-                text = Text("SodaQuota");
-                return false;
-            }
-
-            float cd = IssueCooldown?.Value ?? 240f;
-            if (cd > 0f && LastIssue.TryGetValue(pid, out float last) && now - last < cd)
-            {
-                Plugin.Log.LogInfo(
-                    $"[HS] SodaBoost：拒绝 #{pid} 申领汽水 — 个人冷却中（now {now:F1}s，上次 {last:F1}s，" +
-                    $"cd {cd:F0}s，还需 {cd - (now - last):F1}s）。");
-                text = Text("SodaCooldown");
-                return false;
-            }
 
             int from = SodaIdFrom?.Value ?? 3001;
             int to = SodaIdTo?.Value ?? 3005;
@@ -121,9 +99,6 @@ namespace HideAndSeek.Features.Combat
 
             if (!ItemGrant.Give(player, id, out bool dropped))
                 return false;
-
-            IssuedTimes.Add(now);
-            LastIssue[pid] = now;
 
             float sec = SodaSeconds?.Value ?? 30f;
             float mul = SodaSpeedMul?.Value ?? 1.8f;
@@ -136,7 +111,7 @@ namespace HideAndSeek.Features.Combat
             Plugin.Log.LogInfo(
                 $"[HS] SodaBoost：玩家 #{pid} 申领了汽水 {id}" +
                 (dropped ? "（手上已有物品，已落在脚下）" : "") +
-                $"，本窗口内已发 {IssuedTimes.Count}/{max} 瓶。");
+                $"，now {now:F1}s。");
             return true;
         }
 
