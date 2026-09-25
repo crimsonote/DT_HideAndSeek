@@ -261,8 +261,14 @@ namespace HideAndSeek.Features.Rule
         private static readonly Dictionary<string, int> Uses = new Dictionary<string, int>();
         private static readonly Dictionary<string, float> LastUse = new Dictionary<string, float>();
 
-        /// <summary>PlayerId → 上次发「冷却中」的时间；每人每 10 秒最多提示一次，防连点刷屏。</summary>
-        private static readonly Dictionary<int, float> CdNotice = new Dictionary<int, float>();
+        /// <summary>
+        /// 「冷却中」提示的节流键 → 上次提示时间。每人每条命令 10 秒最多提示一次，防连点刷屏。
+        ///
+        /// 键必须**带上命令名**（用 CmdKey 的形态）：以前只按 PlayerId 记，
+        /// 于是 10 秒内换一条命令（先 /rad 再 /sta）时，第二条命令的冷却提示会被一起吞掉 ——
+        /// 玩家只看到"命令没反应"，看不到原因。
+        /// </summary>
+        private static readonly Dictionary<string, float> CdNotice = new Dictionary<string, float>();
 
         private const float CdNoticeInterval = 10f;
 
@@ -427,12 +433,14 @@ namespace HideAndSeek.Features.Rule
                 return;
             }
 
-            if (PrimaryAction(def.Action) == "help")
-            {
-                Reply(player, deviceId, channel, BuildHelp(player, channel));
-                return;
-            }
-
+            // 不要把 help 在这里特判掉。
+            //
+            // 以前这里是 `if (PrimaryAction(def.Action) == "help") { 回帮助; return; }`，两个后果：
+            //   ① `help` 靠"被特判绕过 Execute"才能在大厅里用，于是 CommandDef.AllowOutsideSurvive
+            //      这个字段**从未真正生效过** —— 阶段闸门在 Execute 里，特判根本走不到它；
+            //   ② `Action = "Help,Lock"` 这种多动作写法会被整体当成 help，**后面的动作被吞掉**。
+            // 现在统一走 Execute：help 由 RunAction 的 "help" 分支处理，
+            // 它自己的 AllowOutsideSurvive = true 会正确地放行阶段闸门。
             Execute(room, player, deviceId, channel, def, arg);
         }
 
@@ -577,10 +585,12 @@ namespace HideAndSeek.Features.Rule
                     // 黑方命令全房共用一个冷却，连点的人本来就该看到剩余秒数。
                     if (def.UsesPerPlayer)
                     {
-                        float lastNotice = CdNotice.TryGetValue(pid, out float ln) ? ln : -9999f;
+                        // 键用 key（带命令名），不要用 pid —— 同一人在 10 秒内换一条命令时，
+                        // 新命令的冷却提示不该被旧命令的节流吞掉。
+                        float lastNotice = CdNotice.TryGetValue(key, out float ln) ? ln : -9999f;
                         if (now - lastNotice < CdNoticeInterval)
                             return;
-                        CdNotice[pid] = now;
+                        CdNotice[key] = now;
                     }
 
                     Reply(player, deviceId, channel,
