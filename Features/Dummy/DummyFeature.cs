@@ -132,6 +132,14 @@ namespace HideAndSeek.Features.Dummy
         // ── 生命周期：vanilla 回大厅会清掉所有 IsDummy 玩家，需要重建 ──────────
         // StartLobby（:170202-170289）会 HandleLeavePlayer + 归还座位 + 发 S_LEAVE_GAME，
         // 把 IsDummy 的假人全部清掉；不重建的话第二局就没有靶子。
+        //
+        // 清理（ResyncTracking）**无条件执行**，不能放在下面的 want<=0 守卫之后：
+        // 它是基础能力、与"要不要自动生成"无关 —— 手动用 hs_dummy 加的假人同样需要回收，
+        // 否则 SpawnedIds 只增不减（判据是"座位号上还有人"，而座位号跨局复用、
+        // 真人坐进去后那条永远不移除）⇒ hs_dummy 报「人数已达出生点上限 12」，
+        // 且 DesiredCharacter 残留会让真人被当成假人选角。
+        // 本段如今默认启用，所以这个钩子一定挂得上（原先它在默认关闭的 [Dummy] 里，
+        // 等于把"要不要清理"变成了藏在段开关里的意外配置）。
         [HarmonyPatch(typeof(GameRoom), "StartLobby")]
         internal static class StartLobbyHook
         {
@@ -141,12 +149,12 @@ namespace HideAndSeek.Features.Dummy
                 if (ModeRuntime.Bypass)
                     return;
 
+                // vanilla 直接删人、我们收不到通知，先把跟踪列表与实际房间对齐
+                DummyManager.ResyncTracking();
+
                 int want = AutoSpawnCount?.Value ?? 0;
                 if (want <= 0)
                     return;
-
-                // vanilla 直接删人、我们收不到通知，先把跟踪列表与实际房间对齐
-                DummyManager.ResyncTracking();
 
                 int have = DummyManager.ActiveCount;
                 if (have >= want)

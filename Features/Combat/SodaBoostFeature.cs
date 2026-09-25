@@ -94,14 +94,21 @@ namespace HideAndSeek.Features.Combat
             int max = QuotaMax?.Value ?? 4;
             if (IssuedTimes.Count >= max)
             {
+                // 命令被吞时两端零痕迹，日志是唯一能自证"到底哪条判据拒的"。
+                // 只在**拒绝**时记，不会刷屏。
+                Plugin.Log.LogInfo(
+                    $"[HS] SodaBoost：拒绝 #{pid} 申领汽水 — 配额已满（已发 {IssuedTimes.Count}/{max}，" +
+                    $"窗口 {window:F0}s，now {now:F1}s）。");
                 text = Text("SodaQuota");
                 return false;
             }
 
             float cd = IssueCooldown?.Value ?? 240f;
-            float last;
-            if (cd > 0f && LastIssue.TryGetValue(pid, out last) && now - last < cd)
+            if (cd > 0f && LastIssue.TryGetValue(pid, out float last) && now - last < cd)
             {
+                Plugin.Log.LogInfo(
+                    $"[HS] SodaBoost：拒绝 #{pid} 申领汽水 — 个人冷却中（now {now:F1}s，上次 {last:F1}s，" +
+                    $"cd {cd:F0}s，还需 {cd - (now - last):F1}s）。");
                 text = Text("SodaCooldown");
                 return false;
             }

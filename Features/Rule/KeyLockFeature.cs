@@ -125,18 +125,26 @@ namespace HideAndSeek.Features.Rule
             // 配额是全局状态，先告诉玩家"没货了"比"你还在冷却"更有信息量。
             PruneQuota();
             int max = QuotaMax?.Value ?? 4;
+            int pid = player.PublicInfo.PlayerId;
+            float now = Now;
+            float window = QuotaWindowSeconds?.Value ?? 300f;
             if (_issuedTimes.Count >= max)
             {
+                // 命令被吞时两端零痕迹（玩家只看到一句回执、房主日志里什么都没有），
+                // 日志是唯一能自证"到底哪条判据拒的"。只在**拒绝**时记，不会刷屏。
+                Plugin.Log.LogInfo(
+                    $"[HS] KeyLock：拒绝 #{pid} 申领鱼 — 配额已满（已发 {_issuedTimes.Count}/{max}，" +
+                    $"窗口 {window:F0}s，now {now:F1}s）。");
                 text = CommandFeature.Text("FishEmpty");
                 return false;
             }
 
-            int pid = player.PublicInfo.PlayerId;
-            float now = Now;
             float cd = FishCooldown?.Value ?? 150f;
-            float last;
-            if (cd > 0f && _lastIssue.TryGetValue(pid, out last) && now - last < cd)
+            if (cd > 0f && _lastIssue.TryGetValue(pid, out float last) && now - last < cd)
             {
+                Plugin.Log.LogInfo(
+                    $"[HS] KeyLock：拒绝 #{pid} 申领鱼 — 个人冷却中（now {now:F1}s，上次 {last:F1}s，" +
+                    $"cd {cd:F0}s，还需 {cd - (now - last):F1}s）。");
                 text = CommandFeature.Text("FishCooldown");
                 return false;
             }

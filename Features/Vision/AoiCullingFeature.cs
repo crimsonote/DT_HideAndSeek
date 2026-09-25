@@ -346,8 +346,9 @@ namespace HideAndSeek.Features.Vision
 
         /// <summary>
         /// 新对局开始时清空可见时间记录。
-        /// 否则上一局的残留会在新局里被误判：新局 SurviveTime 从 0 重新计时，
-        /// now - since 变成负数，恒小于最短可见时间，那批玩家将永远不被剔除。
+        /// 否则上一局的残留会在新局里被误判：新局 SurviveTime 由 <c>TimeManager.ResetSurvival()</c>
+        /// 设回 **420**（不是从 0 重新计时），旧值一旦大于新局的 now，now - since 就是负数、
+        /// 恒小于最短可见时间，那批玩家将永远不被剔除。
         /// </summary>
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         [HarmonyPostfix]

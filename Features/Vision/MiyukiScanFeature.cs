@@ -182,12 +182,20 @@ namespace HideAndSeek.Features.Vision
                 for (int i = 0; i < players.Count; i++)
                 {
                     var p = players[i];
-                    if (p?.PublicInfo == null || !p.IsAlive || p.IsSpectator)
+                    if (p?.PublicInfo == null)
                         continue;
                     if (!HasMiyukiAbility(p))
                         continue;                        // 只处理「本人是美幸」或「技能被换成美幸」的人
 
                     int pid = p.PublicInfo.PlayerId;
+
+                    // 本人在不在场上。**清理分支必须排在这个判据之前**：原先写的是
+                    // `!p.IsAlive → continue`，于是美幸在本局窗口内阵亡时，
+                    // ClearPins / ReapplyCull 被一起跳过、pin 残留到本局结束
+                    //（下面 :267 附近那条兜底注释原本就记着这个坑，现已修掉）。
+                    // 清理是"收拾自己留下的东西"，与本人是否还在场上无关；
+                    // 而 ②b 起都是给活人看的实时标记，退场的人不该做 —— 守卫放这里正好分开两者。
+                    bool present = p.IsAlive && !p.IsSpectator;
 
                     // ① 解封到点 → 收回 AOI，并抓一次快照供后面的"延迟消失"段重发
                     if (Unlocking.Contains(pid) && UnlockUntil.TryGetValue(pid, out float uu) && now >= uu)
@@ -197,7 +205,9 @@ namespace HideAndSeek.Features.Vision
                         ReapplyCull(__instance, p);
                         // 解封撤销的这一刻原生点就没了，用这一帧的位置把标记留住
                         //（"延迟消失"；范围内的人 ReapplyCull 保留了原生点，由 BlackPinRange 过滤）。
-                        SnapshotPins(__instance, p, onlyOutsideAoi: true);
+                        // 本人已退场时后面不会再有重发，快照没有意义 —— 不抓（死人身上不做多余动作）。
+                        if (present)
+                            SnapshotPins(__instance, p, onlyOutsideAoi: true);
                     }
 
                     // ② 标记到点 → 撤销 pin
@@ -206,6 +216,9 @@ namespace HideAndSeek.Features.Vision
                         MarkerUntil.Remove(pid);
                         ClearPins(__instance, p);
                     }
+
+                    if (!present)
+                        continue;                        // ②b 起是给活人看的实时标记，退场的人不做
 
                     // ②b 可动段（now < LiveUntil）：按真实位置每秒重发 → 地图上跟随；
                     //     静止段：继续重发但用快照位置 —— 客户端控件没有 TTL，不重发会提前消失，
@@ -264,8 +277,9 @@ namespace HideAndSeek.Features.Vision
             }
 
             // 新一轮扫描开始：丢掉上一轮遗留的"客户端已有该控件"标记。
-            // 正常路径下 ClearPins 已经清过；这里是兜底 —— 美幸在窗口内阵亡时 TickHook
-            // 的存活守卫会把 ClearPins 一起跳过（那是本文件既有的缺陷，本次不动）。
+            // 正常路径下 ClearPins 已经清过；这里是兜底。
+            //（TickHook 的存活守卫曾把 ClearPins 一起跳过 —— 美幸在窗口内阵亡时 pin 残留到本局结束；
+            //  该缺陷已修：清理分支现在排在存活判据之前。本条兜底保留，仍防"清理没跑到"的其它路径。）
             PinAlive.Remove(pid);
 
             // 可动段 = 解封期（方案 A）或 pin 跟随段（白方 / 方案 B），两端都是 UnlockSeconds。
