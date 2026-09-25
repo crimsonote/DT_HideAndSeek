@@ -590,7 +590,7 @@ namespace HideAndSeek.Features.Vision
             LiveUntil.Clear();
             PinSnapshot.Clear();      // 跨局 PlayerId 会复用，不清会读到上一局的快照位置
             PinAlive.Clear();
-            _lastMoveResendAt = -9999f;   // 移动重发的节流时刻 —— 它记的也是 SurviveTime         // 跨局的客户端控件也早已随场景销毁
+            _lastMoveResendAt = -9999f;   // 移动重发的节流时刻 —— 它记的也是 SurviveTime
         }
     }
 }
