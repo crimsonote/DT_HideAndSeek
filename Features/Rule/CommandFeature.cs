@@ -155,7 +155,10 @@ namespace HideAndSeek.Features.Rule
             "fish.QuotaExhausted = 鱼已售罄，请稍候重试。\n" +
             "fish.Cooldown = 超出限额，请稍候重试\n" +
             "soda.QuotaExhausted = 汽水申领超过配额\n" +
-            "soda.Cooldown = 你暂时不能申领第二瓶汽水";
+            "soda.Cooldown = 你暂时不能申领第二瓶汽水" + "\n" +
+            // 鱼的条件失败（elapsed>=10）用它自己的措辞，而不是通用的「条件未满足」。
+            // 原文逐字取自本表里的 FishTooEarly，改这里不会波及其他命令。
+            "fish.ConditionFailed = 非售货时间，请稍候再来";
 
         [ConfigField(DefaultTexts,
             "命令对玩家显示的全部文案。格式：每条一行 `<键> = <文本>`，行首 # 为注释。\n" +
@@ -758,7 +761,7 @@ namespace HideAndSeek.Features.Rule
                 if (!string.IsNullOrWhiteSpace(def.Condition)
                     && !RuleRewriteFeature.MatchesAll(def.Condition, room))
                 {
-                    Reply(player, deviceId, channel, T("ConditionFailed", "name", def.Name, "cond", def.Condition));
+                    Reply(player, deviceId, channel, TReg(null, def.Name, "ConditionFailed", "name", def.Name, "cond", def.Condition));
                     return;
                 }
 
@@ -929,7 +932,7 @@ namespace HideAndSeek.Features.Rule
                     Name = "fish", Aliases = new[] { "lamp", "lantern", "key", "lt" },
                     Side = CommandSide.Any, Channel = CommandChannel.Public,
                     Action = "GiveFish",
-                    Condition = "elapsed>=60",           // 开局 60 秒内不可申领
+                    Condition = "elapsed>=10",           // 开局 10 秒内不可申领（原为 60，按用户要求改）
                     QuotaMax = KeyLockFeature.QuotaMax?.Value ?? 4,                 // 全房：窗口内 4 条
                     QuotaWindow = KeyLockFeature.QuotaWindowSeconds?.Value ?? 300f,
                     Cooldown = (int)(KeyLockFeature.FishCooldown?.Value ?? 150f),   // 每人：150 秒
