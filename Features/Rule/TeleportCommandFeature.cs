@@ -224,10 +224,14 @@ namespace HideAndSeek.Features.Rule
             {
                 if (global::System.Enum.TryParse(sfxName, true, out ESoundType sfx))
                 {
-                    // 预警范围与「黑方地图外边界视野」等同（AoiCulling.ExitRange）——
-                    // 原先用 RadarDistance（原版 896），比黑方的实际视野小，会出现
-                    // "刚看见黑方冒出来，但警告音没响"的情况。
-                    float warnRange = AoiCullingFeature.ExitRange?.Value ?? RadarDistance;
+                    // 预警范围 = 「黑方升级 2 级后的视野上限」。
+                    //
+                    // 视野是**加法**叠加的（KillUpgrade.VisionBonusPerLevel 的说明写着
+                    // "0.5 = 每级 +50%，连升三级 = 2.5 倍" ⇒ 1 + 0.5×N），所以 2 级 = ×2。
+                    // 用它当上限：既覆盖"能看见黑方冒出来"的距离，又不会随着视野升到 3 级
+                    // （×2.5）把警告铺得整个地图都是。
+                    float sight = AoiCullingFeature.ExitRange?.Value ?? RadarDistance;
+                    float warnRange = sight * 2f;        // 2 级视野 = 基础 ×2
                     try { room.BroadcastWorldSFX(sfx, dest, warnRange); }
                     catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Teleport：落点音效失败 — {ex.Message}"); }
                 }
@@ -268,7 +272,7 @@ namespace HideAndSeek.Features.Rule
                     {
                         // 与音效同范围：黑方地图外边界视野（AoiCulling.ExitRange）——
                         // 保证"能看见黑方冒出来的距离"上一定也看得见落点特效。
-                        room.BroadcastWorldVFX(vfx, 0, dest, AoiCullingFeature.ExitRange?.Value ?? RadarDistance);
+                        room.BroadcastWorldVFX(vfx, 0, dest, (AoiCullingFeature.ExitRange?.Value ?? RadarDistance) * 2f);   // 同上：2 级视野上限
                         Plugin.Log.LogInfo($"[HS] Teleport：落点特效 {vfx} @ ({dest.X:F0},{dest.Y:F0})。");
                     }
                     catch (global::System.Exception ex)
