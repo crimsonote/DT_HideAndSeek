@@ -1294,6 +1294,29 @@ namespace HideAndSeek.Features.Rule
             => T(key, k1, v1, k2, v2).Replace("{" + k3 + "}", v3 ?? "");
 
         /// <summary>
+        /// 带**注册表措辞**的查找，三层优先级：
+        ///   ① 命令注册表行里的措辞（例如 <c>quotaText=鱼已经卖光了</c>）
+        ///   ② Texts 里的「命令名.键」（<c>fish.QuotaExhausted = …</c>）
+        ///   ③ Texts 里的通用键（<c>QuotaExhausted = …</c>）
+        ///
+        /// 三层都不写就走通用模板 —— 所以没定制的命令行为不变。
+        /// 让措辞能和 <c>cd=</c>/<c>quota=</c> 一样写在命令那一行里，是因为措辞本身就是
+        /// 这条命令定义的一部分；改一条命令的措辞不必去翻那张混着所有命令的大文本表。
+        /// </summary>
+        private static string TReg(string registryText, string scope, string key, params string[] pairs)
+        {
+            string text = registryText;
+            if (string.IsNullOrEmpty(text) && !string.IsNullOrEmpty(scope))
+                text = T(scope + "." + key);
+            if (string.IsNullOrEmpty(text))
+                text = T(key);
+
+            for (int i = 0; i + 1 < pairs.Length; i += 2)
+                text = text.Replace("{" + pairs[i] + "}", pairs[i + 1] ?? "");
+            return text;
+        }
+
+        /// <summary>
         /// 带**命令作用域**的查找：先找「命令名.键」，找不到再回退到通用键。
         ///
         /// 为什么要它：同一件事（配额用尽 / 冷却中）在不同命令上该有不同说法 ——
