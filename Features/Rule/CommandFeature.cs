@@ -147,7 +147,15 @@ namespace HideAndSeek.Features.Rule
             "SodaTaken = 汽水申领成功\n" +
             "SodaHowTo = 按使用键喝掉：{sec} 秒内移速提升到 {mul}%\n" +
             "SodaQuota = 汽水申领超过配额\n" +
-            "SodaCooldown = 你暂时不能申领第二瓶汽水";
+            "SodaCooldown = 你暂时不能申领第二瓶汽水\n" +
+            // ── 按命令作用域的措辞（三层查找的第 ② 层）──
+            // 引擎接管配额/冷却后，通用键（QuotaExhausted/Cooldown）是给没定制的命令用的；
+            // 这两条命令的玩家可见文案必须与改造前**逐字一致**，所以在这里逐字挂回原键的原文。
+            // 想改某条命令的说法，改这两行即可（不必动上面那些通用键）。
+            "fish.QuotaExhausted = 鱼已售罄，请稍候重试。\n" +
+            "fish.Cooldown = 超出限额，请稍候重试\n" +
+            "soda.QuotaExhausted = 汽水申领超过配额\n" +
+            "soda.Cooldown = 你暂时不能申领第二瓶汽水";
 
         [ConfigField(DefaultTexts,
             "命令对玩家显示的全部文案。格式：每条一行 `<键> = <文本>`，行首 # 为注释。\n" +
