@@ -83,6 +83,9 @@ namespace HideAndSeek.Features.Rule
             "PhaseBlocked = 当前阶段无法使用命令。\n" +
             "UsesExhausted = /{name} 本局已用完（上限 {n} 次）。\n" +
             "Cooldown = /{name} 冷却中，还需 {sec} 秒。\n" +
+            "QuotaExhausted = /{name} 的配额已用尽（{win} 秒内最多 {n} 次），请稍候重试。\n" +
+            "PerQuotaExhausted = 你在 {win} 秒内已用过 {n} 次 /{name}，请稍候重试。\n" +
+            "RoomCooldown = 刚有人用过 /{name}，还需 {sec} 秒。\n" +
             "ConditionFailed = /{name} 条件未满足（{cond}）。\n" +
             "Executed = /{name} 已执行。\n" +
             "ExecFailed = /{name} 执行失败，请查看房主日志。\n" +
@@ -239,6 +242,34 @@ namespace HideAndSeek.Features.Rule
             /// <summary>true = 每人独立计数与冷却；false = 全房共用（原版黑方命令的语义）。</summary>
             public bool UsesPerPlayer;
 
+            // ── 「四层空间」：配额与冷却各分「全房 / 每人」两层，四层互相独立、可任意叠加 ──
+            //
+            // 为什么不用一个开关概括：原先只有一个 UsesPerPlayer 同时决定「次数按谁算」与
+            // 「冷却按谁算」，于是「全房配额 + 每人冷却」这种组合**表达不了** ——
+            // fish / soda 正是这种组合，只能逃离引擎自己管，代价是它们在注册表里完全不可配。
+            //
+            // 现在四层各用一个数表达（0 = 该层不启用）：
+            //   Quota<0>      全房滑窗配额：QuotaWindow 秒内全房最多 QuotaMax 次
+            //   PerQuotaMax   每人滑窗配额：同上，但按人独立
+            //   RoomCooldown  全房固定冷却：全房共用一个间隔
+            //   Cooldown      每人固定冷却：每人一个间隔（旧字段，含义不变）
+            // 超限时提示要分清是哪一层超的（四个 Texts 键）。
+
+            /// <summary>全房滑窗配额：窗口内全房最多几次。0 = 不启用。</summary>
+            public int QuotaMax;
+
+            /// <summary>全房滑窗配额的窗口秒数（QuotaMax &gt; 0 时有意义）。</summary>
+            public float QuotaWindow = 300f;
+
+            /// <summary>每人滑窗配额：窗口内每人最多几次。0 = 不启用。</summary>
+            public int PerQuotaMax;
+
+            /// <summary>每人滑窗配额的窗口秒数（PerQuotaMax &gt; 0 时有意义）。</summary>
+            public float PerQuotaWindow = 300f;
+
+            /// <summary>全房固定冷却秒数：全房共用。0 = 不启用。</summary>
+            public int RoomCooldown;
+
             /// <summary>
             /// true = 不受「必须在生存阶段且存活」这道闸门约束。
             /// 只有 /help 需要：它在旧实现里走的是 Handle 的 switch，从来没有阶段检查 ——
@@ -260,6 +291,22 @@ namespace HideAndSeek.Features.Rule
         /// <summary>命令名 → 本局已用次数 / 上次使用时的 SurviveTime。键见 <see cref="CmdKey"/>。</summary>
         private static readonly Dictionary<string, int> Uses = new Dictionary<string, int>();
         private static readonly Dictionary<string, float> LastUse = new Dictionary<string, float>();
+
+        // ── 「四层空间」的三个记录容器 ──
+        // 配额是**滑窗**（窗口内最多 N 次），所以要存"最近若干次的时刻"，按命令名分：
+        // 键用命令名（全房共享）或 CmdKey（每人独立），值是该窗口内的发放时刻表。
+
+        /// <summary>全房滑窗配额：命令名 → 窗口内的发放时刻。</summary>
+        private static readonly Dictionary<string, List<float>> QuotaIssued =
+            new Dictionary<string, List<float>>();
+
+        /// <summary>每人滑窗配额：CmdKey → 该人窗口内的发放时刻。</summary>
+        private static readonly Dictionary<string, List<float>> PerQuotaIssued =
+            new Dictionary<string, List<float>>();
+
+        /// <summary>全房固定冷却：命令名 → 全房上次使用的 SurviveTime。</summary>
+        private static readonly Dictionary<string, float> RoomLastUse =
+            new Dictionary<string, float>();
 
         /// <summary>
         /// 「冷却中」提示的节流键 → 上次提示时间。每人每条命令 10 秒最多提示一次，防连点刷屏。
@@ -388,6 +435,13 @@ namespace HideAndSeek.Features.Rule
             Uses.Clear();
             LastUse.Clear();
             CdNotice.Clear();
+
+            // 「四层空间」的滑窗与全房冷却也必须跨局清 —— 它们记的是 SurviveTime，
+            // 而它每局被 ResetSurvival() 设回 420：不清的话上一局记下的时刻在新局
+            // 会算出负数，窗口永不过期 / 冷却永不满足（这一类坑今天已经踩过四次）。
+            QuotaIssued.Clear();
+            PerQuotaIssued.Clear();
+            RoomLastUse.Clear();
         }
 
         /// <summary>
@@ -552,6 +606,35 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 滑窗配额：返回该键在窗口内**已用**的次数（顺手把滑出窗口的旧记录丢掉）。
+        ///
+        /// 配额是滑窗而不是"每局总数"，所以必须存时刻表而不是计数器 ——
+        /// 也正因为存的是时刻，跨局**必须清空**（SurviveTime 每局回退到 420，
+        /// 不清就会算出负数、窗口永不过期）。见 <see cref="Reset"/>。
+        /// </summary>
+        private static int QuotaCount(Dictionary<string, List<float>> table, string k, float now, float window)
+        {
+            List<float> list;
+            if (!table.TryGetValue(k, out list))
+                return 0;
+
+            list.RemoveAll(t => now - t > window);
+            return list.Count;
+        }
+
+        /// <summary>记一次配额消耗。**只在命令真的执行了之后调**（与 Uses 同一时机）。</summary>
+        private static void QuotaStamp(Dictionary<string, List<float>> table, string k, float now)
+        {
+            List<float> list;
+            if (!table.TryGetValue(k, out list))
+            {
+                list = new List<float>();
+                table[k] = list;
+            }
+            list.Add(now);
+        }
+
         /// <summary>依次校验阶段 / 次数 / 冷却 / 条件，任一不过即拒绝并回执原因。</summary>
         private static void Execute(GameRoom room, GamePlayer player, int deviceId,
                                     CommandChannel channel, CommandDef def, string arg)
@@ -582,6 +665,38 @@ namespace HideAndSeek.Features.Rule
                 }
 
                 float now = TimeManager.Instance?.SurviveTime ?? 0f;
+
+                // ── 四层空间 ①：全房滑窗配额（窗口内全房最多几次）──
+                if (def.QuotaMax > 0
+                    && QuotaCount(QuotaIssued, def.Name, now, def.QuotaWindow) >= def.QuotaMax)
+                {
+                    Reply(player, deviceId, channel,
+                        T("QuotaExhausted", "name", def.Name, "n", def.QuotaMax.ToString(),
+                            "win", def.QuotaWindow.ToString("F0")));
+                    return;
+                }
+
+                // ── 四层空间 ②：每人滑窗配额 ──
+                if (def.PerQuotaMax > 0
+                    && QuotaCount(PerQuotaIssued, key, now, def.PerQuotaWindow) >= def.PerQuotaMax)
+                {
+                    Reply(player, deviceId, channel,
+                        T("PerQuotaExhausted", "name", def.Name, "n", def.PerQuotaMax.ToString(),
+                            "win", def.PerQuotaWindow.ToString("F0")));
+                    return;
+                }
+
+                // ── 四层空间 ③：全房固定冷却（全房共用一个间隔）──
+                if (def.RoomCooldown > 0 && RoomLastUse.TryGetValue(def.Name, out float roomLast)
+                    && now - roomLast < def.RoomCooldown)
+                {
+                    Reply(player, deviceId, channel,
+                        T("RoomCooldown", "name", def.Name,
+                            "sec", (((int)(def.RoomCooldown - (now - roomLast))) + 1).ToString()));
+                    return;
+                }
+
+                // ── 四层空间 ④：每人固定冷却（旧字段 Cooldown，含义不变）──
                 if (def.Cooldown > 0 && LastUse.TryGetValue(key, out float last)
                     && now - last < def.Cooldown)
                 {
@@ -624,6 +739,15 @@ namespace HideAndSeek.Features.Rule
 
                 Uses[key] = used + 1;
                 LastUse[key] = now;
+
+                // 记下这一轮的配额与全房冷却时刻 —— 与 Uses 同一时机（只有真执行了才记，
+                // 失败路径在 RunAction 里 return 掉，不会走到这）。
+                if (def.QuotaMax > 0)
+                    QuotaStamp(QuotaIssued, def.Name, now);
+                if (def.PerQuotaMax > 0)
+                    QuotaStamp(PerQuotaIssued, key, now);
+                if (def.RoomCooldown > 0)
+                    RoomLastUse[def.Name] = now;
 
                 if (!special)
                     Reply(player, deviceId, channel, T("Executed", "name", def.Name));
