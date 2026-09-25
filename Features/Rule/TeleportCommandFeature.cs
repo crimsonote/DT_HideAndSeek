@@ -3,6 +3,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Vision;      // AoiCullingFeature.ExitRange（预警范围与黑方视野等同）
 using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Rule
@@ -223,7 +224,11 @@ namespace HideAndSeek.Features.Rule
             {
                 if (global::System.Enum.TryParse(sfxName, true, out ESoundType sfx))
                 {
-                    try { room.BroadcastWorldSFX(sfx, dest, RadarDistance); }
+                    // 预警范围与「黑方地图外边界视野」等同（AoiCulling.ExitRange）——
+                    // 原先用 RadarDistance（原版 896），比黑方的实际视野小，会出现
+                    // "刚看见黑方冒出来，但警告音没响"的情况。
+                    float warnRange = AoiCullingFeature.ExitRange?.Value ?? RadarDistance;
+                    try { room.BroadcastWorldSFX(sfx, dest, warnRange); }
                     catch (global::System.Exception ex) { Plugin.Log.LogWarning($"[HS] Teleport：落点音效失败 — {ex.Message}"); }
                 }
                 else
@@ -261,7 +266,9 @@ namespace HideAndSeek.Features.Rule
                     HideAndSeek.Features.Skill.TeleportGuardFeature.Suppress++;
                     try
                     {
-                        room.BroadcastWorldVFX(vfx, 0, dest, RadarDistance);
+                        // 与音效同范围：黑方地图外边界视野（AoiCulling.ExitRange）——
+                        // 保证"能看见黑方冒出来的距离"上一定也看得见落点特效。
+                        room.BroadcastWorldVFX(vfx, 0, dest, AoiCullingFeature.ExitRange?.Value ?? RadarDistance);
                         Plugin.Log.LogInfo($"[HS] Teleport：落点特效 {vfx} @ ({dest.X:F0},{dest.Y:F0})。");
                     }
                     catch (global::System.Exception ex)
