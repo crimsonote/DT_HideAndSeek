@@ -3,7 +3,8 @@
 《Deadly Trick》的**房主端**捉迷藏玩法模块，参照 DT_Tools 的框架实现。
 
 **核心约束：零改动上游。** 不修改 `D:\git\DT_Tools\DT_Tools\` 下任何文件；
-与该项目的全部交互只能通过两条外部路径（配置复用 + 命令桥），详见下文。
+与该项目的交互只有两条外部路径（**配置来源** + 命令桥），
+且**两条都按「上游是否存在」自动选择** —— 有上游就借它的，没有就自己跑，详见下文第 6 条。
 
 ---
 
@@ -68,8 +69,11 @@ pwsh -File deploy.ps1
 
 - 命名空间与目录一致：`HideAndSeek.Features.Vision` ↔ `Features/Vision/`。
 - 功能一律 `[PatchFeature(section, description, defaultEnabled, side)]` 声明，
-  子项用 `[ConfigField(default, desc, Min, Max)]`，由 `ConfigBinder` 自动 Bind，
-  **禁止手写 `Config.Bind`**（`ConsoleBridge` 段除外）。
+  子项用 `[ConfigField(default, desc, Min, Max)]`，由 `ConfigBinder` 自动 Bind。
+  **禁止在功能里手写 `Config.Bind`** —— 合法例外只有**框架层 / 迁移层**这四处：
+  `ConsoleBridge` 段、`Core/ConfigMigration.cs`（迁移版本键 `ConfigVersion`，以及迁移时"取回"现有段开关）、
+  `Core/ModeRuntime.cs`（捉迷藏模式总开关）、`Core/Patching/PatchLoader.cs`（段级 `Enabled` 开关）。
+  这四处都是"框架自己需要"，不是"某个功能偷偷绕过 `[ConfigField]`"。
 - `Plugin.cs` 只组装：解析配置来源 → `PatchLoader.Load` → 落盘 → 报告。
 - 不署他人之名；author 留空。
 
@@ -136,11 +140,17 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
 ### 6. 上游 DT_Tools 没有"插件注册表"
 
 它的 `[PatchFeature]` 与 `IConsoleCommand` 都只扫**自己**的程序集，外部无法注入。
-集成只有两条路：
+集成只有两条路，**且两条都按「上游是否存在」自动选择**（见 `Core/DtBridge.cs`）：
 
-- **配置复用**：Bind 到 `DT_Tools.Plugin.Instance.Config`，段会出现在 DT CONFIG 页；
-  注意它的 `Plugin.Instance` 在**它自己的 Awake** 里才赋值，我们在 `Start` 里读可能还是 null。
-- **命令桥**：Prefix 拦截 `DT_Tools.Console.WebConsole.ExecuteCommand`。
+- **配置来源（自动选择）**：上游在 ⇒ Bind 到 `DT_Tools.Plugin.Instance.Config`，段出现在 DT CONFIG 页；
+  上游不在 ⇒ 用自己的 `BepInEx/config/HideAndSeek.cfg`（`Core/Config/HsConfigFile.cs`）。
+  - ⚠️ **时机**：`ResolveConfig` **必须在 `Start()` 里调**，不能提前到 `Awake()` ——
+    上游的 `Plugin.Instance` 是在**它自己的 `Awake`** 里赋值的（BepInEx 顺序：所有 Awake → 所有 Start）。
+    提前会让探测失败、错误地落到自有配置，症状是「装了上游但设置不进 DT CONFIG 页」。
+  - ⚠️ **落盘差异**：复用上游时它的 `SaveOnConfigSet = false`（改了只进内存、**退出即丢**），
+    自有配置时是 `true`。所以**任何写配置的代码都必须显式 `Save()`** ——
+    否则症状是「装了上游的房主改完设置、退出就丢」，而没装的人一切正常，最难查。
+- **命令桥**：Prefix 拦截 `DT_Tools.Console.WebConsole.ExecuteCommand`（上游不在时自动跳过、静默降级）。
   ⚠️ 它的命令列表缓存 `_cachedCommandsJson` 在**它的 Awake** 里就生成好了，
   而我们的补丁在 `Start` 才挂上（BepInEx 顺序：所有 Awake → 所有 Start），
   所以必须自己重建缓存，否则命令"能执行但不在列表/补全里"。
