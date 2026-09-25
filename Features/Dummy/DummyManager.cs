@@ -376,15 +376,15 @@ namespace HideAndSeek.Features.Dummy
 
                 try
                 {
-                    room.PickCharacter(player, chara);
-
-                    // PickCharacter 对不满足前置（phase not ready / 超时 / 角色被占）
-                    // 是**静默 return** 的，必须自己判定是否真的生效 ——
-                    // 这里曾把"调用过一次"当成成功就直接出队（f6823c7），
-                    // 结果第一次失败后再也不重试，选角永远不生效。
-                    // -2 表示"随机"：原版把它登记进 _randomPickPlayers，留到 40 秒倒计时
-                    // 结束时才分配角色 —— 那就不是"秒选"。这里自己挑一个未被占用的角色
-                    // 直接走具体角色分支，效果等同随机但立刻生效。
+                    // ⚠ 必须**先解析 -2、再调 PickCharacter**。
+                    //
+                    // 以前是先 `PickCharacter(player, -2)` 再解析，于是 -2（= 游戏内置的"随机"）
+                    // 已经被登记进原版的 `_randomPickPlayers`，留到 40 秒倒计时才分配角色 ——
+                    // 玩家看到的"假人不会自动随机"就是这个：本该秒选的假人，
+                    // 被游戏按"选择了随机"处理，一路拖到选角倒计时结束。
+                    //
+                    // -2 表示"随机"：这里自己挑一个未被占用的角色，直接走具体角色分支，
+                    // 效果等同随机但立刻生效。
                     if (chara == -2)
                     {
                         chara = PickRandomFreeCharacter(room);
@@ -392,6 +392,12 @@ namespace HideAndSeek.Features.Dummy
                             continue;                     // 没有可用角色，下个 tick 再试
                     }
 
+                    room.PickCharacter(player, chara);
+
+                    // PickCharacter 对不满足前置（phase not ready / 超时 / 角色被占）
+                    // 是**静默 return** 的，必须自己判定是否真的生效 ——
+                    // 这里曾把"调用过一次"当成成功就直接出队（f6823c7），
+                    // 结果第一次失败后再也不重试，选角永远不生效。
                     bool ok;
                     if (chara == -2)
                     {
