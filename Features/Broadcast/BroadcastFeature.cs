@@ -439,10 +439,18 @@ namespace HideAndSeek.Features.Broadcast
         /// 游戏自己显示角色名走的正是这两步：UI_ShopPopup.RefreshCharacterName（:65402-65408）
         /// → SafeText（:67289-67300）→ Managers.GetText（:41819-41827）。
         ///
-        /// 降级（绝不留空）：角色 DataId 无效 → "未知角色"；CharacterDic 里没这个名字 →
-        /// "角色&lt;id&gt;"；TextDic 里没有该键（例如 101 号的 Name 是 "Medelin" 而本地化键是
-        /// "Madeline"）→ 直接用英文键本身。
-        /// 这里直接读 TextDic 而不用 <c>Managers.GetText</c>：后者缺键时会 Debug.LogError 刷日志。
+        /// 降级（绝不留空、不抛异常）：角色 DataId 无效 → "未知角色"；CharacterDic 里没这个名字 →
+        /// "角色&lt;id&gt;"；TextDic 里没有该键 → 用英文键本身（如 "Medelin"）。
+        ///
+        /// ⚠ **不要"顺手统一"成 <c>Managers.GetText</c>（:41819）**。它是 TextDic.TryGetValue 的
+        /// 一层包装，**命中时结果与本函数完全一致**，唯一差别是缺键时会 UnityEngine.Debug.LogError。
+        /// 而上游数据就有对不上的键：101 号的 CharacterData.Name 在一份 dump 里是 "Medelin"
+        /// （gamedata/CharacterData.json:4、gamedata2/CharacterData__data.json:7），另一份里是
+        /// "Madeline"（gamedata2/CharacterData__common_data.json:13），而本地化 TextDic 只有
+        /// "Madeline"（CHS_TextData__language.json:5055）。离线无法确定运行时用哪一份 —— 一旦是
+        /// "Medelin"，开局发刀每选中一次 101 号黑方就会往 Player.log 刷一条
+        /// "[Text] Missing TextData key: Medelin" 的**假告警**：那是上游数据问题，不该由我们触发
+        /// 告警，而日志是本模块排障的主要手段。故此处直接读 TextDic，缺键静默降级。
         /// </summary>
         private static string CharacterNameOf(GamePlayer player)
         {
