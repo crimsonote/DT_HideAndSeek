@@ -152,19 +152,6 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        /// <summary>滚动窗口内的"命令发放"时刻。原版途径（钓鱼等）不进这里。</summary>
-        private static readonly List<float> _issuedTimes = new List<float>();
-
-        /// <summary>PlayerId → 上次申领时刻。每人冷却（默认 150 秒）用。</summary>
-        private static readonly Dictionary<int, float> _lastIssue = new Dictionary<int, float>();
-
-        /// <summary>把滑出窗口的发放记录丢掉。</summary>
-        private static void PruneQuota()
-        {
-            float window = QuotaWindowSeconds?.Value ?? 300f;
-            float now = Now;
-            _issuedTimes.RemoveAll(t => now - t > window);
-        }
 
         // ══ 对外：给 LockDoorFeature 查询 ═══════════════════════════════
 
@@ -476,8 +463,6 @@ namespace HideAndSeek.Features.Rule
             // 而那个值每局由 ResetSurvival() 设回 420（不是从 0）。不清的话，上一局记下的时刻（例如 250 秒）
             // 在新局里算出来是负数，RemoveAll 的 `now - t > window` 永远不成立
             // ⇒ 记录永不过期 ⇒ 第二局开局就"已售罄"、"CD 中"，人数再少也拿不到。
-            _issuedTimes.Clear();
-            _lastIssue.Clear();
         }
 
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]

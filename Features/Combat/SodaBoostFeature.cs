@@ -62,11 +62,6 @@ namespace HideAndSeek.Features.Combat
         /// <summary>PlayerId → 加速到期时刻（SurviveTime 秒）。</summary>
         private static readonly Dictionary<int, float> Active = new Dictionary<int, float>();
 
-        /// <summary>滚动窗口内"已发出"的时刻（全房共享）。</summary>
-        private static readonly List<float> IssuedTimes = new List<float>();
-
-        /// <summary>PlayerId → 上次申领时刻，用于每人冷却。</summary>
-        private static readonly Dictionary<int, float> LastIssue = new Dictionary<int, float>();
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
@@ -277,8 +272,6 @@ namespace HideAndSeek.Features.Combat
             // 不清的话上一局记下的时刻在新局里算出来是负数，
             // `now - t > window` 永远不成立 ⇒ 记录永不过期
             // ⇒ 第二局开局就"配额满 / 提示还在冷却"，人数再少也领不到。
-            IssuedTimes.Clear();
-            LastIssue.Clear();
 
             if (Active.Count == 0)
                 return;
