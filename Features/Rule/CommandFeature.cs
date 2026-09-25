@@ -672,7 +672,7 @@ namespace HideAndSeek.Features.Rule
                 {
                     // 白方命令静默：非生存阶段客户端不处理这类消息，发了也是冗余。
                     if (!def.QuietWhenBlocked)
-                        Reply(player, deviceId, channel, T("PhaseBlocked"));
+                        Reply(player, deviceId, channel, TReg(def.BlockedText, def.Name, "PhaseBlocked"));
                     return;
                 }
 
@@ -686,7 +686,7 @@ namespace HideAndSeek.Features.Rule
                 int used = Uses.TryGetValue(key, out int u) ? u : 0;
                 if (def.MaxUses > 0 && used >= def.MaxUses)
                 {
-                    Reply(player, deviceId, channel, T("UsesExhausted", "name", def.Name, "n", def.MaxUses.ToString()));
+                    Reply(player, deviceId, channel, TReg(def.UsesText, def.Name, "UsesExhausted", "name", def.Name, "n", def.MaxUses.ToString()));
                     return;
                 }
 
@@ -697,7 +697,7 @@ namespace HideAndSeek.Features.Rule
                     && QuotaCount(QuotaIssued, def.Name, now, def.QuotaWindow) >= def.QuotaMax)
                 {
                     Reply(player, deviceId, channel,
-                        T("QuotaExhausted", "name", def.Name, "n", def.QuotaMax.ToString(),
+                        TReg(def.QuotaText, def.Name, "QuotaExhausted", "name", def.Name, "n", def.QuotaMax.ToString(),
                             "win", def.QuotaWindow.ToString("F0")));
                     return;
                 }
@@ -707,7 +707,7 @@ namespace HideAndSeek.Features.Rule
                     && QuotaCount(PerQuotaIssued, key, now, def.PerQuotaWindow) >= def.PerQuotaMax)
                 {
                     Reply(player, deviceId, channel,
-                        T("PerQuotaExhausted", "name", def.Name, "n", def.PerQuotaMax.ToString(),
+                        TReg(def.QuotaText, def.Name, "PerQuotaExhausted", "name", def.Name, "n", def.PerQuotaMax.ToString(),
                             "win", def.PerQuotaWindow.ToString("F0")));
                     return;
                 }
@@ -717,7 +717,7 @@ namespace HideAndSeek.Features.Rule
                     && now - roomLast < def.RoomCooldown)
                 {
                     Reply(player, deviceId, channel,
-                        TScoped(def.Name, "RoomCooldown",
+                        TReg(def.RoomCdText, def.Name, "RoomCooldown",
                             "name", def.Name,
                             "sec", (((int)(def.RoomCooldown - (now - roomLast))) + 1).ToString()));
                     return;
@@ -741,7 +741,7 @@ namespace HideAndSeek.Features.Rule
 
                     // 措辞按命令走：Texts 里写 `fish.Cooldown = …` 可单独定制，没写的回退通用模板。
                     Reply(player, deviceId, channel,
-                        TScoped(def.Name, "Cooldown",
+                        TReg(def.CdText, def.Name, "Cooldown",
                             "name", def.Name,
                             "sec", (((int)(def.Cooldown - (now - last))) + 1).ToString()));
                     return;
