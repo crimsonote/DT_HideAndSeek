@@ -570,6 +570,10 @@ namespace HideAndSeek.Features.Rule
                 int pid = player.PublicInfo?.PlayerId ?? 0;
                 string key = CmdKey(def, pid);
 
+                // 记下"引擎写入之前"的冷却状态，供延迟结算型命令在失败时回滚
+                // （见 DoRefresh / RollbackRefreshCount）。必须在 :620 写 LastUse 之前取。
+                bool hadLast = LastUse.TryGetValue(key, out float prevLast);
+
                 int used = Uses.TryGetValue(key, out int u) ? u : 0;
                 if (def.MaxUses > 0 && used >= def.MaxUses)
                 {
@@ -613,7 +617,8 @@ namespace HideAndSeek.Features.Rule
                     if (a.Length == 0)
                         continue;
 
-                    if (!RunAction(room, player, deviceId, channel, def, a, arg, ref special))
+                    if (!RunAction(room, player, deviceId, channel, def, a, arg, ref special,
+                                   key, prevLast, hadLast))
                         return;                      // 没做成 → 不计次数、不写冷却
                 }
 
@@ -636,7 +641,8 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static bool RunAction(GameRoom room, GamePlayer player, int deviceId,
                                       CommandChannel channel, CommandDef def, string a, string arg,
-                                      ref bool special)
+                                      ref bool special,
+                                      string key, float prevLast, bool hadLast)
         {
             switch (a.ToLowerInvariant())
             {
@@ -655,7 +661,9 @@ namespace HideAndSeek.Features.Rule
 
                 case "refresh":
                     special = true;
-                    return DoRefresh(room, player, deviceId, channel);
+                    // 把「引擎写入前的次数/冷却状态」一并传下去 —— 它是延迟结算型命令，
+                    // 结算失败时必须把引擎已经扣掉的还回去（见 DoRefresh 的注释）。
+                    return DoRefresh(room, player, deviceId, channel, key, prevLast, hadLast);
 
                 case "radar":
                     special = true;
@@ -1585,43 +1593,85 @@ namespace HideAndSeek.Features.Rule
         ///
         /// 冷却与次数由引擎统一处理（UsesPerPlayer = true），这里只管"发起 → 延迟 → 结算"。
         /// </summary>
-        private static bool DoRefresh(GameRoom room, GamePlayer player, int deviceId, CommandChannel channel)
+        /// 冷却与次数由引擎统一处理（UsesPerPlayer = true），这里只管"发起 → 延迟 → 结算"。
+        ///
+        /// ⚠ 延迟结算的计数契约：引擎在 Execute 里是**发起成功就写 Uses/LastUse**（:610-611），
+        /// 于是延迟到 5 秒后才失败时，次数与冷却已经被扣掉了 —— 违反引擎自己的
+        /// 「没做成 → 不计次数、不写冷却」。两条路分开处理：
+        ///   · delay <= 0（同步结算）⇒ 直接把结算结果返回，失败时引擎自然不会计数；
+        ///   · delay >  0（延迟结算）⇒ 先报"发起成功"让引擎计数，结算失败时再还回去。
+        /// </summary>
+        private static bool DoRefresh(GameRoom room, GamePlayer player, int deviceId, CommandChannel channel,
+                                      string key, float prevLast, bool hadLast)
         {
             int delay = RefreshDelayMs?.Value ?? 5000;
             Reply(player, deviceId, channel, T("RefreshPending"));
 
             if (delay <= 0)
-            {
-                CompleteRefresh(room, player, deviceId, channel);
-                return true;
-            }
+                return CompleteAsMission(player);      // 同步：如实上报结算结果
 
             room.PushAfter(delay, delegate
             {
-                CompleteRefresh(room, player, deviceId, channel);
+                CompleteRefresh(room, player, deviceId, channel, key, prevLast, hadLast);
             });
-            return true;
+            return true;                               // 延迟：发起成功，等结算
         }
 
-        /// <summary>延迟结束后的第二次校验与结算。阶段/存活在等待期间可能已变化，需重新确认。</summary>
-        private static void CompleteRefresh(GameRoom room, GamePlayer player, int deviceId, CommandChannel channel)
+        /// <summary>
+        /// 延迟结束后的第二次校验与结算。阶段/存活在等待期间可能已变化，需重新确认。
+        /// **每一条失败路径都要把引擎已经扣掉的次数与冷却还回去**（否则就是"失败也扣次数"）。
+        /// </summary>
+        private static void CompleteRefresh(GameRoom room, GamePlayer player, int deviceId, CommandChannel channel,
+                                            string key, float prevLast, bool hadLast)
         {
             try
             {
                 if (room == null || player?.PublicInfo == null)
+                {
+                    RollbackRefreshCount(key, prevLast, hadLast);
                     return;
+                }
                 if (room.State != EGameState.Survive || !player.IsAlive)
-                    return;                          // 等待期间阶段变了或阵亡 → 静默收尾
+                {
+                    RollbackRefreshCount(key, prevLast, hadLast);   // 等待期间阶段变了或阵亡
+                    return;
+                }
 
                 if (CompleteAsMission(player))
+                {
                     Reply(player, deviceId, channel, T("RefreshDone"));
+                }
                 else
+                {
+                    RollbackRefreshCount(key, prevLast, hadLast);   // 结算本身失败
                     Reply(player, deviceId, channel, T("RefreshFailed"));
+                }
             }
             catch (global::System.Exception ex)
             {
+                RollbackRefreshCount(key, prevLast, hadLast);
                 Plugin.Log.LogWarning($"[HS] /refresh 延迟结算失败 — {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 把引擎因"发起成功"而写下的次数与冷却还回去，等价于"这次没发生过"。
+        ///
+        /// 只用于**延迟结算型**命令：同步命令失败时引擎本来就不会计数，不需要回滚。
+        /// 冷却要恢复成**原值**而不是直接删掉 —— 否则会把更早那次成功调用留下的冷却一起清掉。
+        /// </summary>
+        private static void RollbackRefreshCount(string key, float prevLast, bool hadLast)
+        {
+            if (string.IsNullOrEmpty(key))
+                return;
+
+            if (Uses.TryGetValue(key, out int used) && used > 0)
+                Uses[key] = used - 1;
+
+            if (hadLast)
+                LastUse[key] = prevLast;
+            else
+                LastUse.Remove(key);
         }
 
         /// <summary>
