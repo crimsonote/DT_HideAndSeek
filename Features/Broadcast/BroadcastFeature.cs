@@ -23,6 +23,8 @@ namespace HideAndSeek.Features.Broadcast
     ///   进房介绍 —— 单发给该玩家，{knife} 按发刀模式替换
     ///   开局提示 —— 单发，且按身份选三种文案之一（自行拿刀 / 黑方 / 白方）
     ///   死亡、拿刀 —— 全员广播
+    ///   公开黑方身份（RevealBlackOnKnife）—— 拿刀通告内换行追加；开局发刀模式追加进白方
+    ///   开局消息，并把该条消息按 DeviceChat 记进公共发信机（可回看，见 NoticeToWhiteChannel）
     ///
     /// 已知限制（客户端行为，属预期）：死亡玩家收不到弹泡（:82641 的 !IsAlive 会 skip）；
     /// 播报会写进 SecretLog 并在主机迁移时重放（ReplaySecretChatTo :171972）；
@@ -81,6 +83,14 @@ namespace HideAndSeek.Features.Broadcast
 
         [ConfigField("捉迷藏开始了~", "拿刀通告（仅自行拿刀模式发出；自动指定黑方时不发）。")]
         public static ConfigEntry<string> WeaponTaken;
+
+        /// <summary>
+        /// 是否把黑方身份（角色名 + 玩家昵称）公开出去。
+        /// 拿刀模式：换行追加进同一条拿刀通告（WeaponTaken）；开局发刀模式：追加进
+        /// 开局白方消息的末尾，并把那条消息整体记进公共发信机备查。
+        /// </summary>
+        [ConfigField(false, "公开黑方身份（角色名 + 玩家昵称）：拿刀通告内换行追加；开局发刀模式追加到白方开局消息末尾，并把该消息记进公共发信机。")]
+        public static ConfigEntry<bool> RevealBlackOnKnife;
 
         [ConfigField(true, "房主用 hs_* 命令改动玩法设置时，向全场播报这次调整（仅在生存阶段播报）。")]
         public static ConfigEntry<bool> AnnounceRuleChanges;
@@ -414,6 +424,91 @@ namespace HideAndSeek.Features.Broadcast
             __instance.PushAfter(delay < 0 ? 0 : delay, () => SendStartTips(__instance));
         }
 
+        /// <summary>是否把黑方身份公开出去。</summary>
+        private static bool RevealEnabled
+            => RevealBlackOnKnife != null && RevealBlackOnKnife.Value;
+
+        /// <summary>
+        /// 角色显示名（如「露娜」）。
+        ///
+        /// 链：<c>Player.CharacterId</c>（:175506，实为 PublicInfo.CharacterId）
+        ///  → <c>DataManager.CharacterDic[id].Name</c>（:33130；**这是英文资源键**，如 "Luna"，
+        ///     见 CharacterData.json:18 与 :179750）
+        ///  → <c>DataManager.TextDic["Luna"].Text</c>（:33150 / :180003；按当前语言加载，:33225）
+        ///     = 本地化显示名「露娜」（已核对 CHS_TextData：DataId "Luna" → Text "露娜"）。
+        /// 游戏自己显示角色名走的正是这两步：UI_ShopPopup.RefreshCharacterName（:65402-65408）
+        /// → SafeText（:67289-67300）→ Managers.GetText（:41819-41827）。
+        ///
+        /// 降级（绝不留空、不抛异常）：角色 DataId 无效 → "未知角色"；CharacterDic 里没这个名字 →
+        /// "角色&lt;id&gt;"；TextDic 里没有该键 → 用英文键本身（如 "Medelin"）。
+        ///
+        /// ⚠ **不要"顺手统一"成 <c>Managers.GetText</c>（:41819）**。它是 TextDic.TryGetValue 的
+        /// 一层包装，**命中时结果与本函数完全一致**，唯一差别是缺键时会 UnityEngine.Debug.LogError。
+        /// 而上游数据就有对不上的键：101 号的 CharacterData.Name 在一份 dump 里是 "Medelin"
+        /// （gamedata/CharacterData.json:4、gamedata2/CharacterData__data.json:7），另一份里是
+        /// "Madeline"（gamedata2/CharacterData__common_data.json:13），而本地化 TextDic 只有
+        /// "Madeline"（CHS_TextData__language.json:5055）。离线无法确定运行时用哪一份 —— 一旦是
+        /// "Medelin"，开局发刀每选中一次 101 号黑方就会往 Player.log 刷一条
+        /// "[Text] Missing TextData key: Medelin" 的**假告警**：那是上游数据问题，不该由我们触发
+        /// 告警，而日志是本模块排障的主要手段。故此处直接读 TextDic，缺键静默降级。
+        /// </summary>
+        private static string CharacterNameOf(GamePlayer player)
+        {
+            int id = player?.CharacterId ?? 0;
+            if (id <= 0)
+                return "未知角色";
+
+            string key = null;
+            var characters = Managers.Data?.CharacterDic;
+            if (characters != null && characters.TryGetValue(id, out var cd) && cd != null)
+                key = cd.Name;
+
+            if (string.IsNullOrEmpty(key))
+                return "角色" + id;
+
+            var texts = Managers.Data?.TextDic;
+            if (texts != null && texts.TryGetValue(key, out var text) && text != null
+                && !string.IsNullOrEmpty(text.Text))
+                return text.Text;
+
+            return key;
+        }
+
+        /// <summary>
+        /// 局内黑方（含 Dark）的标签，形如 <c>「露娜」(昵称)</c> —— 角色名 + 玩家昵称。
+        ///
+        /// 身份只读 <see cref="GameRoom.Players"/> 的 Color，不向 WeaponGrantFeature 反查：
+        /// 两条产生黑方的路径最终都走 ItemManager.InsertWeapon，而它在写 Weapon **之前**
+        /// 就已把 Color 定为 Black（:172692-172697），所以调用方拿到的一定是最终值。
+        /// </summary>
+        private static List<string> BlackLabels(GameRoom room)
+        {
+            var labels = new List<string>();
+
+            if (room?.Players == null)
+                return labels;
+
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo == null)
+                    continue;
+                if (p.Color != EPlayerColor.Black && p.Color != EPlayerColor.Dark)
+                    continue;
+
+                string nick = string.IsNullOrEmpty(p.Name) ? "某人" : p.Name;
+                labels.Add($"「{CharacterNameOf(p)}」({nick})");
+            }
+
+            return labels;
+        }
+
+        /// <summary>黑方身份一行文本，如 <c>黑方是「露娜」(昵称)</c>；多个黑方同行并列；一个都没有时返回 null。</summary>
+        private static string BlackRevealText(GameRoom room)
+        {
+            var labels = BlackLabels(room);
+            return labels.Count == 0 ? null : "黑方是" + string.Join("、", labels);
+        }
+
         private static void SendStartTips(GameRoom room)
         {
             if (room == null)
@@ -421,21 +516,68 @@ namespace HideAndSeek.Features.Broadcast
 
             bool auto = AutoAssignBlack;
 
+            // 自动发刀模式下黑方由 WeaponGrantFeature 指定。两条 PushAfter 进的是同一个
+            // JobTimer（按 execTick 排出队的优先队列），而发刀默认 2500ms 早于本提示默认
+            // 3200ms，所以此处读到的 Color 已是最终值；若用户把 GrantDelayMs 调到大于
+            // StartDelayMs，这里会拿不到人 —— 此时不猜、不编，只记一条警告。
+            string reveal = auto && RevealEnabled ? BlackRevealText(room) : null;
+            if (auto && RevealEnabled && string.IsNullOrEmpty(reveal))
+                Plugin.Log.LogWarning(
+                    "[HS] Broadcast：开局提示时还没有黑方（GrantDelayMs 是否大于 StartDelayMs？），本次不公开黑方身份。");
+
+            // 白方开局消息（已含黑方身份）。循环外只算一次：所有白方拿到的是同一条文本，
+            // 而且该条整体还要作为一条记录进公共发信机。
+            string whiteTip = null;
+            if (auto && !string.IsNullOrEmpty(reveal))
+                whiteTip = Titled(TextService.Format(StartBodyWhite?.Value)) + "\n" + reveal;
+
             foreach (var player in room.Players)
             {
                 if (player?.Session == null || player.PublicInfo == null)
                     continue;
 
-                string body;
-                if (!auto)
-                    body = StartBodySelfServe?.Value;
-                else if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
-                    body = StartBodyBlack?.Value;
-                else
-                    body = StartBodyWhite?.Value;
+                bool isBlack = player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark;
 
-                SendRawTo(player, EChatType.SecretChat, Titled(TextService.Format(body)));   // 局内气泡：原样，不折行
+                // 黑方身份追加在**同一条消息内**（白方开局消息末尾），不另发一条气泡 ——
+                // UI_SecretChatOverlay 同一时刻只留一条，另发只会把这条顶掉。
+                string tip;
+                if (!auto)
+                    tip = Titled(TextService.Format(StartBodySelfServe?.Value));
+                else if (isBlack)
+                    tip = Titled(TextService.Format(StartBodyBlack?.Value));
+                else
+                    tip = whiteTip ?? Titled(TextService.Format(StartBodyWhite?.Value));
+
+                SendRawTo(player, EChatType.SecretChat, tip);   // 局内气泡：原样，不折行
             }
+
+            // 白方频道（公共发信机）留一条同样的记录，供事后回看。
+            if (whiteTip != null)
+                NoticeToWhiteChannel(room, whiteTip);
+        }
+
+        /// <summary>
+        /// 把一条文本记进**公共发信机**（聊天频道）。
+        ///
+        /// 与"气泡"是两条完全不同的链路，这也是不能拿独立 SecretChat 来充当发信机记录的原因：
+        ///   SecretChat → 客户端 _secretChatQueue → Voice.SecretLog + OnSecretChatReceived
+        ///                → 只有 UI_SecretChatOverlay 订阅（:82622-82623），且新的一条会先
+        ///                  KillImmediate 掉上一条（:82666-82671）⇒ 只是"飘过去的一句话"。
+        ///   DeviceChat → 客户端 _deviceChatQueue → Voice.NormalLog + OnDeviceChatReceived
+        ///                （:41264-41272，仅存活玩家与侦探阶段保留）⇒ 发信机 UI 的一行，
+        ///                每次打开发信机都从 NormalLog 全量重放（:46763-46766）⇒ 可回看。
+        /// 服务端再记一份 GameRoom.DeviceChatLog（:171984），侦探阶段 ReplayDeviceChatTo
+        /// 会把生存阶段错过的内容补发给死者（:171467）—— 游戏对真实发信机消息就是这么做的
+        /// （RelayDeviceChat :174783 里的 room.RecordDeviceChat）。
+        /// </summary>
+        private static void NoticeToWhiteChannel(GameRoom room, string text)
+        {
+            if (room == null || string.IsNullOrEmpty(text))
+                return;
+
+            var packet = BuildText(text, EChatType.DeviceChat);
+            room.Broadcast(packet);          // 存活者即时进 NormalLog 与发信机 UI
+            room.RecordDeviceChat(packet);   // 服务端留档，侦探阶段补发给死者
         }
 
         // ── 死亡通告 ────────────────────────────────────────────────
@@ -493,7 +635,20 @@ namespace HideAndSeek.Features.Broadcast
             if (player == null || player.Color != EPlayerColor.Black)
                 return;
 
-            Notice(GameRoom.Instance, TextService.Format(WeaponTaken?.Value));
+            var room = GameRoom.Instance;
+            string text = TextService.Format(WeaponTaken?.Value);
+
+            // 同一条消息内换行追加黑方身份：读完黑方身份仍是当前这一位（Color 已在
+            // InsertWeapon 内先于 Weapon 赋值写好），因此不必等下一帧。
+            // 拼在 Format 之后 —— 名字里的反斜杠不该被当成 \n 转义。
+            if (RevealEnabled)
+            {
+                string reveal = BlackRevealText(room);
+                if (!string.IsNullOrEmpty(reveal))
+                    text = string.IsNullOrEmpty(text) ? reveal : text + "\n" + reveal;
+            }
+
+            Notice(room, text);
         }
     }
 }
