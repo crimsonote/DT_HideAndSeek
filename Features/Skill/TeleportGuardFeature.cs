@@ -71,6 +71,43 @@ namespace HideAndSeek.Features.Skill
 
         private const float PendingTtl = 5f;
 
+        /// <summary>
+        /// 清空本功能全部跨局静态状态。**必须在回大厅 / 开局时调用。**
+        ///
+        /// 为什么必须清：<c>TimeManager.ResetSurvival()</c> 每局把 SurviveTime 设回
+        /// <b>420</b>（不是从 0 重新计时）。上一局登记的 <c>_pendingAt</c> 可能比新局的 now
+        /// 还大，于是 <c>now - _pendingAt</c> 为负、旧落点会一直"没过期"，
+        /// <b>新局第一次黑洞特效会被改写到上一局的落点</b>。
+        ///
+        /// 这是双保险的第一道（显式清理）；第二道在 <see cref="VfxHook"/> 的过期判据里
+        /// （要求时间戳必须落在过去），即使这里漏清也不会把负差当成"还没过期"。
+        /// </summary>
+        private static void ResetState()
+        {
+            _pendingLanding = null;
+            _pendingAt = -999f;
+            _casterId = 0;
+            _casterIsBlack = false;
+            Suppress = 0;
+        }
+
+        // 清理是基础能力、不该受配置影响，所以两个钩子都放在本类里。
+        // ⚠ 不能挪到默认关闭的段：PatchLoader 对未启用的段会跳过整类 PatchAll，
+        // 清理钩子会形同不存在（AGENTS「已踩过的坑」第 8 条）。
+        [HarmonyPatch(typeof(GameRoom), "StartLobby")]
+        internal static class StartLobbyResetHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix() => ResetState();
+        }
+
+        [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
+        internal static class StartSurviveResetHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix() => ResetState();
+        }
+
         // ── L3：落点改写 ────────────────────────────────────────────
         [HarmonyPatch(typeof(GameSkill), "TryGetSafeLandingPos")]
         internal static class LandingHook
@@ -151,9 +188,12 @@ namespace HideAndSeek.Features.Skill
                 if (ModeRuntime.Bypass || _pendingLanding == null)
                     return;
 
-                    // 过期即作废：该字段只写不清，没有窗口会一直影响后续所有黑洞广播
+                    // 过期即作废：该字段只写不清，没有窗口会一直影响后续所有黑洞广播。
+                    // 判据必须要求时间戳落在**过去**（now >= _pendingAt）：SurviveTime 每局被
+                    // ResetSurvival() 设回 420（不是从 0），跨局时 now - _pendingAt 会是负数，
+                    // 只判 `> PendingTtl` 会把负差当成"还没过期"。
                     float now = TimeManager.Instance?.SurviveTime ?? 0f;
-                    if (now - _pendingAt > PendingTtl)
+                    if (now < _pendingAt || now - _pendingAt > PendingTtl)
                     {
                         _pendingLanding = null;
                         return;
