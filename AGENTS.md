@@ -1,4 +1,4 @@
-# HideAndSeek 开发规范
+﻿# HideAndSeek 开发规范
 
 《Deadly Trick》的**房主端**捉迷藏玩法模块，参照 DT_Tools 的框架实现。
 
@@ -76,6 +76,24 @@ pwsh -File deploy.ps1
   这四处都是"框架自己需要"，不是"某个功能偷偷绕过 `[ConfigField]`"。
 - `Plugin.cs` 只组装：解析配置来源 → `PatchLoader.Load` → 落盘 → 报告。
 - 不署他人之名；author 留空。
+
+---
+
+## 设置页框架（`Features/UI/`）
+
+大厅「详细设置」（`UI_LobbyPreset`）里的《捉迷藏》页签与设置框架。
+
+**加设置项 = 加一行声明**（改 `Features/UI/HideAndSeekSettingsContent.cs`），
+**补丁代码（`LobbySettingPatches.cs`）与宿主（`LobbySettingHost.cs`）都不用动。**
+加滑条/下拉/新页签的做法、prefab 路径常量、铁律与已知限制，见
+**`Features/UI/EXTENDING.md`**（动手前先读它）。
+
+两个容易踩的点：
+
+- 声明里配置项必须写成 `() => Xxx.Entry` 的**惰性委托** —— `RegisterAll()` 跑在
+  `PatchLoader.Load` 之前，那时所有 `ConfigEntry` 还是 `null`。
+- 克隆出来的控件**必须** `RemoveAllListeners()`：`Instantiate` 会把原版监听器一起复制，
+  否则"点我的页签会连带触发原版 `SwitchTab`"、"拨我的开关会连带改原版设置"。
 
 ---
 

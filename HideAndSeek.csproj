@@ -8,8 +8,12 @@
     <LangVersion>latest</LangVersion>
     <NoWarn>$(NoWarn);CS0649</NoWarn>
 
-    <!-- 游戏程序集（仓库内 libs，与 DT_Tools 共用） -->
-    <GameManaged Condition="'$(GameManaged)' == ''">$(MSBuildThisFileDirectory)..\libs</GameManaged>
+    <!-- 游戏程序集（仓库内 libs，与 DT_Tools 共用）。
+         本目录是派生工作区（.tmps\hs-ui-framework），比 HideAndSeek\ 深两层，
+         因此兼容两种位置：先按相对路径找，找不到再回退到仓库根的 libs。
+         这样本文件可直接合并回 HideAndSeek\ 而无需修改。 -->
+    <GameManaged Condition="'$(GameManaged)' == '' AND Exists('$(MSBuildThisFileDirectory)..\libs\Assembly-CSharp.dll')">$(MSBuildThisFileDirectory)..\libs</GameManaged>
+    <GameManaged Condition="'$(GameManaged)' == ''">D:\git\DT_Tools\libs</GameManaged>
 
     <!-- 游戏安装目录，仅用于取 BepInEx\core 下的 BepInEx.dll / 0Harmony.dll。
          换机器或换盘符时用 -p:GameDir=... 覆盖即可。 -->
@@ -30,6 +34,20 @@
     </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(GameManaged)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GameManaged)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(GameManaged)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- CanvasGroup（房主闸门用）在 UnityEngine.UIModule 里，UnityEngine.UI.dll 不含它：
+         缺这个引用会报 CS1069「CanvasGroup 已转发到 UnityEngine.UIModule」。 -->
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(GameManaged)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
