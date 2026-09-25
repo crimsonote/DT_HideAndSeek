@@ -225,13 +225,6 @@ namespace HideAndSeek.Features.Broadcast
             room.Broadcast(BuildText(text, EChatType.SecretChat));
             room.Broadcast(BuildText(text, EChatType.DeviceChat));
         }
-        private static void NoticeTo(GamePlayer player, string text)
-        {
-            if (player?.Session == null || string.IsNullOrEmpty(text))
-                return;
-
-            player.Session.Send(BuildText(text, EChatType.NormalChat));
-        }
 
         /// <summary>
         /// 按显示宽度把一行切成多行。中文按 2 个半角单位计。
