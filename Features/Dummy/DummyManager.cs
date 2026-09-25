@@ -383,25 +383,20 @@ namespace HideAndSeek.Features.Dummy
                     // 玩家看到的"假人不会自动随机"就是这个：本该秒选的假人，
                     // 被游戏按"选择了随机"处理，一路拖到选角倒计时结束。
                     //
-                    // -2 表示"随机"：这里自己挑一个未被占用的角色，直接走具体角色分支，
-                    // 效果等同随机但立刻生效。
-                    if (chara == -2)
-                    {
-                        chara = PickRandomFreeCharacter(room);
-                        if (chara == 0)
-                            continue;                     // 没有可用角色，下个 tick 再试
-                    }
-
                     room.PickCharacter(player, chara);
 
-                    // PickCharacter 对不满足前置（phase not ready / 超时 / 角色被占）
-                    // 是**静默 return** 的，必须自己判定是否真的生效 ——
-                    // 这里曾把"调用过一次"当成成功就直接出队（f6823c7），
-                    // 结果第一次失败后再也不重试，选角永远不生效。
+                    // PickCharacter 对不满足前置（phase not ready / 超时 / 角色被占）是**静默 return** 的。
+// 对"指定角色"必须用 CharacterId 反查是否真的生效 —— 曾把"调用过一次"当成成功就直接
+// 出队（f6823c7），结果第一次失败后再也不重试，选角永远不生效。
+// 对"随机"（-2）则不同：它只是**登记**，角色由系统在选角结束时分配，登记即算成功。
                     bool ok;
                     if (chara == -2)
                     {
-                        ok = (TimeManager.Instance?.StopWatch ?? 40) < 40;
+                        // -2 = 游戏内置的「随机」：PickCharacter 会把它登记进 _randomPickPlayers，
+                        // 由**系统**在选角结束时统一分配（不会重复）。我们**不再自己挑角色** ——
+                        // 那等于替系统指定，丢掉了"随机"的语义。
+                        // 登记即算成功：反复重试只是把同一个人反复登记（玩家看到的就是"一直随机"）。
+                        ok = true;
                     }
                     else
                     {
