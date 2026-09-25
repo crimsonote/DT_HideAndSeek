@@ -2,6 +2,7 @@
 using System.Linq;
 using BepInEx.Configuration;
 using HarmonyLib;
+using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
 
@@ -140,6 +141,30 @@ namespace HideAndSeek.Features.Dummy
         // 且 DesiredCharacter 残留会让真人被当成假人选角。
         // 本段如今默认启用，所以这个钩子一定挂得上（原先它在默认关闭的 [Dummy] 里，
         // 等于把"要不要清理"变成了藏在段开关里的意外配置）。
+        //
+        // ⚠ 但**只挂 StartLobby 是不够的**：vanilla 的 StartLobby 会用 HandleLeavePlayer
+        // 把假人删掉、并清掉 IsDummy 标记。等这个 Postfix 跑到时，IsDummy 已经没了 ——
+        // 而 ResyncTracking 判"这个座位还算不算我们的"时看的正是 IsDummy ⇒ 判据为假
+        // ⇒ SpawnedIds 不减、座位不释放 ⇒ 表现就是"跨局席位没清干净"。
+        //
+        // 所以在**离开对局的那一刻**再清一次（那时假人和 IsDummy 都还在，清得掉）。
+        // 与 SodaBoostFeature.LeaveSurviveHook 同一手法。
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
+        internal static class LeaveSurviveHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(EGameState state)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+                if (state == EGameState.Survive)
+                    return;                       // 只有"离开对局"时才清
+
+                // 此刻 IsDummy 还没被 vanilla 抹掉，能按它准确对齐跟踪表与座位。
+                DummyManager.ResyncTracking();
+            }
+        }
+
         [HarmonyPatch(typeof(GameRoom), "StartLobby")]
         internal static class StartLobbyHook
         {
