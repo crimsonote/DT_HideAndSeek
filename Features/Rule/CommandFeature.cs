@@ -270,6 +270,32 @@ namespace HideAndSeek.Features.Rule
             /// <summary>全房固定冷却秒数：全房共用。0 = 不启用。</summary>
             public int RoomCooldown;
 
+            // ── 命令自己的措辞（在注册表那一行里写，与 cd=/quota= 同级）──
+            //
+            // 为什么要能"外部注册"而不是只靠全局 Texts：措辞是**这条命令的一部分**，
+            // 跟它的冷却、配额一样属于它的定义。写在注册表行里，改一条命令的措辞
+            // 不必去翻那张把所有命令混在一起的大文本表。
+            //
+            // 查找优先级：**注册表字段 > Texts 里的「命令名.键」 > Texts 里的通用键**。
+            // 三层都不写就走通用模板 —— 所以旧配置与没定制的命令行为不变。
+            //
+            // 文案里不要写分号（; 是参数分隔符；要分行用 \n）。
+
+            /// <summary>全房/每人配额用尽时的措辞。空 = 走 Texts。</summary>
+            public string QuotaText;
+
+            /// <summary>全房冷却中的措辞。空 = 走 Texts。</summary>
+            public string RoomCdText;
+
+            /// <summary>每人冷却中的措辞。空 = 走 Texts。</summary>
+            public string CdText;
+
+            /// <summary>次数用尽（uses=）时的措辞。空 = 走 Texts。</summary>
+            public string UsesText;
+
+            /// <summary>阶段/存活不满足被拦时的措辞。空 = 走 Texts。</summary>
+            public string BlockedText;
+
             /// <summary>
             /// true = 不受「必须在生存阶段且存活」这道闸门约束。
             /// 只有 /help 需要：它在旧实现里走的是 Handle 的 switch，从来没有阶段检查 ——
@@ -691,7 +717,8 @@ namespace HideAndSeek.Features.Rule
                     && now - roomLast < def.RoomCooldown)
                 {
                     Reply(player, deviceId, channel,
-                        T("RoomCooldown", "name", def.Name,
+                        TScoped(def.Name, "RoomCooldown",
+                            "name", def.Name,
                             "sec", (((int)(def.RoomCooldown - (now - roomLast))) + 1).ToString()));
                     return;
                 }
@@ -712,8 +739,10 @@ namespace HideAndSeek.Features.Rule
                         CdNotice[key] = now;
                     }
 
+                    // 措辞按命令走：Texts 里写 `fish.Cooldown = …` 可单独定制，没写的回退通用模板。
                     Reply(player, deviceId, channel,
-                        T("Cooldown", "name", def.Name,
+                        TScoped(def.Name, "Cooldown",
+                            "name", def.Name,
                             "sec", (((int)(def.Cooldown - (now - last))) + 1).ToString()));
                     return;
                 }
@@ -1089,6 +1118,39 @@ namespace HideAndSeek.Features.Rule
                     continue;
                 }
 
+                // ── 命令自己的措辞（与 cd=/quota= 同级，写在这一行里）──
+                // 查找优先级：注册表字段 > Texts 的「命令名.键」 > Texts 的通用键。
+                // 值里不能有分号（; 是参数分隔符），要分行用 \n。
+                if (p.StartsWith("quotatext=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    def.QuotaText = p.Substring(10).Trim();
+                    continue;
+                }
+
+                if (p.StartsWith("roomcdtext=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    def.RoomCdText = p.Substring(11).Trim();
+                    continue;
+                }
+
+                if (p.StartsWith("cdtext=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    def.CdText = p.Substring(7).Trim();
+                    continue;
+                }
+
+                if (p.StartsWith("usestext=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    def.UsesText = p.Substring(9).Trim();
+                    continue;
+                }
+
+                if (p.StartsWith("blockedtext=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    def.BlockedText = p.Substring(12).Trim();
+                    continue;
+                }
+
                 if (p.StartsWith("side=", global::System.StringComparison.OrdinalIgnoreCase))
                 {
                     def.Side = ParseSide(p.Substring(5).Trim());
@@ -1230,6 +1292,27 @@ namespace HideAndSeek.Features.Rule
 
         private static string T(string key, string k1, string v1, string k2, string v2, string k3, string v3)
             => T(key, k1, v1, k2, v2).Replace("{" + k3 + "}", v3 ?? "");
+
+        /// <summary>
+        /// 带**命令作用域**的查找：先找「命令名.键」，找不到再回退到通用键。
+        ///
+        /// 为什么要它：同一件事（配额用尽 / 冷却中）在不同命令上该有不同说法 ——
+        /// 鱼是"鱼已经卖光了"，汽水是"汽水机空了"，时停是"刚用过"。
+        /// 若所有命令共用一套固定模板，就没法逐条改措辞。
+        ///
+        /// 用法：在 Texts 里写一行 `<c>fish.QuotaExhausted = 鱼已经卖光了，{win} 秒后再来。</c>
+        /// 即可单独定制；没写的命令继续用通用模板，行为不变。
+        /// </summary>
+        private static string TScoped(string scope, string key, params string[] pairs)
+        {
+            string text = string.IsNullOrEmpty(scope) ? "" : T(scope + "." + key);
+            if (string.IsNullOrEmpty(text))
+                text = T(key);
+
+            for (int i = 0; i + 1 < pairs.Length; i += 2)
+                text = text.Replace("{" + pairs[i] + "}", pairs[i + 1] ?? "");
+            return text;
+        }
 
         /// <summary>
         /// 供同程序集内其它功能复用这张文案表（目前是 KeyLockFeature 的提灯文案）。
