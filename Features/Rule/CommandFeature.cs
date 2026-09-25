@@ -1732,7 +1732,9 @@ namespace HideAndSeek.Features.Rule
         {
             if (WhiteRadarFeature.DurationSeconds != null)
                 WhiteRadarFeature.DurationSeconds.Value = RadarDurationSeconds?.Value ?? 15;
-            WhiteRadarFeature.SetActive(true);
+            // 只对**打命令的人**生效：/rad 是每人独立次数的命令（UsesPerPlayer），
+            // 若开成全房雷达，就是"一个人消耗次数、全房白方受益"。
+            WhiteRadarFeature.SetActive(true, player?.PublicInfo?.PlayerId ?? 0);
 
             // 引擎在动作全部成功后才写回 Uses，所以这里读到的是"本次之前"的计数。
             string key = CmdKey(def, player.PublicInfo?.PlayerId ?? 0);

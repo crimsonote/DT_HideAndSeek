@@ -77,11 +77,21 @@ namespace HideAndSeek.Features.Vision
 
         internal static bool IsActive => RadarOn != null && RadarOn.Value;
 
+        /// <summary>
+        /// 本次雷达只对这名玩家生效（0 = 对全部白方生效）。
+        ///
+        /// 为什么要有它：`/rad` 是**每人独立次数**的命令（UsesPerPlayer，默认 2 次），
+        /// 但雷达本身是全局开关 ⇒ 原先一人使用、全房白方都看到全图 ——
+        /// 一个人消耗次数、所有人受益，"每人次数"这个设计就失去意义了。
+        /// 现在把触发者记下来，只给他发 pin。
+        /// </summary>
+        private static int _ownerPid;
+
         private static bool UsePureDot =>
             string.Equals(Mode?.Value?.Trim(), "PureDot", global::System.StringComparison.OrdinalIgnoreCase);
 
         /// <summary>开关雷达。</summary>
-        internal static void SetActive(bool on)
+        internal static void SetActive(bool on, int ownerPid = 0)
         {
             if (RadarOn == null)
                 return;
@@ -96,6 +106,7 @@ namespace HideAndSeek.Features.Vision
             }
 
             RadarOn.Value = true;
+            _ownerPid = ownerPid;                 // 0 = 全房白方（房主手动开）
 
             int seconds = DurationSeconds?.Value ?? 0;
             _endAt = seconds > 0 ? (TimeManager.Instance?.SurviveTime ?? 0f) + seconds : 0f;
@@ -238,6 +249,9 @@ namespace HideAndSeek.Features.Vision
                 if (white?.PublicInfo == null || white.Session == null)
                     continue;
                 if (white.Color != EPlayerColor.White || !white.IsAlive || white.IsSpectator)
+                    continue;
+                // 谁用的 /rad 就只给谁发；_ownerPid = 0 表示"全房"（房主用 hs_radar 手动开）
+                if (_ownerPid != 0 && white.PublicInfo.PlayerId != _ownerPid)
                     continue;
 
                 if (pureDot)
