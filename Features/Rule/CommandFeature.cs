@@ -1031,6 +1031,52 @@ namespace HideAndSeek.Features.Rule
                     continue;
                 }
 
+                // ── 「四层空间」的三个键（语义见 CommandDef 里那段注释）──
+                //   quota=N[/W]     全房滑窗配额：W 秒内全房最多 N 次（省略 /W 用默认窗口）
+                //   perQuota=N[/W]  每人滑窗配额
+                //   roomCd=N        全房固定冷却
+                // 注意 perQuota 与 quota 不冲突：前者以 `perq` 开头，StartsWith("quota=") 判不到它。
+                if (p.StartsWith("quota=", global::System.StringComparison.OrdinalIgnoreCase)
+                    || p.StartsWith("perquota=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    bool per = p.StartsWith("perquota=", global::System.StringComparison.OrdinalIgnoreCase);
+                    string val = (per ? p.Substring(9) : p.Substring(6)).Trim();
+
+                    int slash = val.IndexOf('/');
+                    string left = slash >= 0 ? val.Substring(0, slash) : val;
+                    string right = slash >= 0 ? val.Substring(slash + 1) : null;
+
+                    int n = 0;
+                    if (int.TryParse(left.Trim(), out int parsed))
+                        n = parsed < 0 ? 0 : parsed;
+
+                    float w = 300f;
+                    if (right != null
+                        && float.TryParse(right.Trim(), global::System.Globalization.NumberStyles.Float,
+                                          global::System.Globalization.CultureInfo.InvariantCulture, out float pw)
+                        && pw > 0f)
+                        w = pw;
+
+                    if (per)
+                    {
+                        def.PerQuotaMax = n;
+                        def.PerQuotaWindow = w;
+                    }
+                    else
+                    {
+                        def.QuotaMax = n;
+                        def.QuotaWindow = w;
+                    }
+                    continue;
+                }
+
+                if (p.StartsWith("roomcd=", global::System.StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(p.Substring(7).Trim(), out int rcd))
+                        def.RoomCooldown = rcd < 0 ? 0 : rcd;
+                    continue;
+                }
+
                 if (p.StartsWith("side=", global::System.StringComparison.OrdinalIgnoreCase))
                 {
                     def.Side = ParseSide(p.Substring(5).Trim());
