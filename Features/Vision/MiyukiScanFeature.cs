@@ -47,6 +47,17 @@ namespace HideAndSeek.Features.Vision
         public static ConfigEntry<int> MarkerSeconds;
 
         /// <summary>
+        /// 有人移动时重发 pin 的最小间隔（毫秒）。0 = 关闭该机制，退回原先的每秒一次。
+        ///
+        /// 为什么需要它：重发原本只挂在 GameRoom.SurvivalTick 上，而那是 **1 Hz** 的节拍
+        /// （游戏用 PushAfter(1000) 排的），客户端补间却只有 0.1 秒 ⇒ 表现是"每秒滑一下"。
+        /// 挂到 Player.Move 上可以更勤，但有人跑动时 Move 可能每帧触发 ⇒ 必须节流。
+        /// </summary>
+        [ConfigField(200, "有人移动时重发地图标记的最小间隔（毫秒）；0 = 关闭，退回每秒一次。",
+            Min = 0f, Max = 2000f)]
+        public static ConfigEntry<int> ResendIntervalMs;
+
+        /// <summary>
         /// 黑美幸 pin 的"范围内"判据：距离 ≤ 本值的人不发 pin（原版地图已经会显示他们，
         /// 再发会多叠一个白色方块）。0 = 关闭该过滤，所有人都发。
         /// 默认 900 对应 AoiCulling.ExitRange —— 想更严格可改为 700（EnterRange）。
@@ -105,6 +116,9 @@ namespace HideAndSeek.Features.Vision
 
         /// <summary>PlayerId → 实时段结束时刻（此前每秒重发 pin 以跟随真实位置）。</summary>
         private static readonly Dictionary<int, float> LiveUntil = new Dictionary<int, float>();
+
+        /// <summary>上次因"有人移动"而重发 pin 的时刻（SurviveTime）。跨局必须清。</summary>
+        private static float _lastMoveResendAt = -9999f;
 
         /// <summary>该黑方是否正处于扫描解封期（AOI 闸门据此放行）。</summary>
         private static bool _skillResolved;
@@ -250,6 +264,60 @@ namespace HideAndSeek.Features.Vision
             }
         }
 
+        /// <summary>
+        /// 有人移动时更勤地重发 pin —— 补 TickHook 那 1 Hz 的短板，让可动段跟得上。
+        ///
+        /// 只做「可动段」的重发：静止段的位置本来就不变，多发无意义。
+        /// 与 TickHook 的 ②b 保持一致地跳过「解封中」的黑方 —— 那期间原生点每帧跟随，
+        /// 再发 pin 就是同一个人身上叠两个白点（见 TickHook 里的既有注释）。
+        ///
+        /// 节流是必须的：有人跑动时 Move 可能每帧触发，不节流就是每帧发包。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), nameof(GamePlayer.Move), new[] { typeof(PosInfo), typeof(bool) })]
+        internal static class MoveResendHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+
+                int interval = ResendIntervalMs?.Value ?? 200;
+                if (interval <= 0)
+                    return;                              // 关闭该机制
+
+                var room = GameRoom.Instance;
+                if (room?.Players == null)
+                    return;
+
+                float now = TimeManager.Instance?.SurviveTime ?? 0f;
+                if (now - _lastMoveResendAt < interval / 1000f)
+                    return;                              // 节流
+                _lastMoveResendAt = now;
+
+                var all = room.Players;
+                for (int i = 0; i < all.Count; i++)
+                {
+                    var p = all[i];
+                    if (p?.PublicInfo == null || !EnableForMiyuki.Value)
+                        continue;
+                    if (p.CharacterId != MiyukiCharacterId)
+                        continue;
+
+                    int pid = p.PublicInfo.PlayerId;
+                    if (!MarkerUntil.ContainsKey(pid))
+                        continue;                        // 当前没有标记，不需要重发
+
+                    if (!LiveUntil.TryGetValue(pid, out float live) || now >= live)
+                        continue;                        // 静止段：位置不变，交给 TickHook
+
+                    if (Unlocking.Contains(pid))
+                        continue;                        // 解封中：由原生点负责跟随
+
+                    SendAllPins(room, p, onlyOutsideAoi: p.Color == EPlayerColor.Black);
+                }
+            }
+        }
         private static void TriggerScan(GameRoom room, GamePlayer miyuki, float now)
         {
             int pid = miyuki.PublicInfo.PlayerId;
@@ -521,7 +589,8 @@ namespace HideAndSeek.Features.Vision
             MarkerUntil.Clear();
             LiveUntil.Clear();
             PinSnapshot.Clear();      // 跨局 PlayerId 会复用，不清会读到上一局的快照位置
-            PinAlive.Clear();         // 跨局的客户端控件也早已随场景销毁
+            PinAlive.Clear();
+            _lastMoveResendAt = -9999f;   // 移动重发的节流时刻 —— 它记的也是 SurviveTime         // 跨局的客户端控件也早已随场景销毁
         }
     }
 }
