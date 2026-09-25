@@ -53,7 +53,9 @@ namespace HideAndSeek.Features.Vision
         /// （游戏用 PushAfter(1000) 排的），客户端补间却只有 0.1 秒 ⇒ 表现是"每秒滑一下"。
         /// 挂到 Player.Move 上可以更勤，但有人跑动时 Move 可能每帧触发 ⇒ 必须节流。
         /// </summary>
-        [ConfigField(200, "有人移动时重发地图标记的最小间隔（毫秒）；0 = 关闭，退回每秒一次。",
+        [ConfigField(100,
+            "有人移动时重发地图标记的最小间隔（毫秒）；0 = 关闭，退回每秒一次。" +
+            "客户端补间是 0.1 秒，本值 ≤100 才能让跟随段看起来连续。",
             Min = 0f, Max = 2000f)]
         public static ConfigEntry<int> ResendIntervalMs;
 
@@ -139,7 +141,11 @@ namespace HideAndSeek.Features.Vision
         /// <summary>PlayerId → 实时段结束时刻（此前每秒重发 pin 以跟随真实位置）。</summary>
         private static readonly Dictionary<int, float> LiveUntil = new Dictionary<int, float>();
 
-        /// <summary>上次因"有人移动"而重发 pin 的时刻（SurviveTime）。跨局必须清。</summary>
+        /// <summary>
+        /// 上次因"有人移动"而重发 pin 的时刻 —— 取自 <c>Time.realtimeSinceStartup</c>（单调浮点秒），
+        /// **不是** TimeManager.SurviveTime（那是 int/秒，分辨率不足，见 MoveResendHook 里的说明）。
+        /// 浮点时钟跨局单调递增，本不需要清；Reset() 里仍置回 -9999 只是保持一致性。
+        /// </summary>
         private static float _lastMoveResendAt = -9999f;
 
         /// <summary>该黑方是否正处于扫描解封期（AOI 闸门据此放行）。</summary>
@@ -312,7 +318,11 @@ namespace HideAndSeek.Features.Vision
                 if (room?.Players == null)
                     return;
 
-                float now = TimeManager.Instance?.SurviveTime ?? 0f;
+                // ⚠ 必须用**单调浮点时钟**，不能用 TimeManager.SurviveTime ——
+                // 后者是 int、每秒才 +1（Assembly-CSharp:178532/178557，由 1Hz 的 SurvivalTick 驱动），
+                // 于是 `now - _last` 只可能是 0 或 ≥1 的整数，`< 0.2f` 在同一整秒内恒真
+                // ⇒ 无论 interval 配多小，节流都会退化成"每整秒最多 1 次"。
+                float now = UnityEngine.Time.realtimeSinceStartup;
                 if (now - _lastMoveResendAt < interval / 1000f)
                     return;                              // 节流
                 _lastMoveResendAt = now;
