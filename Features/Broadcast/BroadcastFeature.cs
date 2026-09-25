@@ -121,14 +121,6 @@ namespace HideAndSeek.Features.Broadcast
         private static bool AutoAssignBlack
             => WeaponGrantFeature.GiveAtStart != null && WeaponGrantFeature.GiveAtStart.Value;
 
-        private static S_CHAT_MESSAGE BuildChat(string text) => new S_CHAT_MESSAGE
-        {
-            Type = EChatType.SecretChat,
-            Text = text,
-            DeviceId = MagicDeviceId,
-            Time = TimeManager.Instance.SurviveTime
-        };
-
         private static void Notice(GameRoom room, string text)
         {
         // 第一条恒为 SecretChat：生存阶段弹泡 + 进密聊记录。
@@ -345,15 +337,12 @@ namespace HideAndSeek.Features.Broadcast
                 index++;
             }
         }
-        /// <summary>构造文字包。chatType 决定显示位置（NormalChat→聊天栏，SecretChat→弹泡/发信机）。</summary>
-        private static S_CHAT_MESSAGE BuildText(string text, EChatType chatType) => new S_CHAT_MESSAGE
-        {
-            Type = chatType,
-            Text = text,
-            PlayerId = 0,
-            DeviceId = (chatType == EChatType.SecretChat || chatType == EChatType.DeviceChat) ? MagicDeviceId : 0,
-            Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f)
-        };
+        /// <summary>
+        /// 构造文字包。建包已统一到 <see cref="ChatOut"/>（全模块唯一入口），这里只留薄封装 ——
+        /// 本文件有 11 处调用点，保留它就不必逐处改动，语义与原先逐字一致。
+        /// </summary>
+        private static S_CHAT_MESSAGE BuildText(string text, EChatType chatType)
+            => ChatOut.Broadcast(text, chatType);
 
         private static string Titled(string body)
         {

@@ -474,15 +474,8 @@ namespace HideAndSeek.Features.Rule
             if (player?.Session == null || string.IsNullOrEmpty(text))
                 return;
 
-            player.Session.Send(new S_CHAT_MESSAGE
-            {
-                Type = EChatType.NormalChat,
-                DeviceId = 0,
-                Text = text,
-                PlayerId = player.PublicInfo?.PlayerId ?? 0,
-                Time = (int)Now,
-                IsDead = false
-            });
+            // 与汽水那边逐字节相同的实现，已合并到 Core/ChatOut 的 ToPlayer 入口。
+            player.Session.Send(ChatOut.ToPlayer(player, text));
         }
 
         internal static void ClearAll()
