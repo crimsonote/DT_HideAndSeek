@@ -223,6 +223,17 @@ namespace HideAndSeek.Features.Rule
                 int pid = player.PublicInfo.PlayerId;
                 int state = info.StateList[0];
 
+                // ── ⓪ 胶未干：这道门在这个窗口内**谁都不能开**（含黏门者自己）──
+                //
+                // 原先这层保护只写在下面的 `state == 2`（锁定态）分支里，但上锁流程是
+                // 「先合门（state = 1，普通关闭）→ 等 SealWindow 秒 → 才进入 state = 2」。
+                // ⇒ 在"等"的那几秒里门只是普通关着，**别人路过按一下 E 就把它开了**，
+                //   上锁流程被打断（实测现象：觉得在锁，结果没锁上、门开了）。
+                // 所以在进入锁定态**之前**就拦：只要这扇门正在等胶干，任何人都不放行。
+                Seal pending;
+                if (Seals.TryGetValue(doorId, out pending) && Now < pending.SetAt)
+                    return false;
+
                 // ── ① 门是锁定态：判断要不要放行 ──
                 // 这里一律**静默**：锁门/开门这类动作不该刷一堆文字提示，
                 // 玩家按 E 没反应本身就是"打不开"的反馈（与"不是主人"那条一致）。
