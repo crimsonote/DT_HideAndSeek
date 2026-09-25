@@ -38,6 +38,11 @@ namespace HideAndSeek
             var config = DtBridge.ResolveConfig();
             HsConfig = config;
 
+            // 登记「详细设置」里的 HideAndSeek 页签与设置项。
+            // 必须在 PatchLoader.Load 之前：那时 ConfigEntry 还没绑定，所以声明处用的是惰性委托
+            // （见 LobbySettingItem 的注释）。UI 本身是懒加载的，注册在 Start 里必然来得及。
+            Features.UI.HideAndSeekSettingsContent.RegisterAll();
+
             var result = PatchLoader.Load(
                 new Harmony(Guid),
                 config,
