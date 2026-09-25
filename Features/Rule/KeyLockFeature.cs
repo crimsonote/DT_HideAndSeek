@@ -82,6 +82,27 @@ namespace HideAndSeek.Features.Rule
 
         private static readonly Dictionary<int, Seal> Seals = new Dictionary<int, Seal>();
 
+        /// <summary>
+        /// 门的「短保护」到期时刻（门 ID → 时刻）。
+        ///
+        /// 拿鱼的人每对门按一次 E 就把这里刷新成 now + 1 秒 —— 保护期内**其他人**开不了这扇门，
+        /// 但要一直护住就得一直按，直到门真正被锁上。这样既不会让"什么都不做就白锁 6 秒"
+        /// 破坏平衡，也给了黏门者一个"护住正在上锁的门"的手段。
+        /// </summary>
+        private static readonly Dictionary<int, float> GuardUntil = new Dictionary<int, float>();
+
+        /// <summary>保护时长（秒）。可调，别太长 —— 太长就退化成"整段锁死"了。</summary>
+        [ConfigField(1f, "拿鱼对门按 E 后，该门不被他人打开的时长（秒）。每按一次刷新。",
+            Min = 0.2f, Max = 6f)]
+        public static ConfigEntry<float> GuardSeconds;
+
+        /// <summary>这扇门的黏门者是不是他（保护不该拦住黏门者自己）。</summary>
+        private static bool IsSealOwner(int doorId, int pid)
+        {
+            Seal s;
+            return Seals.TryGetValue(doorId, out s) && s.Owners != null && s.Owners.Contains(pid);
+        }
+
         /// <summary>已发出、尚未归还的提灯数（场上在外的盏数）。</summary>
         private static int _outstanding;
 
@@ -223,16 +244,29 @@ namespace HideAndSeek.Features.Rule
                 int pid = player.PublicInfo.PlayerId;
                 int state = info.StateList[0];
 
-                // ── ⓪ 胶未干：这道门在这个窗口内**谁都不能开**（含黏门者自己）──
+                // ── ⓪ 短保护：拿鱼的人按 E ⇒ 这扇门在 ~1 秒内不被**其他人**打开 ──
                 //
-                // 原先这层保护只写在下面的 `state == 2`（锁定态）分支里，但上锁流程是
-                // 「先合门（state = 1，普通关闭）→ 等 SealWindow 秒 → 才进入 state = 2」。
-                // ⇒ 在"等"的那几秒里门只是普通关着，**别人路过按一下 E 就把它开了**，
-                //   上锁流程被打断（实测现象：觉得在锁，结果没锁上、门开了）。
-                // 所以在进入锁定态**之前**就拦：只要这扇门正在等胶干，任何人都不放行。
-                Seal pending;
-                if (Seals.TryGetValue(doorId, out pending) && Now < pending.SetAt)
-                    return false;
+                // 为什么不整段锁死：上锁流程是「先合门 → 等 SealWindow 秒 → 才进入锁定态」，
+                // 若在"等"的整段里谁都开不了，等于什么都不做就白锁 6 秒，从平衡上太激。
+                // 现在的规则与玩家操作对齐：**每按一次 E 刷新 1 秒保护**，要一直护住就得一直按，
+                // 直到门真正被锁上。
+                //
+                // 保护期内**谁被放行**：黏门者（他要连按凑开合次数）+ 手里拿着鱼的人
+                // （保护就是他们按出来的，不是他们的话一按 E 会先被自己刚设的保护拦掉）。
+                bool holding = HasLantern(player);
+                float guardLeft;
+                if (GuardUntil.TryGetValue(doorId, out guardLeft)
+                    && Now < guardLeft
+                    && !holding
+                    && !IsSealOwner(doorId, pid))
+                    return false;                    // 保护期内：其他人开不了
+
+                // 拿鱼按 E ⇒ 刷新这扇门的保护（连按可一直护到门真正被锁上）
+                if (holding)
+                {
+                    GuardUntil[doorId] = Now + (GuardSeconds?.Value ?? 1f);
+                    Diagnostics.Hit("KeyLockGuard");
+                }
 
                 // ── ① 门是锁定态：判断要不要放行 ──
                 // 这里一律**静默**：锁门/开门这类动作不该刷一堆文字提示，
@@ -469,6 +503,7 @@ namespace HideAndSeek.Features.Rule
             Seals.Clear();
             Swings.Clear();
             _outstanding = 0;
+            GuardUntil.Clear();     // 短保护也记的是 SurviveTime —— 不清会跨局残留（下一局开局门就被"保护"住）
 
             // 配额与冷却**必须一起清**：它们记的是 TimeManager.SurviveTime，
             // 而那个值每局由 ResetSurvival() 设回 420（不是从 0）。不清的话，上一局记下的时刻（例如 250 秒）
