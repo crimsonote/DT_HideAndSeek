@@ -109,7 +109,56 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
-        // ── ③ 跨局清理（与同类功能的时机一致）──
+        // ── ③ 到期兜底：加速只在 RefreshSpeed 的 Postfix 里生效，而那个方法
+        //        只在"速度需要重算"（移动/状态变化）时才被游戏调用。
+        //        ⇒ 到期时若玩家站着不动，Speed 里那个倍率会一直挂着不恢复。
+        //        所以每 1 秒检查一次"刚刚过期的人"，主动让他重算一次速度。
+        private static readonly HashSet<int> Boosted = new HashSet<int>();
+
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class TickHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (ModeRuntime.Bypass || Until.Count == 0)
+                    return;
+
+                var room = GameRoom.Instance;
+                if (room?.Players == null)
+                    return;
+
+                float now = Now;
+                for (int i = 0; i < room.Players.Count; i++)
+                {
+                    var p = room.Players[i];
+                    if (p?.PublicInfo == null)
+                        continue;
+
+                    int pid = p.PublicInfo.PlayerId;
+                    if (!Until.TryGetValue(pid, out float until))
+                        continue;
+                    if (now < until)
+                    {
+                        Boosted.Add(pid);
+                        continue;                     // 还在加速期内
+                    }
+
+                    // 刚过期：清记录 + 主动重算一次速度（否则站着不动会一直挂着加成）
+                    Until.Remove(pid);
+                    if (Boosted.Remove(pid) && p.IsAlive && p.State != EPlayerState.Hide)
+                    {
+                        try { p.BuffComponent?.RefreshSpeed(); }
+                        catch (global::System.Exception ex)
+                        {
+                            Plugin.Log.LogWarning($"[HS] SoulSense：恢复速度失败 — {ex.Message}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ④ 跨局清理（与同类功能的时机一致）──
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         internal static class StartHook
         {
@@ -129,6 +178,7 @@ namespace HideAndSeek.Features.Skill
             // 到期时刻记的是 SurviveTime，而它每局被 ResetSurvival() 设回 420（不是从 0）——
             // 不清的话上一局的时刻在新局会算出负数，加速永不过期（这一类坑今天已踩过四次）。
             Until.Clear();
+            Boosted.Clear();
         }
     }
 }
