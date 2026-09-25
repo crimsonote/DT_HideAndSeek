@@ -883,21 +883,33 @@ namespace HideAndSeek.Features.Rule
                 new CommandDef
                 {
                     // 鱼：公共命令，黑白都能申领。
-                    // 配额（全房 300 秒 4 条）与每人冷却（150 秒，防一个人拿光）都在
-                    // KeyLockFeature 里自己管 —— 不走引擎的 uses=/cd=，因为冷却提示要用
-                    // 自定义文案（"超出限额，请稍候重试"），而且总配额卖空要优先于冷却提示。
+                    //
+                    // 配额与冷却**改由引擎的四层空间执行**（原先在 KeyLockFeature 里自管）。
+                    // 值仍取 [KeyLock] 段的配置项 —— 老 .cfg 照旧有效，
+                    // 同时注册表（Commands = fish = ... ; quota=4/300 ; cd=150）也能覆盖它们。
+                    // 当初自管的两个原因现在都不成立了：引擎能表达「全房配额 + 每人冷却」的混合归属，
+                    // 且提示顺序已固定为「配额优先于冷却」。
                     Name = "fish", Aliases = new[] { "lamp", "lantern", "key", "lt" },
                     Side = CommandSide.Any, Channel = CommandChannel.Public,
                     Action = "GiveFish",
                     Condition = "elapsed>=60",           // 开局 60 秒内不可申领
+                    QuotaMax = KeyLockFeature.QuotaMax?.Value ?? 4,                 // 全房：窗口内 4 条
+                    QuotaWindow = KeyLockFeature.QuotaWindowSeconds?.Value ?? 300f,
+                    Cooldown = (int)(KeyLockFeature.FishCooldown?.Value ?? 150f),   // 每人：150 秒
+                    UsesPerPlayer = true,                                          // 冷却按人独立
                     IsAvailable = () => KeyLockFeature.AllowIssue == null || KeyLockFeature.AllowIssue.Value
                 },
                 new CommandDef
                 {
-                    // 汽水：公共命令。配额与冷却都在 SodaBoostFeature 里自己管（要用自定义文案）。
+                    // 汽水：公共命令。配额与冷却同样改由引擎执行，值取 [SodaBoost] 段的配置项。
                     Name = "soda", Aliases = new[] { "drink", "can", "cola" },
                     Side = CommandSide.Any, Channel = CommandChannel.Public,
-                    Action = "GiveSoda"
+                    Action = "GiveSoda",
+                    // 全限定：CommandFeature 在 Features.Rule 下，看不到 Features.Combat。
+                    QuotaMax = HideAndSeek.Features.Combat.SodaBoostFeature.QuotaMax?.Value ?? 4,
+                    QuotaWindow = HideAndSeek.Features.Combat.SodaBoostFeature.QuotaWindowSeconds?.Value ?? 300f,
+                    Cooldown = (int)(HideAndSeek.Features.Combat.SodaBoostFeature.IssueCooldown?.Value ?? 240f),
+                    UsesPerPlayer = true
                 },
                 new CommandDef
                 {

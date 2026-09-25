@@ -118,49 +118,29 @@ namespace HideAndSeek.Features.Rule
             if (player?.PublicInfo == null)
                 return false;
 
-            // 注：「开局 N 秒内不能申领」由命令注册表上的 `elapsed>=N` 条件承担（见 CommandFeature），
-            // 不在这里判 —— 那样才能在 .cfg 里改，而不是写死在代码里。
+            // 注：「开局 N 秒内不能申领」由命令注册表上的 `elapsed>=N` 条件承担（见 CommandFeature）。
+            //
+            // 注：**配额与冷却已交给命令引擎的「四层空间」执行**（fish 的定义里写着
+            // QuotaMax/QuotaWindow/Cooldown/UsesPerPlayer）—— 原先在这里自管，是因为
+            // 引擎的 UsesPerPlayer 一个 bool 同时决定「次数按谁算」与「冷却按谁算」，
+            // 表达不了「全房配额 + 每人冷却」这种混合归属。
+            // 引擎侧的校验顺序是「全房配额 → 每人配额 → 全房冷却 → 每人冷却 → 条件」，
+            // 配额本来就在冷却之前，所以"卖空提示优先于冷却提示"这个需求也照旧成立。
+            //
+            // 因此这里**只负责发放**；被拒的情况根本不会走到这儿（引擎已拦并回执）。
 
-            // 顺序有讲究：**总配额卖空优先于"个人冷却中"**（需求明确要求）——
-            // 配额是全局状态，先告诉玩家"没货了"比"你还在冷却"更有信息量。
-            PruneQuota();
-            int max = QuotaMax?.Value ?? 4;
             int pid = player.PublicInfo.PlayerId;
             float now = Now;
-            float window = QuotaWindowSeconds?.Value ?? 300f;
-            if (_issuedTimes.Count >= max)
-            {
-                // 命令被吞时两端零痕迹（玩家只看到一句回执、房主日志里什么都没有），
-                // 日志是唯一能自证"到底哪条判据拒的"。只在**拒绝**时记，不会刷屏。
-                Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：拒绝 #{pid} 申领鱼 — 配额已满（已发 {_issuedTimes.Count}/{max}，" +
-                    $"窗口 {window:F0}s，now {now:F1}s）。");
-                text = CommandFeature.Text("FishEmpty");
-                return false;
-            }
-
-            float cd = FishCooldown?.Value ?? 150f;
-            if (cd > 0f && _lastIssue.TryGetValue(pid, out float last) && now - last < cd)
-            {
-                Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：拒绝 #{pid} 申领鱼 — 个人冷却中（now {now:F1}s，上次 {last:F1}s，" +
-                    $"cd {cd:F0}s，还需 {cd - (now - last):F1}s）。");
-                text = CommandFeature.Text("FishCooldown");
-                return false;
-            }
 
             try
             {
                 if (!HideAndSeek.Features.Combat.ItemGrant.Give(player, IssueFishId, out bool dropped))
                     return false;
 
-                _issuedTimes.Add(now);
-                _lastIssue[pid] = now;
-
                 Plugin.Log.LogInfo(
                     $"[HS] KeyLock：玩家 #{pid} 申领了一条鱼" +
                     (dropped ? "（手上已有物品，已落在脚下）" : "") +
-                    $"，本窗口内已发 {_issuedTimes.Count}/{max} 条。");
+                    $"，now {now:F1}s。");
 
                 text = CommandFeature.Text("FishTaken");
                 return true;
