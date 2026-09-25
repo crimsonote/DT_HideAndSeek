@@ -77,6 +77,14 @@ namespace HideAndSeek.Features.Vision
             "Unseal    = 原版黑方地图：扫描期临时解封 AOI，解封撤销后 pin 再留一会儿（需 MarkerSeconds > UnlockSeconds）")]
         public static ConfigEntry<string> BlackMode;
 
+        /// <summary>
+        /// **测试用**：把自己也画进全图标记里（默认关）。
+        ///
+        /// 用途：屏幕上多一个"自己也在动"的参照物 —— 一眼能看出 pin 跟不跟得上真实移动，
+        /// 用来判断 ResendIntervalMs 该调多少。正常玩法下自己不需要被标记（你本来就知道自己在哪）。
+        /// </summary>
+        [ConfigField(false, "【测试用】把自己也画进美幸的全图标记。")]
+        public static ConfigEntry<bool> ShowSelfOnRadar;
         private const string ModeUnseal = "Unseal";
 
         /// <summary>黑方是否走「临时解封 AOI」方案。白方与配置缺失/写错时都是 false（= 纯 pin）。</summary>
@@ -104,6 +112,20 @@ namespace HideAndSeek.Features.Vision
 
         public static ConfigEntry<bool> EnableForMiyuki;
 
+        /// <summary>
+        /// 是否要为 <paramref name="other"/> 发/留标记。
+        ///
+        /// 自己默认不标记（你本来就知道自己在哪），只有测试开关打开时才把自己也算进去 ——
+        /// 统一走这一个判据，避免"发的时候算了自己、清的时候不算"这类不一致。
+        /// </summary>
+        private static bool ShouldMark(GamePlayer miyuki, GamePlayer other)
+        {
+            if (other == null)
+                return false;
+            if (other != miyuki)
+                return true;
+            return ShowSelfOnRadar?.Value ?? false;
+        }
         /// <summary>美幸的角色 DataId（CharacterData.json / CharacterDic）。</summary>
         private const int MiyukiCharacterId = 107;
 
@@ -336,7 +358,7 @@ namespace HideAndSeek.Features.Vision
                 for (int i = 0; i < all.Count; i++)
                 {
                     var other = all[i];
-                    if (other == null || other == miyuki)
+                    if (!ShouldMark(miyuki, other))
                         continue;
                     if (other.State == EPlayerState.Hide)     // 幽灵/死亡/躲柜子跳过，与原版一致
                         continue;
@@ -375,7 +397,7 @@ namespace HideAndSeek.Features.Vision
             for (int i = 0; i < all.Count; i++)
             {
                 var other = all[i];
-                if (other?.PublicInfo == null || other == miyuki)
+                if (!ShouldMark(miyuki, other))
                     continue;
 
                 bool visible = other.IsAlive && other.State != EPlayerState.Hide && !other.IsSpectator;
@@ -466,7 +488,7 @@ namespace HideAndSeek.Features.Vision
             for (int i = 0; i < all.Count; i++)
             {
                 var other = all[i];
-                if (other?.PublicInfo == null || other == miyuki)
+                if (!ShouldMark(miyuki, other))
                     continue;
                 bool visible = other.IsAlive && other.State != EPlayerState.Hide && !other.IsSpectator;
 
@@ -510,7 +532,7 @@ namespace HideAndSeek.Features.Vision
             for (int i = 0; i < all.Count; i++)
             {
                 var other = all[i];
-                if (other?.PublicInfo == null || other == miyuki)
+                if (!ShouldMark(miyuki, other))
                     continue;
                 if (!snap.ContainsKey(other.PublicInfo.PlayerId))
                     SendPinTracked(miyuki, other.PublicInfo.PlayerId, null);
@@ -522,7 +544,7 @@ namespace HideAndSeek.Features.Vision
             for (int i = 0; i < all.Count; i++)
             {
                 var other = all[i];
-                if (other?.PublicInfo == null || other == miyuki)
+                if (!ShouldMark(miyuki, other))
                     continue;
 
                 SendPinTracked(miyuki, other.PublicInfo.PlayerId, null);
@@ -543,7 +565,7 @@ namespace HideAndSeek.Features.Vision
             for (int i = 0; i < all.Count; i++)
             {
                 var other = all[i];
-                if (other?.PublicInfo == null || other == miyuki)
+                if (!ShouldMark(miyuki, other))
                     continue;
 
                 var pos = other.PublicInfo.Pos;
