@@ -47,6 +47,14 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(350f, "DT 点的判定半径（游戏单位）。", Min = 50f, Max = 2000f)]
         public static ConfigEntry<float> DtRadius;
 
+        /// <summary>能力一：站进 DT 点范围内 ⇒ 只给本人下发"这里没断电"的假光照（能点蜡烛）。</summary>
+        [ConfigField(false, "【假光照】站进 DT 点范围内时，只给莲本人下发「这里没断电」（放行蜡烛交互）。")]
+        public static ConfigEntry<bool> EnableVision;
+
+        /// <summary>能力二：有人死亡 ⇒ 广播与路易斯同款的尸体方向预警（CorpseArrow）。</summary>
+        [ConfigField(true, "【尸体预警】有人死亡时，向全场活人广播指向尸体的方向预警 + 警告音。")]
+        public static ConfigEntry<bool> EnableTrace;
+
         /// <summary>
         /// 尸体追踪用掉一次之后，莲的技能槽上**长期挂着**的冷却值。
         ///
@@ -145,6 +153,8 @@ namespace HideAndSeek.Features.Skill
             {
                 if (ModeRuntime.Bypass || __instance?.PublicInfo == null)
                     return;
+                if (EnableTrace == null || !EnableTrace.Value)
+                    return;                              // 段内开关：尸体预警可以单独关掉
 
                 var room = GameRoom.Instance;
                 if (room?.Players == null || room.State != EGameState.Survive)
@@ -196,6 +206,8 @@ namespace HideAndSeek.Features.Skill
             {
                 if (ModeRuntime.Bypass || __instance?.Players == null)
                     return;
+                if (EnableVision == null || !EnableVision.Value)
+                    return;                              // 段内开关：假光照可以单独关掉
                 if (__instance.State != EGameState.Survive)
                     return;                          // 只在生存阶段干预；其它阶段交还原版
 
