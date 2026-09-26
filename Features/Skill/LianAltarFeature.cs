@@ -53,8 +53,8 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(false, "【假光照】站进 DT 点范围内时，只给莲本人下发「这里没断电」（放行蜡烛交互）。")]
         public static ConfigEntry<bool> EnableVision;
 
-        /// <summary>能力二：有人死亡 ⇒ 广播与路易斯同款的尸体方向预警（CorpseArrow）。</summary>
-        [ConfigField(true, "【尸体预警】有人死亡时，向全场活人广播指向尸体的方向预警 + 警告音。")]
+        /// <summary>能力二：有人死亡 ⇒ 向**莲**（含偷到她技能的）指出尸体方向（CorpseArrow）。</summary>
+        [ConfigField(true, "【尸体预警】有人死亡时，只通知莲（含偷到她技能的），向他指出尸体方向。")]
         public static ConfigEntry<bool> EnableTrace;
 
         /// <summary>
