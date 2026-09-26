@@ -64,6 +64,13 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(3f, "起手窗口（秒）：持鱼在这段时间内连敲够次数的第一下，才激活上锁进度条。", Min = 0.5f, Max = 30f)]
         public static ConfigEntry<float> ArmWindow;
 
+        /// <summary>
+        /// 是否让上锁进度条"频闪"（在「当前进度」与「0」之间每秒交替）。
+        /// **默认关** —— 这不是原始需求，只是实验；开着会让门头那条一闪一闪。
+        /// </summary>
+        [ConfigField(false, "上锁进度条是否频闪（每秒在进度与 0 之间交替）。默认关。")]
+        public static ConfigEntry<bool> BlinkGauge;
+
         [ConfigField(20f, "合门后的锁定秒数。若同门已有更长的锁，取较长者。", Min = 1f, Max = 300f)]
         public static ConfigEntry<int> SealSeconds;
 
@@ -592,6 +599,8 @@ namespace HideAndSeek.Features.Rule
             {
                 if (ModeRuntime.Bypass || Charging.Count == 0)
                     return;
+                if (BlinkGauge == null || !BlinkGauge.Value)
+                    return;                          // 默认关：不闪
 
                 _blinkOff = !_blinkOff;
                 var room = GameRoom.Instance;

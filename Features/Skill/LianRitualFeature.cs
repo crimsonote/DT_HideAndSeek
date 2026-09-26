@@ -265,8 +265,12 @@ namespace HideAndSeek.Features.Skill
             var pos = corpse.DeviceInfo?.Pos ?? owner.PublicInfo.Pos;
             try
             {
+                // 只把角色搬过去（Move(force) 会广播 S_RESPAWN）。
+                // 不去动 MoveLock —— 牵引后仍要在范围内自由活动。
                 owner.PublicInfo.Pos = pos;
-                owner.Move(pos, force: true);            // 广播 S_RESPAWN 把角色搬过去 + MoveLock
+                owner.Move(pos, force: true);
+                // 立刻解除 Move(force:true) 顺带置上的移动锁，改由范围约束管
+                try { owner.MoveLock = false; } catch { }
                 HoldSoul(owner, pos, SoulHoldSeconds?.Value ?? 10f);
                 Plugin.Log.LogInfo($"[HS] LianRitual：阶段 4 —— 灵魂已被牵引至 DT 点（#{corpse.ID}）。");
             }
@@ -321,7 +325,8 @@ namespace HideAndSeek.Features.Skill
                 // 这是本功能唯一"碰内部状态"的地方，实机要重点验。
                 AliveSetter?.Invoke(owner, new object[] { true });
                 owner.PublicInfo.Pos = pos;
-                owner.Move(pos, force: true);          // ⇒ Broadcast(S_RESPAWN) + MoveLock = true
+                owner.Move(pos, force: true);
+                try { owner.MoveLock = false; } catch { }   // 不钉死，交给范围约束
                 owner.State = EPlayerState.Idle;
 
                 string name = owner.Name ?? ("#" + owner.PublicInfo.PlayerId);
@@ -340,7 +345,14 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
-        /// <summary>把被复活的玩家在 hold 秒内拴在 pos 上（每 tick 拉回，超时就松手）。</summary>
+        /// <summary>
+        /// 把灵魂限制在 DT 点**范围内**（hold 秒）。
+        ///
+        /// 注意语义：是"**不能离开这个范围**"，不是"钉死在原地" ——
+        /// 玩家在半径内仍可自由走动。所以这里**不设 `MoveLock`**
+        /// （那会让角色完全动不了，是上一版写错的地方），
+        /// 改为每秒检查一次：跑出半径就把他拉回边界上。
+        /// </summary>
         private static void HoldSoul(GamePlayer player, PosInfo pos, float hold)
         {
             float until = Now + hold;
@@ -415,7 +427,30 @@ namespace HideAndSeek.Features.Skill
                     foreach (var kv in SoulHolds)
                     {
                         if (now < kv.Value.Until)
+                        {
+                            // 未到期：跑出 DT 点半径就拉回边界（范围内可自由活动）
+                            var soul = FindPlayer(kv.Key);
+                            var cur = soul?.PublicInfo?.Pos;
+                            if (soul == null || cur == null)
+                                continue;
+
+                            float r = LianAltarFeature.DtRadius?.Value ?? 350f;
+                            float dx = cur.X - kv.Value.Pos.X, dy = cur.Y - kv.Value.Pos.Y;
+                            float d2 = dx * dx + dy * dy;
+                            if (d2 <= r * r)
+                                continue;                   // 还在范围内：不干预
+
+                            float d = (float)global::System.Math.Sqrt(d2);
+                            if (d <= 0.001f)
+                                continue;
+                            float k = r / d;
+                            soul.Move(new PosInfo
+                            {
+                                X = kv.Value.Pos.X + dx * k,
+                                Y = kv.Value.Pos.Y + dy * k
+                            }, force: true);
                             continue;
+                        }
                         (done ?? (done = new List<int>())).Add(kv.Key);
                     }
                     if (done != null)
@@ -423,12 +458,7 @@ namespace HideAndSeek.Features.Skill
                         foreach (int pid in done)
                         {
                             SoulHolds.Remove(pid);
-                            for (int i = 0; i < __instance.Players.Count; i++)
-                            {
-                                var p = __instance.Players[i];
-                                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == pid)
-                                { try { p.MoveLock = false; } catch { } }
-                            }
+                            // 到期只是"不再限制范围"，人本来就是自由的 —— 不需要解锁任何东西
                         }
                     }
                 }
