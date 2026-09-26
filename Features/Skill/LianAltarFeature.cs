@@ -45,6 +45,17 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(350f, "DT 点的判定半径（游戏单位）。", Min = 50f, Max = 2000f)]
         public static ConfigEntry<float> DtRadius;
 
+        /// <summary>
+        /// 尸体追踪用掉一次之后，莲的技能槽上**长期挂着**的冷却值。
+        ///
+        /// 需求原话是"长期显示为 -1（如果可行），或 13"。**-1 不可行** ——
+        /// 客户端 `SkillCooltime` 的 setter 是 `_skillCooltime = Math.Max(0, value)`
+        /// （`Assembly-CSharp:28836`），负数会被夹成 0，看不到 -1。
+        /// 所以用备选的 13；并且每秒补发一次，否则它会按客户端本地计时一路减到 0。
+        /// </summary>
+        [ConfigField(13f, "尸体追踪用过一次后，莲技能槽长期显示的冷却值（0 = 不显示）。", Min = 0f, Max = 999f)]
+        public static ConfigEntry<float> UsedCooldown;
+
         /// <summary>莲 PlayerId → 进入 DT 点范围的时刻。用于判"站够 ArmSeconds"。</summary>
         private static readonly Dictionary<int, float> EnteredAt = new Dictionary<int, float>();
 
@@ -53,6 +64,9 @@ namespace HideAndSeek.Features.Skill
 
         /// <summary>当前正被施加"假光照"的莲 PlayerId 集合。</summary>
         private static readonly HashSet<int> Faked = new HashSet<int>();
+
+        /// <summary>已经用掉一次尸体追踪的莲 PlayerId —— 他们的技能槽要长期挂冷却值。</summary>
+        private static readonly HashSet<int> TraceUsed = new HashSet<int>();
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
@@ -138,6 +152,14 @@ namespace HideAndSeek.Features.Skill
                         Type = EArrowType.CorpseArrow,
                         Pos = __instance.PublicInfo.Pos
                     });
+                    // 这次追踪"用掉"了：所有莲进入"技能槽长期显示冷却值"的状态
+                    for (int i = 0; i < room.Players.Count; i++)
+                    {
+                        var lian = room.Players[i];
+                        if (IsLian(lian) && lian.PublicInfo != null)
+                            TraceUsed.Add(lian.PublicInfo.PlayerId);
+                    }
+
                     Plugin.Log.LogInfo(
                         $"[HS] LianAltar：死者 #{__instance.PublicInfo.PlayerId} 的尸体追踪警告已广播（莲在场上）。");
                 }
@@ -159,6 +181,31 @@ namespace HideAndSeek.Features.Skill
                     return;
                 if (__instance.State != EGameState.Survive)
                     return;                          // 只在生存阶段干预；其它阶段交还原版
+
+                // 尸体追踪用过一次 ⇒ 技能槽长期挂着冷却值。
+                // 必须**每秒补发**：客户端收到后会按本地计时一路递减（:42319-42321），
+                // 只发一次的话几秒后就归零了，"长期显示"就没了。
+                if (TraceUsed.Count > 0)
+                {
+                    float cd = UsedCooldown?.Value ?? 13f;
+                    if (cd > 0f)
+                    {
+                        for (int i = 0; i < __instance.Players.Count; i++)
+                        {
+                            var lp = __instance.Players[i];
+                            if (lp?.PublicInfo == null || lp.Session == null)
+                                continue;
+                            if (!TraceUsed.Contains(lp.PublicInfo.PlayerId) || !IsLian(lp))
+                                continue;
+                            try
+                            {
+                                lp.CanUseSkill = false;
+                                lp.Session.Send(new S_COOLTIME_SKILL { Cooltime = (int)cd });
+                            }
+                            catch { /* 单个失败不影响其它人 */ }
+                        }
+                    }
+                }
 
                 float now = Now;
                 float arm = ArmSeconds?.Value ?? 3f;
@@ -247,6 +294,7 @@ namespace HideAndSeek.Features.Skill
             EnteredAt.Clear();
             LeftAt.Clear();
             Faked.Clear();
+            TraceUsed.Clear();
         }
     }
 }
