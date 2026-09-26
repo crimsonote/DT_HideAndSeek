@@ -248,6 +248,33 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 让"持鱼者对门"的**每一次 E**都能真正走到门那里。
+        ///
+        /// `DeviceManager.Interact`(:163734) 开头有一道闸：
+        ///     :163737  if (device == null || **player.InteractLock**) return;
+        /// 而 `InteractLock` 每次交互后被置 true，并 `PushAfter(500)` 才复位（:175310-175327）。
+        /// 客户端却是"一次按键一个包、**没有重发机制**"（:95093 → … → :6282），
+        /// 它根本不知道服务端有这道锁 ⇒ **500ms 内连按的包永久丢失**，
+        /// 挂在 `GameDoor.Interact`(:162541) 的计数看不到它们（实测：连按 6 次只计到约 2 次）。
+        ///
+        /// 所以在闸**之前**、只针对"手里拿着鱼"的情况把 InteractLock 清掉；
+        /// 空手时行为与原版完全一致。
+        /// </summary>
+        [HarmonyPatch(typeof(Server.Game.DeviceManager), "Interact",
+            new[] { typeof(GamePlayer), typeof(int), typeof(Packet) })]
+        internal static class DoorInteractUnlockHook
+        {
+            [HarmonyPrefix]
+            private static void Prefix(GamePlayer player)
+            {
+                if (ModeRuntime.Bypass || player?.PublicInfo == null)
+                    return;
+                if (player.InteractLock && HasLantern(player))
+                    player.InteractLock = false;
+            }
+        }
+
         [HarmonyPatch(typeof(GameDoor), "Interact")]
         internal static class DoorInteractHook
         {
