@@ -56,6 +56,15 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(13f, "尸体追踪用过一次后，莲技能槽长期显示的冷却值（0 = 不显示）。", Min = 0f, Max = 999f)]
         public static ConfigEntry<float> UsedCooldown;
 
+        /// <summary>
+        /// 尸体追踪警告的持续时间（秒）。需求是 **20 秒**。
+        ///
+        /// `S_NOTIFY_ARROW` 本身没有"时长"字段（客户端收到就画一个箭头，画完即止），
+        /// 所以要"持续 20 秒"必须**每秒重发一次**。这里记录"到期时刻"来做这件事。
+        /// </summary>
+        [ConfigField(20f, "尸体追踪警告持续秒数（每秒重发一次箭头）。", Min = 0f, Max = 120f)]
+        public static ConfigEntry<float> TraceSeconds;
+
         /// <summary>莲 PlayerId → 进入 DT 点范围的时刻。用于判"站够 ArmSeconds"。</summary>
         private static readonly Dictionary<int, float> EnteredAt = new Dictionary<int, float>();
 
@@ -67,6 +76,10 @@ namespace HideAndSeek.Features.Skill
 
         /// <summary>已经用掉一次尸体追踪的莲 PlayerId —— 他们的技能槽要长期挂冷却值。</summary>
         private static readonly HashSet<int> TraceUsed = new HashSet<int>();
+
+        /// <summary>正在被追踪的尸体：尸体位置 + 到期时刻（SurviveTime）。每秒重发箭头用。</summary>
+        private static readonly List<(PosInfo pos, float until)> TraceArrows =
+            new List<(PosInfo, float)>();
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
@@ -152,6 +165,8 @@ namespace HideAndSeek.Features.Skill
                         Type = EArrowType.CorpseArrow,
                         Pos = __instance.PublicInfo.Pos
                     });
+                    // 需求是"20 秒的追踪"，而箭头包没有时长 ⇒ 登记起来，每秒重发
+                    TraceArrows.Add((__instance.PublicInfo.Pos, Now + (TraceSeconds?.Value ?? 20f)));
                     // 这次追踪"用掉"了：所有莲进入"技能槽长期显示冷却值"的状态
                     for (int i = 0; i < room.Players.Count; i++)
                     {
@@ -181,6 +196,26 @@ namespace HideAndSeek.Features.Skill
                     return;
                 if (__instance.State != EGameState.Survive)
                     return;                          // 只在生存阶段干预；其它阶段交还原版
+
+                // 尸体追踪：需求要"20 秒"的箭头，包本身没有时长 ⇒ 每秒重发一次
+                if (TraceArrows.Count > 0)
+                {
+                    float tn = Now;
+                    for (int i = TraceArrows.Count - 1; i >= 0; i--)
+                    {
+                        var a = TraceArrows[i];
+                        if (tn >= a.until) { TraceArrows.RemoveAt(i); continue; }
+                        try
+                        {
+                            __instance.BroadcastAlivePlayers(new S_NOTIFY_ARROW
+                            {
+                                Type = EArrowType.CorpseArrow,
+                                Pos = a.pos
+                            });
+                        }
+                        catch { }
+                    }
+                }
 
                 // 尸体追踪用过一次 ⇒ 技能槽长期挂着冷却值。
                 // 必须**每秒补发**：客户端收到后会按本地计时一路递减（:42319-42321），
@@ -295,6 +330,7 @@ namespace HideAndSeek.Features.Skill
             LeftAt.Clear();
             Faked.Clear();
             TraceUsed.Clear();
+            TraceArrows.Clear();
         }
     }
 }

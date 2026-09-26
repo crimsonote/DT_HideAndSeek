@@ -121,10 +121,32 @@ namespace HideAndSeek.Features.Skill
                         }
                     }
 
+                    // 需求：时停 **3 秒结束后**才被清空体力（不是同时）。
+                    // 所以排一个延迟任务，到点再补 Exhausted。
+                    // 时停为 0 时就立刻给（那种配置下"结束后"就是"现在"）。
                     float exhaust = ExhaustMs?.Value ?? 5000f;
                     if (exhaust > 0f)
                     {
-                        try { killer.BuffComponent?.AddBuff(EBuffType.Exhausted, (int)exhaust); }
+                        var victim = killer;
+                        int delaySec = stasis > 0f ? (int)global::System.Math.Ceiling(stasis) : 0;
+                        try
+                        {
+                            if (delaySec <= 0)
+                            {
+                                victim.BuffComponent?.AddBuff(EBuffType.Exhausted, (int)exhaust);
+                            }
+                            else
+                            {
+                                TimeManager.Instance?.PushSurvivalJob(delaySec, delegate
+                                {
+                                    try { victim?.BuffComponent?.AddBuff(EBuffType.Exhausted, (int)exhaust); }
+                                    catch (global::System.Exception ex2)
+                                    {
+                                        Plugin.Log.LogWarning($"[HS] LuisAbility：延迟清空体力失败 — {ex2.Message}");
+                                    }
+                                });
+                            }
+                        }
                         catch (global::System.Exception ex)
                         {
                             Plugin.Log.LogWarning($"[HS] LuisAbility：清空体力失败 — {ex.Message}");

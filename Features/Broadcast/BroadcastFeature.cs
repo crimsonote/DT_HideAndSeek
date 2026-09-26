@@ -509,13 +509,13 @@ namespace HideAndSeek.Features.Broadcast
 
             // 白方开局消息。结构（需求 #1）：
             //   ① **关于黑方的提示放到最开头**（原来是拼在末尾）
-            //   ② 紧随其后的"开头提示"与**自取刀模式下给白的那条**（StartBodySelfServe）一致
+            //   ② 紧随其后的"开头提示"= 自提刀时那条通告的文案（WeaponTaken「捉迷藏开始了~」）
             //   ③ 最后才是自动发刀模式专属的正文（StartBodyWhite）
             // 循环外只算一次：所有白方拿到的是同一条文本，而且该条整体还要作为一条记录进公共发信机。
             string whiteTip = null;
             if (auto)
             {
-                string head = Titled(TextService.Format(StartBodySelfServe?.Value) + "\n"
+                string head = Titled(TextService.Format(WeaponTaken?.Value) + "\n"
                                     + TextService.Format(StartBodyWhite?.Value));
                 whiteTip = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
             }
