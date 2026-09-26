@@ -433,8 +433,8 @@ namespace HideAndSeek.Features.Rule
         private static readonly Dictionary<int, Attempt> Attempts = new Dictionary<int, Attempt>();
 
         /// <summary>第几声"额外 E"把进度条走空（走空即上锁）。</summary>
-        [ConfigField(6, "前 SealsNeeded 次不显示进度条；此后每次额外按 E 让进度条流失，流失这么多下后上锁。（值越大，条走得越慢）",
-            Min = 1f, Max = 30f)]
+        [ConfigField(21, "前 SealsNeeded 次不显示进度条；此后每次额外按 E 让进度条流失，流失这么多下后上锁。（值越大，条走得越慢）",
+            Min = 1f, Max = 60f)]
         public static ConfigEntry<int> DrainTaps;
 
         /// <summary>
@@ -541,7 +541,7 @@ namespace HideAndSeek.Features.Rule
         private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
             int need = SealsNeeded?.Value ?? 3;        // 前 need 次：什么都不显示
-            int drainTotal = DrainTaps?.Value ?? 6;    // 之后每次额外 E 让条流失，流失满即上锁
+            int drainTotal = DrainTaps?.Value ?? 21;    // 之后每次额外 E 让条流失，流失满即上锁
             float life = SealWindow?.Value ?? 6f;      // 这次尝试的存活窗口（秒）
             float real = NowReal;                      // ★ 单调真实时钟，不是 SurviveTime
 
