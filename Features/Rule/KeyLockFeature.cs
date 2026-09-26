@@ -360,6 +360,13 @@ namespace HideAndSeek.Features.Rule
             if (list == null || list.Count < 3)
                 return;                                 // 不是带进度条的门
 
+            // 门**已经处于锁定态**时不要写槽：
+            // 那两个格子此刻正被门自己的锁定占用（StateList[2] 是它已流逝的秒数），
+            // 我们的"还差几下"写进去会把它那把锁的剩余显示改坏，
+            // 也会让 TrySeal 里"取剩余更长的那把锁"算错。
+            if (list[0] == 2)
+                return;
+
             // 登记/注销"正在充能的门"，供每秒频闪使用
             if (cur > 0 && cur < total)
                 Charging[door.ID] = (door, cur, total);
@@ -378,7 +385,7 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        /// <summary>记一次敲击。返回 true 表示"进度已满，该上锁了"。</summary>
+        /// <summary>记一次敲击。返回 true 表示"进度已空，该上锁了"。</summary>
         private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
             string key = pid + ":" + doorId;
@@ -407,13 +414,26 @@ namespace HideAndSeek.Features.Rule
             }
             LastSwingAt[key] = now;
 
-            // 每按一次 E：进度 +1；满格上锁
-            int cur = (Charge.TryGetValue(key, out int c) ? c : 0) + 1;
-            Charge[key] = cur;
-            Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度 {cur}/{need}。");
-            PushGauge(door, cur, need);
+            // 敲击次数累加；**但送进进度条的是"还差几下"**（= need - 已敲）。
+            //
+            // 方向要求（用户确认）：与门自己那把锁**相反**。
+            //   · 原版 `Door.TickDoor`（:162638）：StateList[2] 从 0 涨到 StateList[1]，
+            //     **越填越接近解锁，填满即解锁**。
+            //   · 我们：一开始接近满，每敲一下**减一格**，**敲空（0）就是上锁**。
+            // 所以槽位语义不变（[1]=总量、[2]=当前值，客户端只会按 [2]/[1] 画），
+            // 变的只是我们灌进去的那个"当前值"的方向。
+            int taps = (Charge.TryGetValue(key, out int c) ? c : 0) + 1;
+            Charge[key] = taps;
 
-            if (cur < need)
+            int left = need - taps;
+            if (left < 0)
+                left = 0;
+
+            Plugin.Log.LogInfo(
+                $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度 还差 {left} 下（已敲 {taps}/{need}）。");
+            PushGauge(door, left, need);
+
+            if (taps < need)
                 return false;
 
             Charge.Remove(key);
