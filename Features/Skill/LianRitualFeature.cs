@@ -8,6 +8,7 @@ using HideAndSeek.Features.Vision;
 using GamePlayer = Server.Game.Player;
 using GameCorpse = Server.Game.Corpse;
 using GameDeviceManager = Server.Game.DeviceManager;
+using GameOccult = Server.Game.Occult;                  // AGENTS 坑 #1：同名类，服务端那个才有 State/DeviceData
 
 namespace HideAndSeek.Features.Skill
 {
@@ -163,6 +164,7 @@ namespace HideAndSeek.Features.Skill
                 Plugin.Log.LogInfo(
                     $"[HS] LianRitual：尸体 #{corpseId} 仪式阶段 {done}/{stages}（主持者 #{pid}）。");
 
+                LightOneCandle(done);
                 StageText(player, corpse, done, stages);
 
                 if (done < stages)
@@ -173,6 +175,53 @@ namespace HideAndSeek.Features.Skill
                 Host.Remove(corpseId);
                 Active.Remove(corpseId);
                 Revive(corpse, player);
+            }
+        }
+
+        /// <summary>
+        /// 每完成一个阶段就"唤起一根蜡烛"。
+        ///
+        /// 原版的教室魔法阵是 **6 台 `Occult`（SubType == 2 = 蜡烛）**，逐台点着：
+        /// `Occult.InteractOccultCandle`(:167865) 把 `State` 在 0→1→2→1 之间推，
+        /// 直到 `State == 3` 表示"点着"（`:167867 if (State == 3) return;`）；
+        /// 6 台全为 3 时 `CheckSummonCandles`(:166842) 才把尸体翻出来。
+        ///
+        /// 这里只是**按阶段数补点蜡烛**，纯视觉；不去改 `StateList` 的真实玩法状态，
+        /// 只把那台设备的 `State` 推成 3 并广播，让玩家看到"又亮了一根"。
+        /// </summary>
+        private static void LightOneCandle(int stage)
+        {
+            try
+            {
+                var devices = GameDeviceManager.Instance?.Objects;
+                if (devices == null)
+                    return;
+
+                var candles = new List<GameOccult>();
+                for (int i = 0; i < devices.Count; i++)
+                {
+                    var o = devices[i] as GameOccult;
+                    if (o == null)
+                        continue;
+                    // SubType 2 = 蜡烛（0 = 书，1 = 火盆）
+                    if (o.DeviceData != null && o.DeviceData.SubType == 2)
+                        candles.Add(o);
+                }
+                if (candles.Count == 0)
+                    return;
+
+                int idx = (stage - 1) % candles.Count;      // 一阶段一根，绕回也不会越界
+                var candle = candles[idx];
+                if (candle.State == 3)
+                    return;                                // 已经亮着
+
+                candle.State = 3;
+                candle.BroadcastState();
+                Plugin.Log.LogInfo($"[HS] LianRitual：已唤起第 {stage} 根蜡烛（设备 #{candle.ID}）。");
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] LianRitual：唤起蜡烛失败 — {ex.Message}");
             }
         }
 
