@@ -64,7 +64,7 @@ namespace HideAndSeek.Features.Vision
         /// 再发会多叠一个白色方块）。0 = 关闭该过滤，所有人都发。
         /// 默认 900 对应 AoiCulling.ExitRange —— 想更严格可改为 700（EnterRange）。
         /// </summary>
-        [ConfigField(900f, "黑美幸只标记该距离之外的人（0 = 全部标记）。",
+        [ConfigField(-1f, "黑美幸只标记该距离之外的人。<0 = 跟随 AOI 视野（推荐）；0 = 全部标记。",
             Min = 0f, Max = 3000f)]
         public static ConfigEntry<float> BlackPinRange;
 
