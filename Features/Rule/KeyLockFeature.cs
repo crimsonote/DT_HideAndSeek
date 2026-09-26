@@ -127,6 +127,15 @@ namespace HideAndSeek.Features.Rule
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
+        /// <summary>
+        /// **单调真实时钟**（秒）。凡是要判"小于 1 秒"或需要跨局稳定的时间，都必须用它。
+        ///
+        /// `Now`（SurviveTime）是 int、每秒 +1，且每局被 ResetSurvival 设回 420
+        /// ⇒ 拿它算短窗口会出现"实际只有零点几秒"或"旧时间戳变成未来"两种错，
+        /// 仓库里为此踩过多次（AGENTS：任何小于 1 秒的判定都不能用 SurviveTime）。
+        /// </summary>
+        private static float NowReal => UnityEngine.Time.realtimeSinceStartup;
+
         // ══ 对外：申领 ══════════════════════════════════════════════════
 
         /// <summary>
@@ -409,6 +418,15 @@ namespace HideAndSeek.Features.Rule
 
             /// <summary>有效敲击数（只数发起者本人持鱼的 E）。</summary>
             public int Taps;
+
+            /// <summary>
+            /// 这次尝试的失效时刻 —— 用 **`Time.realtimeSinceStartup`**（单调、进程内只增）。
+            ///
+            /// ⚠ 绝不能用 `TimeManager.SurviveTime`：它是 int、每秒 +1，而且每局被 ResetSurvival
+            /// 设回 420 ⇒ 上一局留下的时间戳会变成"未来"，判定永久不成立（或反过来瞬间过期）。
+            /// 计时单位必须与 Seal 那几处保持同一套时钟，见 <see cref="NowReal"/>。
+            /// </summary>
+            public float Deadline;
         }
 
         /// <summary>门 ID → 那次锁门尝试。</summary>
@@ -522,22 +540,28 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
-            float now = Now;
             int need = SealsNeeded?.Value ?? 3;        // 前 need 次：什么都不显示
             int drainTotal = DrainTaps?.Value ?? 3;    // 之后每次额外 E 让条流失，流失满即上锁
+            float life = SealWindow?.Value ?? 6f;      // 这次尝试的存活窗口（秒）
+            float real = NowReal;                      // ★ 单调真实时钟，不是 SurviveTime
 
-            // 两次**有效操作**之间能停多久，超过就从头来。
-            //
-            // 注意这不是"原版冷却"的迁就 —— 客户端每次按 E 都会发 C_INTERACT_DOOR
-            // （无输入冷却，:6275），原版那 1 秒 `_interactCooldownPlayers` 只拦"门真的被开关"，
-            // 而本 Prefix 在它之前执行。这里纯粹是"玩家手速 / 动作动画的间隔容忍度"：
-            // 取 GuardSeconds 与 SealWindow(默认 6 秒) 中较大者，1 秒对连按来说太紧
-            // （实测：窗口 1 秒时下一次有效按 E 常赶不上，进度被反复清零 ⇒ 怎么按都上不了锁）。
             Attempt a;
-            if (!Attempts.TryGetValue(doorId, out a))
+            if (Attempts.TryGetValue(doorId, out a) && real >= a.Deadline)
+            {
+                // 操作已过期：进度作废、条清掉、门恢复任何人可开（规格第 2 条）
+                Attempts.Remove(doorId);
+                GuardUntil.Remove(doorId);
+                Charging.Remove(doorId);
+                ResetGauge(door);
+                Plugin.Log.LogInfo(
+                    $"[HS] KeyLock：门 #{doorId} 的上锁尝试已过期（{life:F0} 秒无操作），进度清零。");
+                a = null;
+            }
+
+            if (a == null)
             {
                 // 谁先开始，这扇门的锁就归谁；此后别人按 E 一律无效（判定在调用点）
-                a = new Attempt { OwnerPid = pid, Taps = 1 };
+                a = new Attempt { OwnerPid = pid, Taps = 1, Deadline = real + life };
                 Attempts[doorId] = a;
                 ResetGauge(door);                      // 前几次不显示进度条
                 Plugin.Log.LogInfo(
