@@ -198,6 +198,67 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
+        /// <summary>
+        /// 给路易斯发一次"指向目标"的世界箭头。
+        ///
+        /// `UI_Arrow` 全场只有一个槽位（`:13807-13819` 复用同一个对象），
+        /// 所以"重发"就是**更新同一个箭头的目标位置** —— 不需要先删。
+        /// 只有"结束追踪"时才需要发 `S_REMOVE_ARROW`（且 Pos 必须与最后一发精确同值）。
+        /// </summary>
+        private static void SendTraceArrow(GamePlayer luis, GamePlayer target)
+        {
+            if (luis?.Session == null || target?.PublicInfo == null)
+                return;
+            try
+            {
+                luis.Session.Send(new S_NOTIFY_ARROW
+                {
+                    Type = EArrowType.CharacterArrow,
+                    Pos = target.PublicInfo.Pos
+                });
+                TraceMarks[luis.PublicInfo.PlayerId] = target.PublicInfo.Pos;
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] LuisAbility：追踪箭头发包失败 — {ex.Message}");
+            }
+        }
+
+        // ── ③a 跟随：挂目标的 Move（和红毛一样，10 Hz 级），只在追踪窗口内发 ──
+        [HarmonyPatch(typeof(GamePlayer), nameof(GamePlayer.Move), new[] { typeof(PosInfo), typeof(bool) })]
+        internal static class MoveHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance)
+            {
+                if (ModeRuntime.Bypass || TraceUntil.Count == 0 || __instance?.PublicInfo == null)
+                    return;
+
+                int targetPid = __instance.PublicInfo.PlayerId;
+                int luisPid;
+                if (!MarkedBy.TryGetValue(targetPid, out luisPid))
+                    return;                                  // 移动的不是被标记的人
+
+                float until;
+                if (!TraceUntil.TryGetValue(luisPid, out until) || Now >= until)
+                    return;                                  // 不在 3 秒窗口内
+
+                var room = GameRoom.Instance;
+                if (room?.Players == null)
+                    return;
+
+                for (int i = 0; i < room.Players.Count; i++)
+                {
+                    var luis = room.Players[i];
+                    if (luis?.PublicInfo != null && luis.PublicInfo.PlayerId == luisPid)
+                    {
+                        SendTraceArrow(luis, __instance);
+                        break;
+                    }
+                }
+            }
+        }
+
         // ── ③ 位置追踪：每 TraceIntervalSeconds 给路易斯发一次，持续 TraceDurationSeconds ──
         [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
         internal static class TraceHook
@@ -275,20 +336,7 @@ namespace HideAndSeek.Features.Skill
                     //
                     // S_NOTIFY_ARROW 那条链（:42569 → MyPlayer.SetArrow :13765 → UI_Arrow）
                     // **完全不碰 pin / 地图**，正是"指向人的世界箭头、地图零痕迹"。
-                    try
-                    {
-                        luis.Session.Send(new S_NOTIFY_ARROW
-                        {
-                            Type = EArrowType.CharacterArrow,
-                            Pos = target.PublicInfo.Pos
-                        });
-                        // 记下这一发的位置：删除时必须 **Pos 精确同值**（RemoveArrow :13774 按值匹配）
-                        TraceMarks[luisPid] = target.PublicInfo.Pos;
-                    }
-                    catch (global::System.Exception ex)
-                    {
-                        Plugin.Log.LogWarning($"[HS] LuisAbility：追踪箭头发包失败 — {ex.Message}");
-                    }
+                    SendTraceArrow(luis, target);   // 起步那一发；后续由 Move 钩子跟随
                 }
 
                 // 追踪到期 ⇒ 发删除哨兵（Pos = null）
