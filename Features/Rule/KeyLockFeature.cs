@@ -291,17 +291,16 @@ namespace HideAndSeek.Features.Rule
                 // （保护就是他们按出来的，不是他们的话一按 E 会先被自己刚设的保护拦掉）。
                 bool holding = HasLantern(player);
 
-                // ── 惰性过期：保护期到期而**没有下一次有效操作** ⇒ 保护失效 + 进度清零 ──
-                // 顺手在按 E 时判定，省一个每秒钩子。到期后门立刻恢复"任何人可正常打开"。
-                Attempt att;
-                if (Attempts.TryGetValue(doorId, out att) && Now >= att.GuardUntil)
-                {
-                    Attempts.Remove(doorId);
-                    GuardUntil.Remove(doorId);
-                    ResetGauge(__instance);
-                    Plugin.Log.LogInfo(
-                        $"[HS] KeyLock：门 #{doorId} 保护期到期，上锁进度已清零（原发起者 #{att.OwnerPid}）。");
-                }
+                // ── 不做任何"基于时间的进度重置" ──
+                //
+                // 曾在这里写过"保护期到期 ⇒ 保护失效 + 进度清零"，那是错的，两个原因：
+                //   ① 客户端每次按 E 都会发 C_INTERACT_DOOR（**没有输入冷却**）；原版那 1 秒只是
+                //      **服务端**自己拦"门真的被开关"，而本 Prefix 在它之前执行 ⇒ 根本不必迁就它；
+                //   ② 这里的时间基准 `TimeManager.SurviveTime` 是 **int、每秒 +1**
+                //      ⇒ `now + 1f` 的实际窗口可能只有零点几秒，下一次按 E 就"过期"，
+                //      进度被反复清零 ⇒ 怎么按都上不了锁（实测踩到）。
+                // 进度的清理只挂**明确事件**：跨局、门被别人的锁占据、本次上锁完成。
+                Attempt att = null;
 
                 // 保护期内该门**不受其他人影响**：别人（无论是否拿着鱼）开不了、也推进不了。
                 // 只有发起者本人、以及已经黏住这扇门的人放行。
@@ -352,7 +351,12 @@ namespace HideAndSeek.Features.Rule
                 if (CountSwing(__instance, pid, doorId))
                     TrySeal(__instance, player, doorId, pid);
                 else
-                    GuardUntil[doorId] = Now + (GuardSeconds?.Value ?? 1f);   // 有效操作 ⇒ 刷新保护
+                {
+                    // 有效操作 ⇒ 把"别人开不了"的短保护与"两次敲击容忍窗口"一起刷新到同一时刻
+                    float p = GuardSeconds?.Value ?? 1f;
+                    float w = SealWindow?.Value ?? 6f;
+                    GuardUntil[doorId] = Now + (p > w ? p : w);
+                }
                 Diagnostics.Hit("KeyLockGuard");
 
                 return true;                          // 无论是否黏门，原版开关门照常发生
@@ -378,9 +382,6 @@ namespace HideAndSeek.Features.Rule
 
             /// <summary>有效敲击数（只数发起者本人持鱼的 E）。</summary>
             public int Taps;
-
-            /// <summary>保护期到期时刻（每次有效敲击刷新）。</summary>
-            public float GuardUntil;
         }
 
         /// <summary>门 ID → 那次锁门尝试。</summary>
@@ -497,13 +498,19 @@ namespace HideAndSeek.Features.Rule
             float now = Now;
             int need = SealsNeeded?.Value ?? 3;        // 前 need 次：什么都不显示
             int drainTotal = DrainTaps?.Value ?? 3;    // 之后每次额外 E 让条流失，流失满即上锁
-            float guard = GuardSeconds?.Value ?? 1f;
 
+            // 两次**有效操作**之间能停多久，超过就从头来。
+            //
+            // 注意这不是"原版冷却"的迁就 —— 客户端每次按 E 都会发 C_INTERACT_DOOR
+            // （无输入冷却，:6275），原版那 1 秒 `_interactCooldownPlayers` 只拦"门真的被开关"，
+            // 而本 Prefix 在它之前执行。这里纯粹是"玩家手速 / 动作动画的间隔容忍度"：
+            // 取 GuardSeconds 与 SealWindow(默认 6 秒) 中较大者，1 秒对连按来说太紧
+            // （实测：窗口 1 秒时下一次有效按 E 常赶不上，进度被反复清零 ⇒ 怎么按都上不了锁）。
             Attempt a;
             if (!Attempts.TryGetValue(doorId, out a))
             {
                 // 谁先开始，这扇门的锁就归谁；此后别人按 E 一律无效（判定在调用点）
-                a = new Attempt { OwnerPid = pid, Taps = 1, GuardUntil = now + guard };
+                a = new Attempt { OwnerPid = pid, Taps = 1 };
                 Attempts[doorId] = a;
                 ResetGauge(door);                      // 前几次不显示进度条
                 Plugin.Log.LogInfo(
@@ -511,8 +518,7 @@ namespace HideAndSeek.Features.Rule
                 return false;
             }
 
-            // 有效操作：刷新保护期 + 计数
-            a.GuardUntil = now + guard;
+            // 有效操作：计数（**不记时间、不做任何超时重置** —— 见调用点上方那段说明）
             a.Taps++;
 
             if (a.Taps <= need)
