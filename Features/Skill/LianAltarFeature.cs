@@ -206,7 +206,22 @@ namespace HideAndSeek.Features.Skill
                     for (int i = TraceArrows.Count - 1; i >= 0; i--)
                     {
                         var a = TraceArrows[i];
-                        if (tn >= a.until) { TraceArrows.RemoveAt(i); continue; }
+                        if (tn >= a.until)
+                        {
+                            // 到期：箭头**不会自己消失**（SetArrow 没有时长参数），
+                            // 必须主动发 S_REMOVE_ARROW（:42579 → MyPlayer.RemoveArrow）。
+                            TraceArrows.RemoveAt(i);
+                            try
+                            {
+                                __instance.BroadcastAlivePlayers(new S_REMOVE_ARROW
+                                {
+                                    Type = EArrowType.CorpseArrow,
+                                    Pos = a.pos
+                                });
+                            }
+                            catch { }
+                            continue;
+                        }
                         try
                         {
                             __instance.BroadcastAlivePlayers(new S_NOTIFY_ARROW
