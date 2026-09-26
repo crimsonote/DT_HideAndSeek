@@ -61,6 +61,9 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(6f, "开合计数的有效窗口（秒）。3 次开合最快跨 3 秒，留出反应余量。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SealWindow;
 
+        [ConfigField(3f, "起手窗口（秒）：持鱼在这段时间内连敲够次数的第一下，才激活上锁进度条。", Min = 0.5f, Max = 30f)]
+        public static ConfigEntry<float> ArmWindow;
+
         [ConfigField(20f, "合门后的锁定秒数。若同门已有更长的锁，取较长者。", Min = 1f, Max = 300f)]
         public static ConfigEntry<int> SealSeconds;
 
@@ -304,36 +307,58 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        /// <summary>记一次开合；窗口内凑够次数则返回 true。</summary>
+        /// <summary>
+        /// "已激活、正在充能"的门 → 当前格数。
+        ///
+        /// 需求：持鱼时**先在 ArmWindow 秒内连敲 need 下**把进度条"激活"（此时它才出现），
+        /// 之后**每敲一次 E 推进一格**，满格才真正上锁。起手那几下**不计入**进度。
+        /// 这样"连敲"有明确的起手动作，也给了对方抢在激活前打断的机会。
+        /// </summary>
+        private static readonly Dictionary<string, int> Charge = new Dictionary<string, int>();
+
+        /// <summary>记一次敲击。返回 true 表示"进度已满，该上锁了"。</summary>
         private static bool CountSwing(int pid, int doorId)
         {
             string key = pid + ":" + doorId;
             float now = Now;
-            float window = SealWindow?.Value ?? 5f;
-
-            List<float> times;
-            if (!Swings.TryGetValue(key, out times))
-            {
-                times = new List<float>();
-                Swings[key] = times;
-            }
-
-            times.RemoveAll(t => now - t > window);
-            times.Add(now);
-
             int need = SealsNeeded?.Value ?? 3;
 
-            // 每次都记一行：不锁的时候，这行日志能直接说明"记到第几次"，
-            // 不必再猜是没凑够次数、还是被原版的开合冷却吞掉了。
-            // 只在手持鱼时才会走到这里，所以不会吵。
-            Plugin.Log.LogInfo(
-                $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 记到第 {times.Count}/{need} 次开合" +
-                $"（窗口 {window:F0} 秒，还需 {need - times.Count} 次）。");
+            // ── 阶段一：ArmWindow 秒内连敲 need 下 ⇒ 激活进度条（起手不计入进度）──
+            if (!Charge.ContainsKey(key))
+            {
+                float window = ArmWindow?.Value ?? 3f;
 
-            if (times.Count < need)
+                List<float> times;
+                if (!Swings.TryGetValue(key, out times))
+                {
+                    times = new List<float>();
+                    Swings[key] = times;
+                }
+                times.RemoveAll(t => now - t > window);
+                times.Add(now);
+
+                Plugin.Log.LogInfo(
+                    $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 起手 {times.Count}/{need}（{window:F1} 秒窗口）。");
+
+                if (times.Count < need)
+                    return false;
+
+                times.Clear();
+                Swings.Remove(key);
+                Charge[key] = 0;
+                Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度已激活 0/{need}。");
+                return false;
+            }
+
+            // ── 阶段二：每敲一次推进一格，满格上锁 ──
+            int cur = Charge[key] + 1;
+            Charge[key] = cur;
+            Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度 {cur}/{need}。");
+
+            if (cur < need)
                 return false;
 
-            times.Clear();
+            Charge.Remove(key);
             return true;
         }
 
@@ -503,7 +528,8 @@ namespace HideAndSeek.Features.Rule
             Seals.Clear();
             Swings.Clear();
             _outstanding = 0;
-            GuardUntil.Clear();     // 短保护也记的是 SurviveTime —— 不清会跨局残留（下一局开局门就被"保护"住）
+            GuardUntil.Clear();     // 短保护也记的是 SurviveTime
+            Charge.Clear();         // 上锁进度的"已激活"状态同样不能跨局 —— 不清会跨局残留（下一局开局门就被"保护"住）
 
             // 配额与冷却**必须一起清**：它们记的是 TimeManager.SurviveTime，
             // 而那个值每局由 ResetSurvival() 设回 420（不是从 0）。不清的话，上一局记下的时刻（例如 250 秒）
