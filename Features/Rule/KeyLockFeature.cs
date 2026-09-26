@@ -317,6 +317,20 @@ namespace HideAndSeek.Features.Rule
         private static readonly Dictionary<string, int> Charge = new Dictionary<string, int>();
 
         /// <summary>
+        /// 正在充能的门：门 ID → (门对象, 当前格数, 总量)。
+        ///
+        /// 用途只有一个 —— **频闪**：需求要"锁门进度条在推进中闪"，也就是在
+        /// 「当前进度」与「0」之间交替。客户端 `Update` 会不会把值自己爬一格（:90076）
+        /// 还没实机验证过，所以这里不依赖它：**每秒交替重发两个值**，
+        /// 无论客户端自不自走，看上去都是"亮一下、灭一下"。
+        /// </summary>
+        private static readonly Dictionary<int, (GameDoor door, int cur, int total)> Charging =
+            new Dictionary<int, (GameDoor, int, int)>();
+
+        /// <summary>频闪相位：true = 这次发"0"，false = 发"当前进度"。</summary>
+        private static bool _blinkOff;
+
+        /// <summary>
         /// 把"上锁进度"推到门自己的设备进度条上。
         ///
         /// 客户端 `Door.RefreshState`(:6134) 会执行
@@ -338,6 +352,12 @@ namespace HideAndSeek.Features.Rule
             var list = door.DeviceInfo?.StateList;
             if (list == null || list.Count < 3)
                 return;                                 // 不是带进度条的门
+
+            // 登记/注销"正在充能的门"，供每秒频闪使用
+            if (cur > 0 && cur < total)
+                Charging[door.ID] = (door, cur, total);
+            else
+                Charging.Remove(door.ID);
 
             try
             {
@@ -560,13 +580,62 @@ namespace HideAndSeek.Features.Rule
             player.Session.Send(ChatOut.ToPlayer(player, text));
         }
 
+        /// <summary>
+        /// 每秒把"正在充能的门"的进度条在「当前进度」与「0」之间交替一下 —— 即需求要的频闪。
+        /// `SurviveTime` 是 int 秒（1 Hz），正好天然是 1 Hz 的闪烁节拍。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class BlinkHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (ModeRuntime.Bypass || Charging.Count == 0)
+                    return;
+
+                _blinkOff = !_blinkOff;
+                var room = GameRoom.Instance;
+                List<int> stale = null;
+
+                foreach (var kv in Charging)
+                {
+                    var door = kv.Value.door;
+                    // 门没了 / 房间不在生存阶段 ⇒ 撤掉登记（否则会一直闪）
+                    if (door == null || room?.State != EGameState.Survive)
+                    {
+                        (stale ?? (stale = new List<int>())).Add(kv.Key);
+                        continue;
+                    }
+
+                    var list = door.DeviceInfo?.StateList;
+                    if (list == null || list.Count < 3)
+                        continue;
+
+                    try
+                    {
+                        list[1] = kv.Value.total;
+                        list[2] = _blinkOff ? 0 : kv.Value.cur;   // 交替：有时发 0，有时发真实进度
+                        door.BroadcastState();
+                    }
+                    catch { /* 单次失败忽略 */ }
+                }
+
+                if (stale != null)
+                {
+                    foreach (int id in stale)
+                        Charging.Remove(id);
+                }
+            }
+        }
+
         internal static void ClearAll()
         {
             Seals.Clear();
             Swings.Clear();
             _outstanding = 0;
             GuardUntil.Clear();     // 短保护也记的是 SurviveTime
-            Charge.Clear();         // 上锁进度的"已激活"状态同样不能跨局 —— 不清会跨局残留（下一局开局门就被"保护"住）
+            Charge.Clear();         // 上锁进度的"已激活"状态同样不能跨局
+            Charging.Clear();       // 频闪登记同理 —— 不清会跨局残留（下一局开局门就被"保护"住）
 
             // 配额与冷却**必须一起清**：它们记的是 TimeManager.SurviveTime，
             // 而那个值每局由 ResetSurvival() 设回 420（不是从 0）。不清的话，上一局记下的时刻（例如 250 秒）
