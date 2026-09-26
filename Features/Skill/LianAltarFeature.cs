@@ -250,8 +250,6 @@ namespace HideAndSeek.Features.Skill
             {
                 if (ModeRuntime.Bypass || __instance?.Players == null)
                     return;
-                if (EnableVision == null || !EnableVision.Value)
-                    return;                              // 段内开关：假光照可以单独关掉
                 if (__instance.State != EGameState.Survive)
                     return;                          // 只在生存阶段干预；其它阶段交还原版
 
@@ -316,6 +314,13 @@ namespace HideAndSeek.Features.Skill
                         }
                     }
                 }
+
+                // ⚠ 假光照有自己的开关（EnableVision），守卫**只能放在这一段之前**。
+                // 绝不能再往上挪到方法开头 —— 上面的"箭头到期删除"和"技能槽冷却补发"
+                // 都不属于假光照：一旦被这个守卫挡住，删除包就永远不会发出，
+                // 箭头会一直留在屏幕上（实测到的"骷髅头一直不消失"正是这个原因）。
+                if (EnableVision == null || !EnableVision.Value)
+                    return;
 
                 float now = Now;
                 float arm = ArmSeconds?.Value ?? 3f;
