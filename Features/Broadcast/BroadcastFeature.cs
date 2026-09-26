@@ -515,8 +515,12 @@ namespace HideAndSeek.Features.Broadcast
             string whiteTip = null;
             if (auto)
             {
-                string head = Titled(TextService.Format(WeaponTaken?.Value) + "\n"
-                                    + TextService.Format(StartBodyWhite?.Value));
+                // 需求确认（#6）：「开头的提示」= 自提刀时那条通告的**原文**（WeaponTaken「捉迷藏开始了~」）。
+                // ⚠ 它**不能**被 Titled() 包 —— 原版拿刀那条（:622）是裸发原文的，
+                //   包上会变成「捉迷藏模式\n捉迷藏开始了~」，就不再"与拿刀时一致"了。
+                //   标题只加在自动发刀模式自己的正文（StartBodyWhite）上。
+                string head = TextService.Format(WeaponTaken?.Value) + "\n"
+                            + Titled(TextService.Format(StartBodyWhite?.Value));
                 whiteTip = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
             }
 
