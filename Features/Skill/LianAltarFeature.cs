@@ -56,6 +56,23 @@ namespace HideAndSeek.Features.Skill
         public static ConfigEntry<bool> EnableTrace;
 
         /// <summary>
+        /// 尸体预警的持续秒数。到期会**主动发删除包**把箭头撤掉
+        /// （箭头没有自带寿命，见下方 <see cref="CorpseArrowHook"/> 的说明）。
+        /// </summary>
+        [ConfigField(20f, "尸体方向预警持续多少秒后消失。", Min = 1f, Max = 120f)]
+        public static ConfigEntry<float> TraceSeconds;
+
+        /// <summary>
+        /// 尸体预警的音效（**默认 none = 不发声**）。
+        ///
+        /// 原版这个位置用的是 `WarningSfx` —— 但它同时是"尸体被发现"的全房通报音，
+        /// 拿来做"有人死了"的提示会吵且容易与别的信息混淆，所以默认静音、留给你自选。
+        /// 建议：`HandBellSfx`（手铃）· `PurpleCandleSfx`（紫蜡烛）· `IgniteSfx`（点燃）。
+        /// </summary>
+        [ConfigField("none", "尸体预警音效（ESoundType 名）。none = 不发声（默认）。")]
+        public static ConfigEntry<string> TraceSfx;
+
+        /// <summary>
         /// 尸体追踪用掉一次之后，莲的技能槽上**长期挂着**的冷却值。
         ///
         /// 需求原话是"长期显示为 -1（如果可行），或 13"。**-1 不可行** ——
@@ -72,8 +89,6 @@ namespace HideAndSeek.Features.Skill
         /// `S_NOTIFY_ARROW` 本身没有"时长"字段（客户端收到就画一个箭头，画完即止），
         /// 所以要"持续 20 秒"必须**每秒重发一次**。这里记录"到期时刻"来做这件事。
         /// </summary>
-        [ConfigField(20f, "尸体追踪警告持续秒数（每秒重发一次箭头）。", Min = 0f, Max = 120f)]
-        public static ConfigEntry<float> TraceSeconds;
 
         /// <summary>莲 PlayerId → 进入 DT 点范围的时刻。用于判"站够 ArmSeconds"。</summary>
         private static readonly Dictionary<int, float> EnteredAt = new Dictionary<int, float>();
@@ -171,7 +186,15 @@ namespace HideAndSeek.Features.Skill
 
                 try
                 {
-                    room.BroadcastSystemSFX(ESoundType.WarningSfx);
+                    // 音效可配、**默认不发声** —— 原版这个位置是 WarningSfx，
+                    // 但它同时是"尸体被发现"的全房通报音，拿来做死亡提示既吵又易混淆。
+                    string traceSfx = TraceSfx?.Value;
+                    if (!string.IsNullOrEmpty(traceSfx)
+                        && !traceSfx.Equals("none", global::System.StringComparison.OrdinalIgnoreCase)
+                        && global::System.Enum.TryParse(traceSfx, true, out ESoundType ts))
+                    {
+                        room.BroadcastSystemSFX(ts);
+                    }
                     room.BroadcastAlivePlayers(new S_NOTIFY_ARROW
                     {
                         Type = EArrowType.CorpseArrow,
@@ -234,15 +257,9 @@ namespace HideAndSeek.Features.Skill
                             catch { }
                             continue;
                         }
-                        try
-                        {
-                            __instance.BroadcastAlivePlayers(new S_NOTIFY_ARROW
-                            {
-                                Type = EArrowType.CorpseArrow,
-                                Pos = a.pos
-                            });
-                        }
-                        catch { }
+                        // ⚠ 这里**不能重发**：客户端 SetArrow(:13765) 每次都**新建一个箭头对象**并追加进列表，
+                        // 而 RemoveArrow(:13774) 只删"坐标完全相同"的那一个 ⇒ 每秒重发会造出一堆箭头，
+                        // 到期只能删掉最后那一个，其余永远留在屏幕上（"长舌头"就是这么来的）。
                     }
                 }
 
