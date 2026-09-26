@@ -215,6 +215,39 @@ namespace HideAndSeek.Features.Rule
 
         // ══ 门交互：开合计数 + 合门 + 放行 ══════════════════════════════
 
+        /// <summary>我们正在自己上锁（TrySeal 调 LockDoor）时会置位，避免把自己的锁当成"别人的锁"取消掉。</summary>
+        private static bool _sealingSelf;
+
+        /// <summary>
+        /// 门**被别人锁上**时（`/lock` 广域锁、原版破坏等）覆盖鱼的这次尝试：
+        /// 丢掉 Attempt 与保护、进度归零。
+        ///
+        /// 为什么必须在这里做、而不是等下一次按 E：门一旦进入锁定态，
+        /// 客户端 `Door.Interact`(:6275) 只播 LockedDoorSfx 就 return、**不下发包**
+        /// ⇒ 我们再也没有机会清理，鱼的半成品进度会一直挂在门的槽位上。
+        /// 规格："锁门未正式完成 ⇒ 进度条不算；/lock 覆盖鱼的操作。"
+        /// </summary>
+        [HarmonyPatch(typeof(GameDoor), nameof(GameDoor.LockDoor))]
+        internal static class DoorLockedByOtherHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameDoor __instance)
+            {
+                if (ModeRuntime.Bypass || __instance == null)
+                    return;
+                if (_sealingSelf)
+                    return;                              // 是我们自己上的锁（TrySeal 正在跑）
+
+                int doorId = __instance.ID;
+                if (Attempts.Remove(doorId))
+                {
+                    GuardUntil.Remove(doorId);
+                    Plugin.Log.LogInfo(
+                        $"[HS] KeyLock：门 #{doorId} 被其它锁（/lock 等）占据 —— 鱼的这次上锁尝试作废。");
+                }
+            }
+        }
+
         [HarmonyPatch(typeof(GameDoor), "Interact")]
         internal static class DoorInteractHook
         {
@@ -543,7 +576,9 @@ namespace HideAndSeek.Features.Rule
                 {
                     info.StateList[1] = seconds;      // 锁定总时长
                     info.StateList[2] = 0;            // 已流逝清零
-                    door.LockDoor();                  // State → 2，并广播
+                    _sealingSelf = true;              // 这是我们自己的锁，别让 LockDoor 的钩子把 Attempt 取消掉
+                    try { door.LockDoor(); }          // State → 2，并广播
+                    finally { _sealingSelf = false; }
 
                     // LockDoor 不会自己启动计时，反射跑一次 TickDoor
                     if (_tickDoor == null)
