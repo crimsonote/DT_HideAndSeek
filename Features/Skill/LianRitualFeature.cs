@@ -55,6 +55,17 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(10f, "复活后灵魂不能离开 DT 点的秒数。", Min = 0f, Max = 120f)]
         public static ConfigEntry<float> SoulHoldSeconds;
 
+        /// <summary>
+        /// 允许"没有幽灵时强行复活"。默认**开**（方便测试）。
+        ///
+        /// 正常情况下那具尸体的主人若已下线/离场，我们只能播报"灵魂已然远去"。
+        /// 打开本项后，即使玩家对象不在场，也会尝试用**服务端记录**把那个 PlayerId
+        /// 从"幽灵/死亡"状态改回活人（`IsAlive = true` + 状态复位 + 广播 S_RESPAWN）——
+        /// 生存阶段重写这个状态是可行的（死亡时正是把它设为 false 的，:175974）。
+        /// </summary>
+        [ConfigField(true, "没有幽灵（主人不在场）时也强行复活。测试用。")]
+        public static ConfigEntry<bool> ForceRevive;
+
         /// <summary>尸体 ID → 已经完成的阶段数。</summary>
         private static readonly Dictionary<int, int> Progress = new Dictionary<int, int>();
 
@@ -417,10 +428,27 @@ namespace HideAndSeek.Features.Skill
             }
             if (owner?.PublicInfo == null || owner.Session == null)
             {
-                // 没有灵魂（下线/离场）——按需求播报这一条
-                try { Core.ChatOut.ToPlayer(host, "灵魂已然远去"); } catch { }
-                Plugin.Log.LogInfo("[HS] LianRitual：该尸体没有对应的在线玩家，复活取消。");
-                return;
+                // 找不到"还在场的死者"。
+                //  · ForceRevive 关：按需求播报"灵魂已然远去"并放弃
+                //  · ForceRevive 开（测试用）：仍往下走 —— 下面会用反射把该 PlayerId 改回活人，
+                //    只是没有 Session 可发 S_RESPAWN，客户端侧看不到位置更新。
+                if (ForceRevive == null || !ForceRevive.Value)
+                {
+                    try { Core.ChatOut.ToPlayer(host, "灵魂已然远去"); } catch { }
+                    Plugin.Log.LogInfo("[HS] LianRitual：该尸体没有对应的在线玩家，复活取消。");
+                    return;
+                }
+
+                Plugin.Log.LogWarning(
+                    "[HS] LianRitual：该尸体没有对应的在线玩家，但 ForceRevive 开着 —— 尝试强行复活。");
+                var orphan = FindPlayer(corpse.ID);
+                if (orphan?.PublicInfo == null)
+                {
+                    Plugin.Log.LogWarning("[HS] LianRitual：连 Player 对象都不在，无法强行复活。");
+                    try { Core.ChatOut.ToPlayer(host, "灵魂已然远去"); } catch { }
+                    return;
+                }
+                owner = orphan;                       // 找到了（例如已死但仍在房里的玩家）
             }
 
             var pos = corpse.DeviceInfo?.Pos ?? owner.PublicInfo.Pos;
@@ -435,7 +463,19 @@ namespace HideAndSeek.Features.Skill
                 owner.State = EPlayerState.Idle;
 
                 string name = owner.Name ?? ("#" + owner.PublicInfo.PlayerId);
-                Core.ChatOut.Broadcast($"{name} 重回于世间", EChatType.DeviceChat);
+                // 需求：复活提示**不全房**，只给"当事人自己"和"莲"。
+                string reviveText = $"{name} 重回于世间";
+                try
+                {
+                    if (owner.Session != null)
+                        Core.ChatOut.ToPlayer(owner, reviveText);
+                }
+                catch { }
+                var lianForRevive = FindLianInDtRange();
+                if (lianForRevive?.PublicInfo != null && lianForRevive.PublicInfo.PlayerId != owner.PublicInfo.PlayerId)
+                {
+                    try { Core.ChatOut.ToPlayer(lianForRevive, reviveText); } catch { }
+                }
 
                 // ── N5：复活那一次也要放"黑洞传送"的视听，而且要作用在**复活后的人**身上 ──
                 // 原版"翻 DT 点尸体"用的是同一套表现（`InteractMagic` :168581）：
@@ -517,12 +557,7 @@ namespace HideAndSeek.Features.Skill
                             Host.Remove(corpseId);
                             Active.Remove(corpseId);
 
-                            for (int i = 0; i < __instance.Players.Count; i++)
-                            {
-                                var p = __instance.Players[i];
-                                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == hostPid)
-                                { try { Core.ChatOut.ToPlayer(p, "仪式中断：莲已离开 DT 点。"); } catch { } }
-                            }
+                            // 需求：仪式中断**不做文本反馈**（静默清零即可）
                             Plugin.Log.LogInfo($"[HS] LianRitual：尸体 #{corpseId} 的仪式已放弃（主持者离开）。");
                         }
                     }
