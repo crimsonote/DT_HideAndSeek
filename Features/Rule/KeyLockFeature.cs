@@ -391,6 +391,31 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 把门头进度条**还原成"没有进度"的自然状态**。
+        ///
+        /// 客户端 `UI_DeviceCasting.SetInfo(cur, total)`（:90065-90071）的可见规则是
+        /// `gameObject.SetActive(cur < total)` —— 所以写 (0,0) 就等于"不显示"。
+        /// 必须显式还原：这两格是**设备自身状态**，每次 `BroadcastState` 都会重画一遍
+        /// （空手开门也会触发一次）⇒ 不还原的话，半途停手留下的 2/3 会一直挂在门上，
+        /// 之后任意一次状态广播都会把它重新画出来。
+        /// </summary>
+        private static void ResetGauge(GameDoor door)
+        {
+            if (door?.DeviceInfo?.StateList == null)
+                return;
+            var list = door.DeviceInfo.StateList;
+            if (list.Count < 3 || list[0] == 2)
+                return;                                 // 不是带条的门 / 门已被正式锁定（那是它自己的值）
+            try
+            {
+                list[1] = 0;
+                list[2] = 0;
+                door.BroadcastState();
+            }
+            catch { /* 单个门失败不影响其它 */ }
+        }
+
         /// <summary>记一次敲击。返回 true 表示"进度已空，该上锁了"。</summary>
         private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
@@ -416,18 +441,15 @@ namespace HideAndSeek.Features.Rule
                     && now - last > SwingIdleSeconds.Value)
                 {
                     Charge.Remove(key);              // 停手太久 ⇒ 从头来
+                    ResetGauge(door);                // 并清掉可能残留的进度（见 ResetGauge 的说明）
                 }
             }
             LastSwingAt[key] = now;
 
-            // 敲击次数累加；**但送进进度条的是"还差几下"**（= need - 已敲）。
-            //
-            // 方向要求（用户确认）：与门自己那把锁**相反**。
-            //   · 原版 `Door.TickDoor`（:162638）：StateList[2] 从 0 涨到 StateList[1]，
-            //     **越填越接近解锁，填满即解锁**。
-            //   · 我们：一开始接近满，每敲一下**减一格**，**敲空（0）就是上锁**。
-            // 所以槽位语义不变（[1]=总量、[2]=当前值，客户端只会按 [2]/[1] 画），
-            // 变的只是我们灌进去的那个"当前值"的方向。
+            // 敲击次数累加。**上锁过程中不动进度条** ——
+            // 需求明确：进度条只能在"对着门操作够 need 次（= 真正上锁）"之后才出现，
+            // 第 1 下就冒出条是非预期行为。
+            // 所以这里只记次数与日志；进度条由 TrySeal 在上锁那一刻开始驱动。
             int taps = (Charge.TryGetValue(key, out int c) ? c : 0) + 1;
             Charge[key] = taps;
 
@@ -436,8 +458,7 @@ namespace HideAndSeek.Features.Rule
                 left = 0;
 
             Plugin.Log.LogInfo(
-                $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度 还差 {left} 下（已敲 {taps}/{need}）。");
-            PushGauge(door, left, need);
+                $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 敲击 {taps}/{need}（还差 {left} 下，未显示进度条）。");
 
             if (taps < need)
                 return false;
