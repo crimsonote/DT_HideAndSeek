@@ -6,6 +6,8 @@ using Server.Game;
 using HideAndSeek.Core;
 using HideAndSeek.Features.Vision;
 using GamePlayer = Server.Game.Player;
+using GameDtStage = Server.Game.DeadlyTrickStage;      // AGENTS 坑 #1：同名类，必须显式限定
+using GameCabinet = Server.Game.Cabinet;
 using GameDeviceManager = Server.Game.DeviceManager;    // AGENTS 坑 #1：同名类，服务端那个才有 Instance
 
 namespace HideAndSeek.Features.Skill
@@ -89,7 +91,7 @@ namespace HideAndSeek.Features.Skill
 
         /// <summary>"DT 点"= 能藏尸的设备：DeadlyTrickStage（魔法阵那类）与 Cabinet（柜子）。</summary>
         private static bool IsDtDevice(Device d)
-            => d is DeadlyTrickStage || d is Cabinet;
+            => d is GameDtStage || d is GameCabinet;
 
         /// <summary>该玩家是否站在某个 DT 点的半径内。</summary>
         private static bool InDtRange(GamePlayer player)

@@ -6,6 +6,8 @@ using Server.Game;
 using HideAndSeek.Core;
 using HideAndSeek.Features.Vision;
 using GamePlayer = Server.Game.Player;
+using GameDtStage = Server.Game.DeadlyTrickStage;      // AGENTS 坑 #1：同名类，必须显式限定
+using GameCabinet = Server.Game.Cabinet;
 using GameCorpse = Server.Game.Corpse;
 using GameDeviceManager = Server.Game.DeviceManager;
 using GameOccult = Server.Game.Occult;                  // 教室魔法阵/蜡烛（服务端）
@@ -110,7 +112,7 @@ namespace HideAndSeek.Features.Skill
         }
 
         /// <summary>DT 点 = 能藏尸的设备：DeadlyTrickStage（魔法阵那类）与 Cabinet（柜子）。</summary>
-        private static bool IsDtDevice(Device d) => d is DeadlyTrickStage || d is Cabinet;
+        private static bool IsDtDevice(Device d) => d is GameDtStage || d is GameCabinet;
 
         private static bool InDtRange(GamePlayer player)
         {
