@@ -54,6 +54,9 @@ namespace HideAndSeek.Features.Skill
         /// <summary>路易斯 PlayerId → 下次可以再发一次追踪的时刻。</summary>
         private static readonly Dictionary<int, float> NextTraceAt = new Dictionary<int, float>();
 
+        /// <summary>路易斯 PlayerId → 最后一次发出的箭头位置（删除时 Pos 必须精确同值）。</summary>
+        private static readonly Dictionary<int, PosInfo> TraceMarks = new Dictionary<int, PosInfo>();
+
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
         private static bool IsLuis(GamePlayer p)
@@ -231,7 +234,26 @@ namespace HideAndSeek.Features.Skill
                     if (luis?.Session == null || target?.PublicInfo == null)
                         continue;
                     if (!luis.IsAlive || !target.IsAlive)
-                        continue;                              // 死了就不再指路
+                    {
+                        // 需求：目标死亡后 ⇒ **不再通报位置**。
+                        // 注意不只是"停止重发" —— 箭头是死数据，必须主动撤掉（同 S_REMOVE_ARROW）。
+                        PosInfo dead;
+                        if (TraceMarks.TryGetValue(luisPid, out dead))
+                        {
+                            TraceMarks.Remove(luisPid);
+                            TraceUntil.Remove(luisPid);
+                            try
+                            {
+                                luis.Session.Send(new S_REMOVE_ARROW
+                                {
+                                    Type = EArrowType.CharacterArrow,
+                                    Pos = dead
+                                });
+                            }
+                            catch { }
+                        }
+                        continue;
+                    }
 
                     float next;
                     if (!NextTraceAt.TryGetValue(luisPid, out next))
@@ -242,14 +264,30 @@ namespace HideAndSeek.Features.Skill
                     NextTraceAt[luisPid] = now + interval;
                     TraceUntil[luisPid] = now + (TraceDurationSeconds?.Value ?? 3f);
 
-                    // 走 S_PIN_MOVE（红毛 ComplyRules 用的就是这条）。pinId 用独立段，避免与雷达/美幸撞号。
+                    // ★ 改用 S_NOTIFY_ARROW + EArrowType.CharacterArrow。
+                    //
+                    // 为什么不用 S_PIN_MOVE：那个包在客户端会**同时**刷"场景 HUD 地图"和"平板"两处
+                    // （Handle_S_PIN_MOVE :42246/:42247 是无条件两行，同一个 Type，客户端没有任何
+                    //   按 ID 分岔的逻辑）⇒ 用它在平板上必然留下标记。
+                    // 而且世界箭头（SetComplyRulesArrow）要求 Type 是**真实 PlayerId**
+                    // （:13801 GetPlayerCache(target.ID) 为 null 就直接 return）——
+                    // 我们原来那套 92000+pid 根本没有箭头，只有地图 pin。
+                    //
+                    // S_NOTIFY_ARROW 那条链（:42569 → MyPlayer.SetArrow :13765 → UI_Arrow）
+                    // **完全不碰 pin / 地图**，正是"指向人的世界箭头、地图零痕迹"。
                     try
                     {
-                        WhiteRadarFeature.SendPin(luis, TracePinId + targetPid, target.PublicInfo.Pos);
+                        luis.Session.Send(new S_NOTIFY_ARROW
+                        {
+                            Type = EArrowType.CharacterArrow,
+                            Pos = target.PublicInfo.Pos
+                        });
+                        // 记下这一发的位置：删除时必须 **Pos 精确同值**（RemoveArrow :13774 按值匹配）
+                        TraceMarks[luisPid] = target.PublicInfo.Pos;
                     }
                     catch (global::System.Exception ex)
                     {
-                        Plugin.Log.LogWarning($"[HS] LuisAbility：追踪发包失败 — {ex.Message}");
+                        Plugin.Log.LogWarning($"[HS] LuisAbility：追踪箭头发包失败 — {ex.Message}");
                     }
                 }
 
@@ -268,14 +306,27 @@ namespace HideAndSeek.Features.Skill
                 foreach (int luisPid in expired)
                 {
                     TraceUntil.Remove(luisPid);
+
+                    PosInfo last;
+                    if (!TraceMarks.TryGetValue(luisPid, out last))
+                        continue;
+                    TraceMarks.Remove(luisPid);
+
                     for (int i = 0; i < room.Players.Count; i++)
                     {
                         var p = room.Players[i];
                         if (p?.PublicInfo == null || p.PublicInfo.PlayerId != luisPid || p.Session == null)
                             continue;
-                        foreach (var kv in MarkedBy)
-                            if (kv.Value == luisPid)
-                                WhiteRadarFeature.SendPin(p, TracePinId + kv.Key, null);
+                        try
+                        {
+                            // 删除：Pos 必须与发出去的那一发**精确同值**（RemoveArrow :13774 按值匹配）
+                            p.Session.Send(new S_REMOVE_ARROW
+                            {
+                                Type = EArrowType.CharacterArrow,
+                                Pos = last
+                            });
+                        }
+                        catch { }
                         break;
                     }
                 }
@@ -307,6 +358,7 @@ namespace HideAndSeek.Features.Skill
             MarkedBy.Clear();
             TraceUntil.Clear();
             NextTraceAt.Clear();
+            TraceMarks.Clear();
         }
     }
 }
