@@ -61,8 +61,8 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(6f, "开合计数的有效窗口（秒）。3 次开合最快跨 3 秒，留出反应余量。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SealWindow;
 
-        [ConfigField(3f, "起手窗口（秒）：持鱼在这段时间内连敲够次数的第一下，才激活上锁进度条。", Min = 0.5f, Max = 30f)]
-        public static ConfigEntry<float> ArmWindow;
+        [ConfigField(2f, "停手多少秒后，上锁进度归零（防止隔很久再按还接着上次累加）。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> SwingIdleSeconds;
 
         /// <summary>
         /// 是否让上锁进度条"频闪"（在「当前进度」与「0」之间每秒交替）。
@@ -115,10 +115,6 @@ namespace HideAndSeek.Features.Rule
 
         /// <summary>已发出、尚未归还的提灯数（场上在外的盏数）。</summary>
         private static int _outstanding;
-
-        /// <summary>"玩家:门" → 窗口内的开合时刻。</summary>
-        private static readonly Dictionary<string, List<float>> Swings =
-            new Dictionary<string, List<float>>();
 
         private static MethodInfo _tickDoor;
 
@@ -315,13 +311,17 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// "已激活、正在充能"的门 → 当前格数。
+        /// 持鱼者对各扇门的**上锁进度**（"玩家:门" → 已按次数）。
         ///
-        /// 需求：持鱼时**先在 ArmWindow 秒内连敲 need 下**把进度条"激活"（此时它才出现），
-        /// 之后**每敲一次 E 推进一格**，满格才真正上锁。起手那几下**不计入**进度。
-        /// 这样"连敲"有明确的起手动作，也给了对方抢在激活前打断的机会。
+        /// 每按一次 E 就 +1，满 `SealsNeeded` 就上锁。**不做时间窗口门槛** ——
+        /// 原版门有 1 秒开合冷却，而我们的 Prefix 在原方法体之前执行，
+        /// 所以"被冷却忽略的那几次也会走到这里"，可以一直按 E 累加（这是既定的做法）。
+        /// 停手超过 `SwingIdleSeconds` 才归零，见 <see cref="CountSwing"/>。
         /// </summary>
         private static readonly Dictionary<string, int> Charge = new Dictionary<string, int>();
+
+        /// <summary>"玩家:门" → 上一次按 E 的时刻，用于"停手归零"。</summary>
+        private static readonly Dictionary<string, float> LastSwingAt = new Dictionary<string, float>();
 
         /// <summary>
         /// 正在充能的门：门 ID → (门对象, 当前格数, 总量)。
@@ -385,36 +385,30 @@ namespace HideAndSeek.Features.Rule
             float now = Now;
             int need = SealsNeeded?.Value ?? 3;
 
-            // ── 阶段一：ArmWindow 秒内连敲 need 下 ⇒ 激活进度条（起手不计入进度）──
-            if (!Charge.ContainsKey(key))
+            // 只要**一直按 E**就一路累加 —— 不做"N 秒内连敲 N 下"的时间门槛。
+            //
+            // 为什么不能有时间门槛：原版门自己带 **1 秒开合冷却**（Server.Game.Door 的
+            // `_interactCooldownPlayers`），而门关着时客户端也未必发交互包。
+            // 我们的 Prefix 在原方法体**之前**执行，所以"被冷却忽略的那几次照样会走到这里"——
+            // 这正是"可以一直按 E、不受服务端门冷却限制"的根据。
+            // 一旦再套一层"N 秒内凑够 N 下"，就等于把那条被绕开的冷却重新捞了回来：
+            // 冷却吃掉一次 ⇒ 永远凑不齐 ⇒ 表现就是"怎么按都不涨"。
+            //
+            // 中断方式由外部承担：离开 DT 点/换门/跨局时 `Clear` 会清掉 Charge，
+            // 中途停手两秒以上也会由 `SwingIdleSeconds` 归零，不会无限累加。
+            if (SwingIdleSeconds != null && SwingIdleSeconds.Value > 0f)
             {
-                float window = ArmWindow?.Value ?? 3f;
-
-                List<float> times;
-                if (!Swings.TryGetValue(key, out times))
+                float last;
+                if (LastSwingAt.TryGetValue(key, out last)
+                    && now - last > SwingIdleSeconds.Value)
                 {
-                    times = new List<float>();
-                    Swings[key] = times;
+                    Charge.Remove(key);              // 停手太久 ⇒ 从头来
                 }
-                times.RemoveAll(t => now - t > window);
-                times.Add(now);
-
-                Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 起手 {times.Count}/{need}（{window:F1} 秒窗口）。");
-
-                if (times.Count < need)
-                    return false;
-
-                times.Clear();
-                Swings.Remove(key);
-                Charge[key] = 0;
-                Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度已激活 0/{need}。");
-                PushGauge(door, 0, need);          // 进度条出现（0/need）
-                return false;
             }
+            LastSwingAt[key] = now;
 
-            // ── 阶段二：每敲一次推进一格，满格上锁 ──
-            int cur = Charge[key] + 1;
+            // 每按一次 E：进度 +1；满格上锁
+            int cur = (Charge.TryGetValue(key, out int c) ? c : 0) + 1;
             Charge[key] = cur;
             Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度 {cur}/{need}。");
             PushGauge(door, cur, need);
@@ -423,6 +417,7 @@ namespace HideAndSeek.Features.Rule
                 return false;
 
             Charge.Remove(key);
+            LastSwingAt.Remove(key);
             return true;
         }
 
@@ -640,10 +635,10 @@ namespace HideAndSeek.Features.Rule
         internal static void ClearAll()
         {
             Seals.Clear();
-            Swings.Clear();
             _outstanding = 0;
             GuardUntil.Clear();     // 短保护也记的是 SurviveTime
-            Charge.Clear();         // 上锁进度的"已激活"状态同样不能跨局
+            Charge.Clear();         // 上锁进度不能跨局
+            LastSwingAt.Clear();    // 停手计时同理
             Charging.Clear();       // 频闪登记同理 —— 不清会跨局残留（下一局开局门就被"保护"住）
 
             // 配额与冷却**必须一起清**：它们记的是 TimeManager.SurviveTime，
