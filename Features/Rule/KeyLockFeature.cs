@@ -538,6 +538,44 @@ namespace HideAndSeek.Features.Rule
         /// 而本 Prefix 在原方法体之前执行；客户端门交互也没有输入冷却（:6275）
         /// ⇒ 每一次按 E 都会走到这里。
         /// </summary>
+        /// <summary>
+        /// 排一个"到点主动撤销"的检查任务。
+        ///
+        /// 需求：**不要惰性撤销** —— 保护一旦过时，就主动把临时锁门图像与保护撤掉，
+        /// 而不是等下一次有人碰这扇门才顺手清。
+        ///
+        /// 每 250ms 检查一次（比要求精度高一个量级，开销可忽略）：
+        /// 还没到点 ⇒ 重排下一次；到点 ⇒ 清 Attempt / 保护 / 频闪登记 + 进度条写 (0,0)。
+        /// Attempt 若已被别处清掉（上锁完成、被 /lock 顶掉、跨局），这里自然退出，不留残余。
+        /// </summary>
+        private static void ScheduleExpiryCheck(GameDoor door, int doorId)
+        {
+            var room = GameRoom.Instance;
+            if (room == null || door?.DeviceInfo == null)
+                return;
+            room.PushAfter(250, delegate { CheckExpiry(door, doorId); });
+        }
+
+        private static void CheckExpiry(GameDoor door, int doorId)
+        {
+            Attempt a;
+            if (!Attempts.TryGetValue(doorId, out a))
+                return;                                   // 已结束（或已被 /lock 顶掉 / 跨局清掉）
+
+            if (NowReal < a.Deadline)
+            {
+                ScheduleExpiryCheck(door, doorId);        // 还没到点（期间可能又按过 E）⇒ 继续等
+                return;
+            }
+
+            Attempts.Remove(doorId);
+            GuardUntil.Remove(doorId);
+            Charging.Remove(doorId);
+            ResetGauge(door);
+            Plugin.Log.LogInfo(
+                $"[HS] KeyLock：门 #{doorId} 的上锁保护已过时 —— 主动撤销临时锁门图像与保护，门恢复任何人可开。");
+        }
+
         private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
             int need = SealsNeeded?.Value ?? 3;        // 前 need 次：什么都不显示
@@ -564,6 +602,7 @@ namespace HideAndSeek.Features.Rule
                 a = new Attempt { OwnerPid = pid, Taps = 1, Deadline = real + life };
                 Attempts[doorId] = a;
                 ResetGauge(door);                      // 前几次不显示进度条
+                ScheduleExpiryCheck(door, doorId);      // ★ 到点主动撤销（不依赖任何人再碰门）
                 Plugin.Log.LogInfo(
                     $"[HS] KeyLock：玩家 #{pid} 开始对门 #{doorId} 上锁（1/{need}，未显示进度条）。");
                 return false;
