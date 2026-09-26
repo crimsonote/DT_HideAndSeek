@@ -636,13 +636,18 @@ namespace HideAndSeek.Features.Rule
             {
                 if (showGauge && a.Taps > need)
                 {
-                    // 第 need 次之后的每一次额外 E：进度条出现并**逐次流失**
-                    int left = lockAt - a.Taps;
+                    // 第 need 次之后的每一次额外 E：进度条**按比例**流失。
+                    // 槽位总量固定用 100，每次减 `100 / DrainTaps` 个百分点
+                    // （客户端只按 `StateList[2] / StateList[1]` 画填充 ⇒ 总量设 100 即百分比显示）。
+                    // 减到 0（= 空）⇒ 上锁。
+                    int extra = a.Taps - need;
+                    int step = drainTotal > 0 ? (100 + drainTotal - 1) / drainTotal : 100;
+                    int left = 100 - extra * step;
                     if (left < 0)
                         left = 0;
-                    PushGauge(door, left, drainTotal);
+                    PushGauge(door, left, 100);
                     Plugin.Log.LogInfo(
-                        $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁条 {left}/{drainTotal}（第 {a.Taps - need} 次额外敲击）。");
+                        $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁条 {left}/100（第 {extra} 次额外敲击，每次 -{step}%）。");
                 }
                 else
                 {
