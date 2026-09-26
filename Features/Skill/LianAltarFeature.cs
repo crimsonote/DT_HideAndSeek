@@ -198,10 +198,17 @@ namespace HideAndSeek.Features.Skill
                     }
                     // ⚠ 收件人：**只有莲**（含偷到她技能的）—— 不是全场。
                     // 这是"感知死亡"角色的专属情报：她知道有人死了、尸体在哪，别人不知道。
+                    //
+                    // ⚠ 坐标必须**值拷贝**：客户端 RemoveArrow(:13774) 是按
+                    // `(Type, TargetPos.x, TargetPos.y)` **精确匹配**才会删，
+                    // 而 TargetPos 是 SetArrow 时那一刻的快照。
+                    // 若这里直接引用 `PublicInfo.Pos`，那具尸体之后被搬动时我们记下的"坐标"也跟着变，
+                    // 删除就永远匹配不上 ⇒ 箭头留在屏幕上消不掉（实测到的"骷髅头一直不消失"）。
+                    var corpsePos = new PosInfo { X = __instance.PublicInfo.Pos.X, Y = __instance.PublicInfo.Pos.Y };
                     var arrow = new S_NOTIFY_ARROW
                     {
                         Type = EArrowType.CorpseArrow,
-                        Pos = __instance.PublicInfo.Pos
+                        Pos = corpsePos
                     };
                     int sentTo = 0;
                     for (int i = 0; i < room.Players.Count; i++)
@@ -214,8 +221,8 @@ namespace HideAndSeek.Features.Skill
                         try { lianP.Session.Send(arrow); sentTo++; }
                         catch { }
                     }
-                    // 需求是"20 秒的追踪"，而箭头包没有时长 ⇒ 登记起来，每秒重发
-                    TraceArrows.Add((__instance.PublicInfo.Pos, Now + (TraceSeconds?.Value ?? 20f)));
+                    // 登记"到期时刻 + 那一发的坐标快照"，供到期时按同值删掉
+                    TraceArrows.Add((corpsePos, Now + (TraceSeconds?.Value ?? 20f)));
                     // 这次追踪"用掉"了：所有莲进入"技能槽长期显示冷却值"的状态
                     for (int i = 0; i < room.Players.Count; i++)
                     {
