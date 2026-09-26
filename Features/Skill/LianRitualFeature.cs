@@ -8,6 +8,7 @@ using HideAndSeek.Features.Vision;
 using GamePlayer = Server.Game.Player;
 using GameCorpse = Server.Game.Corpse;
 using GameDeviceManager = Server.Game.DeviceManager;
+using GameOccult = Server.Game.Occult;                  // 教室魔法阵/蜡烛（服务端）
 
 namespace HideAndSeek.Features.Skill
 {
@@ -60,6 +61,16 @@ namespace HideAndSeek.Features.Skill
 
         /// <summary>尸体 ID → 该仪式是否"曾经推进过"（用于离开时判定要不要播报放弃）。</summary>
         private static readonly HashSet<int> Active = new HashSet<int>();
+
+        /// <summary>
+        /// 已经"牵引过灵魂"的尸体 —— 每轮蜡烛只牵引一次。
+        ///
+        /// 需求：牵引发生在**阶段 4 进行、点燃第一根蜡烛时**（不是六根全亮之后）。
+        /// 所以钩在 `Occult.InteractOccultCandle`（每点一根都会走）上，
+        /// 条件是"当前仪式差最后一次满"（即这一轮就是第 4 阶段），并且这一轮还没牵引过。
+        /// 每推进一次阶段就清空它，下一轮重新计数。
+        /// </summary>
+        private static readonly HashSet<int> PulledThisRound = new HashSet<int>();
 
         /// <summary>`Player.IsAlive` 的 setter（private ⇒ 只能反射拿）。</summary>
         private static readonly global::System.Reflection.MethodInfo AliveSetter =
@@ -148,6 +159,62 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
+        // ══ N3：阶段 4 进行中、**点燃第一根蜡烛时**就把灵魂牵引过来 ══
+        //
+        // 需求：「在**阶段4进行(点燃第一根蜡烛)时**，灵魂将被牵引至 DT 点」——
+        // 不是"六根全亮、尸体被翻出之后"。而 `Occult.InteractOccultCandle`(:167865)
+        // 正是"每点燃一根蜡烛"都会走的服务端方法（private，所以用字符串定位）。
+        //
+        // 判定"这一轮就是阶段 4"的办法：当前进度 == stages - 1（差最后一次就满）。
+        // 每轮只牵引一次（`PulledThisRound`），阶段推进时重置。
+        [HarmonyPatch(typeof(GameOccult), "InteractOccultCandle")]
+        internal static class CandleHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (ModeRuntime.Bypass || Progress.Count == 0)
+                    return;
+
+                int stages = Stages?.Value ?? 4;
+                List<int> todo = null;
+                foreach (var kv in Progress)
+                {
+                    if (kv.Value != stages - 1)
+                        continue;                       // 只有"差最后一次满"的那一轮才算阶段 4
+                    if (PulledThisRound.Contains(kv.Key))
+                        continue;                       // 本轮已经牵引过
+                    (todo ?? (todo = new List<int>())).Add(kv.Key);
+                }
+                if (todo == null)
+                    return;
+
+                var lian = FindLianInDtRange();
+                foreach (int corpseId in todo)
+                {
+                    PulledThisRound.Add(corpseId);
+                    var corpse = FindCorpse(corpseId);
+                    if (corpse != null)
+                        PullSoul(corpse, lian);
+                }
+            }
+        }
+
+        /// <summary>按设备 ID 找尸体（尸体的 ID 就是死者的 PlayerId）。</summary>
+        private static GameCorpse FindCorpse(int corpseId)
+        {
+            var list = GameDeviceManager.Instance?.Corpses;
+            if (list == null)
+                return null;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var c = list[i];
+                if (c != null && c.ID == corpseId)
+                    return c;
+            }
+            return null;
+        }
+
         // ══ 阶段推进：原版"蜡烛全亮 ⇒ 尸体被翻出"的那一刻 ══
         // MissionManager 是**内部类型**（不允许直接 typeof），按 AGENTS 坑 #3
         // 用 [HarmonyTargetMethod] + AccessTools.TypeByName 定位。
@@ -219,6 +286,7 @@ namespace HideAndSeek.Features.Skill
                 int stages = Stages?.Value ?? 4;
                 int done = (Progress.TryGetValue(corpseId, out int d) ? d : 0) + 1;
                 Progress[corpseId] = done;
+                PulledThisRound.Remove(corpseId);      // 新的一轮开始，重新允许牵引
                 Host[corpseId] = pid;
                 Active.Add(corpseId);
 
@@ -227,11 +295,7 @@ namespace HideAndSeek.Features.Skill
 
                 PulseSoulCandle(player);
 
-                // ── B1：需求「在阶段4进行(点燃第一根蜡烛)时，灵魂将被牵引至DT点，10 秒内不能离开」──
-                // 所以牵引发生在**阶段 4 推进的这一刻**，而不是"复活成功之后"。
-                // 做法与复活时同一套：把尸体主人搬到尸体位置，再交给 HoldSoul 做范围约束（不钉死）。
-                if (done >= stages)
-                    PullSoul(corpse, player);
+                // 牵引已经在"阶段 4 点燃第一根蜡烛"时做过了（见 CandleHook），这里不重复。
                 StageText(player, corpse, done, stages);
 
                 if (done < stages)
@@ -512,6 +576,7 @@ namespace HideAndSeek.Features.Skill
             Host.Clear();
             Active.Clear();
             SoulHolds.Clear();
+            PulledThisRound.Clear();
         }
     }
 }
