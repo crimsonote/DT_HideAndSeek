@@ -66,21 +66,43 @@ namespace HideAndSeek.Features.Vision
         }
 
         /// <summary>
-        /// 把该玩家所在区域的**真实**光照发回去（用于运行中关闭本功能时收尾）。
-        /// 直接读 Area 的当前光照状态，而不是假定为亮 —— 场上可能真的在停电。
+        /// 向**单个玩家**下发一份指定的区域光照状态。
+        ///
+        /// 这是"假光照"的唯一出口：客户端 `MapManager.ChangeArea`（:29592）无条件写
+        /// `Darkness = !IsLight`，所以**只给某个人**发一份包，就能只改他的观感，
+        /// 而服务端 `Area.IsLight` 与其它玩家的视野都不受影响。
+        ///
+        /// 三个调用方：
+        ///   · 黑方恒黑灯（本类）—— `isLight: false`
+        ///   · 关掉黑灯时收尾（本类）—— 传该区域**真实**的 `IsLight`
+        ///   · 莲站上 DT 点时的"假亮灯"（LianAltarFeature）—— `isLight: true`
+        ///
+        /// `RoomId` 必须来自真实区域：客户端会执行 `RoomDic[RoomId]`，
+        /// `RoomId = 0` 直接抛 `KeyNotFoundException`（AGENTS 坑 #5）。
         /// </summary>
-        private static void RestoreAreaLight(GamePlayer player)
+        internal static void SendAreaLight(GamePlayer player, bool isLight)
         {
             var area = player?.CurrentArea;
-            if (area == null || player.Session == null)
+            if (area?.Info == null || player.Session == null)
                 return;
 
             player.Session.Send(new S_AREA_PUBLIC
             {
                 RoomId = area.Info.RoomId,
                 CameraTargetId = player.CameraTargetId,
-                IsLight = area.IsLight
+                IsLight = isLight
             });
+        }
+
+        /// <summary>
+        /// 把该玩家所在区域的**真实**光照发回去（用于运行中关闭本功能时收尾）。
+        /// 直接读 Area 的当前光照状态，而不是假定为亮 —— 场上可能真的在停电。
+        /// </summary>
+        private static void RestoreAreaLight(GamePlayer player)
+        {
+            var area = player?.CurrentArea;
+            if (area != null)
+                SendAreaLight(player, area.IsLight);
         }
 
         /// <summary>
@@ -117,19 +139,7 @@ namespace HideAndSeek.Features.Vision
             }
         }
         /// <summary>向该黑方单独下发"你所在区域不亮"。</summary>
-        private static void SendDarkArea(GamePlayer player)
-        {
-            var area = player.CurrentArea;
-            if (area == null)
-                return;
-
-            player.Session.Send(new S_AREA_PUBLIC
-            {
-                RoomId = area.Info.RoomId,
-                CameraTargetId = player.CameraTargetId,
-                IsLight = false
-            });
-        }
+        private static void SendDarkArea(GamePlayer player) => SendAreaLight(player, false);
 
         // ── ① 变黑瞬间 ──────────────────────────────────────────────
         [HarmonyPatch(typeof(GamePlayer), "set_Color")]
