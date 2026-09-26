@@ -38,7 +38,8 @@ namespace HideAndSeek.Features.Skill
     ///   服务端把 `IsAlive` 设回 true（`OnDead` 里正是设 false 的 :175974），
     ///   再 `Move(pos, force: true)`(:175883) —— 它会 `Broadcast(_pkt_respawn)`
     ///   把 `S_RESPAWN{PlayerId, Pos}` 发出去，客户端据此把角色搬回去并复活外观；
-    ///   同时 `MoveLock = true`，正好用得上"灵魂被牵引、10 秒不能离开"。
+    ///   然后由"范围约束"把他限制在 DT 点半径内（见 <see cref="HoldSoul"/>）——
+///   **不是**钉死原地：`Move(force)` 顺带置的 `MoveLock` 会立刻解除。
     /// </summary>
     [PatchFeature("LianRitual",
         "莲·尸体复活仪式：把尸体丢进教室 DT 点并用六根蜡烛翻出（每翻出一次算一阶段），攒满 4 阶段复活该尸体；连必须在 DT 点内，且两次须为同一具尸体。",
@@ -190,7 +191,7 @@ namespace HideAndSeek.Features.Skill
 
                 // ── B1：需求「在阶段4进行(点燃第一根蜡烛)时，灵魂将被牵引至DT点，10 秒内不能离开」──
                 // 所以牵引发生在**阶段 4 推进的这一刻**，而不是"复活成功之后"。
-                // 做法与复活时同一套：把尸体主人搬到尸体位置，借 Move(force) 的 MoveLock 锁住。
+                // 做法与复活时同一套：把尸体主人搬到尸体位置，再交给 HoldSoul 做范围约束（不钉死）。
                 if (done >= stages)
                     PullSoul(corpse, player);
                 StageText(player, corpse, done, stages);
