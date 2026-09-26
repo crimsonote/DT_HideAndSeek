@@ -437,6 +437,23 @@ namespace HideAndSeek.Features.Skill
                 string name = owner.Name ?? ("#" + owner.PublicInfo.PlayerId);
                 Core.ChatOut.Broadcast($"{name} 重回于世间", EChatType.DeviceChat);
 
+                // ── N5：复活那一次也要放"黑洞传送"的视听，而且要作用在**复活后的人**身上 ──
+                // 原版"翻 DT 点尸体"用的是同一套表现（`InteractMagic` :168581）：
+                //     BroadcastWorldVFX(TeleportVfx, playerId, pos) + BroadcastWorldSFX(BlackholeTeleportSfx, pos)
+                // `TeleportVfx` 的第一个参数就是"被传送的人"，所以这里传复活者的 PlayerId，
+                // 玩家看到的就是"黑洞把复活后的人送了出来"。
+                try
+                {
+                    int revivedPid = owner.PublicInfo.PlayerId;
+                    var at = owner.PublicInfo.Pos;
+                    GameRoom.Instance.BroadcastWorldVFX(EEffectType.TeleportVfx, revivedPid, at);
+                    GameRoom.Instance.BroadcastWorldSFX(ESoundType.BlackholeTeleportSfx, at);
+                }
+                catch (global::System.Exception ex2)
+                {
+                    Plugin.Log.LogWarning($"[HS] LianRitual：复活黑洞表现失败 — {ex2.Message}");
+                }
+
                 // 需求：灵魂被牵引至 DT 点，10 秒内不能离开
                 float hold = SoulHoldSeconds?.Value ?? 10f;
                 if (hold > 0f)
