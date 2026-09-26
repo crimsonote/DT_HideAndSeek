@@ -175,11 +175,12 @@ namespace HideAndSeek.Features.Skill
                 if (room?.Players == null || room.State != EGameState.Survive)
                     return;
 
-                // 场上得有莲（技能持有者，含被偷取的）才触发
+                // 场上得有**活着的**莲（技能持有者，含被偷取的）才触发；她不在就没人需要这个信息
                 bool hasLian = false;
                 for (int i = 0; i < room.Players.Count; i++)
                 {
-                    if (IsLian(room.Players[i])) { hasLian = true; break; }
+                    var lp = room.Players[i];
+                    if (lp?.PublicInfo != null && lp.IsAlive && IsLian(lp)) { hasLian = true; break; }
                 }
                 if (!hasLian)
                     return;
@@ -195,11 +196,24 @@ namespace HideAndSeek.Features.Skill
                     {
                         room.BroadcastSystemSFX(ts);
                     }
-                    room.BroadcastAlivePlayers(new S_NOTIFY_ARROW
+                    // ⚠ 收件人：**只有莲**（含偷到她技能的）—— 不是全场。
+                    // 这是"感知死亡"角色的专属情报：她知道有人死了、尸体在哪，别人不知道。
+                    var arrow = new S_NOTIFY_ARROW
                     {
                         Type = EArrowType.CorpseArrow,
                         Pos = __instance.PublicInfo.Pos
-                    });
+                    };
+                    int sentTo = 0;
+                    for (int i = 0; i < room.Players.Count; i++)
+                    {
+                        var lianP = room.Players[i];
+                        if (lianP?.PublicInfo == null || lianP.Session == null || !lianP.IsAlive)
+                            continue;
+                        if (!IsLian(lianP))
+                            continue;                    // 只有莲
+                        try { lianP.Session.Send(arrow); sentTo++; }
+                        catch { }
+                    }
                     // 需求是"20 秒的追踪"，而箭头包没有时长 ⇒ 登记起来，每秒重发
                     TraceArrows.Add((__instance.PublicInfo.Pos, Now + (TraceSeconds?.Value ?? 20f)));
                     // 这次追踪"用掉"了：所有莲进入"技能槽长期显示冷却值"的状态
@@ -248,11 +262,19 @@ namespace HideAndSeek.Features.Skill
                             TraceArrows.RemoveAt(i);
                             try
                             {
-                                __instance.BroadcastAlivePlayers(new S_REMOVE_ARROW
+                                // 删除包也只能发给莲 —— 否则全房都会收到一个"删除箭头"（虽然他们本来就没有）
+                                var rm = new S_REMOVE_ARROW
                                 {
                                     Type = EArrowType.CorpseArrow,
                                     Pos = a.pos
-                                });
+                                };
+                                for (int k = 0; k < __instance.Players.Count; k++)
+                                {
+                                    var lp = __instance.Players[k];
+                                    if (lp?.PublicInfo == null || lp.Session == null || !IsLian(lp))
+                                        continue;
+                                    try { lp.Session.Send(rm); } catch { }
+                                }
                             }
                             catch { }
                             continue;
