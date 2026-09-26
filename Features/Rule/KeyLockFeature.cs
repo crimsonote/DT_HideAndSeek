@@ -564,6 +564,14 @@ namespace HideAndSeek.Features.Rule
 
             if (NowReal < a.Deadline)
             {
+                // ★ 顺手把进度条**钉住**：客户端 `UI_DeviceCasting.SetInfo(cur,total)`(:90065) 之后，
+                // 它自己的 `Update`(:90074-90085) 会把 `_currentTick` 以 ~1/s 爬向 `cur+1` 就停
+                // ⇒ 不重发的话条会自己往上走（写 (1,3) 最终永久停在 2/3、写 (2,3) 约 1 秒后涨满并隐藏）。
+                // 每 250ms 把**同一个值**重发一次 ⇒ 看上去就是静止的（残余漂移 ≤ 1/4 格）。
+                (GameDoor d, int cur, int total) e;
+                if (Charging.TryGetValue(doorId, out e))
+                    PushGauge(e.d, e.cur, e.total);
+
                 ScheduleExpiryCheck(door, doorId);        // 还没到点（期间可能又按过 E）⇒ 继续等
                 return;
             }
