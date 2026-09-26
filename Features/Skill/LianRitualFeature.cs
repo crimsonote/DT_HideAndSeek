@@ -96,6 +96,29 @@ namespace HideAndSeek.Features.Skill
             return false;
         }
 
+        // ══ B2：有人把尸体"埋"进 DT 点 ⇒ 当前仪式作废，改从新那具从头开始 ══
+        //
+        // 需求原文：「第一次 DT 点蜡烛翻出来 A 尸体，然后**埋 B 尸体**，会改为从 B 尸体从头开始复活。」
+        // 所以"埋"这个动作本身就该清零 —— 钩 `DeviceManager.CreateHiddenCorpse`
+        // （:162030 藏尸、:164252 藏到水里都会走它）。
+        // 这里不清"某个具体尸体"，而是清掉**当前所有进行中的仪式**：
+        // 埋进去的那具还没被翻出来，谈不上登记进度，等它被翻出时自然从 0 开始。
+        [HarmonyPatch(typeof(GameDeviceManager), "CreateHiddenCorpse")]
+        internal static class BuryHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (ModeRuntime.Bypass || Progress.Count == 0)
+                    return;
+
+                Progress.Clear();
+                Host.Clear();
+                Active.Clear();
+                Plugin.Log.LogInfo("[HS] LianRitual：有尸体被埋入 DT 点，进行中的仪式已清零（下次翻出从头开始）。");
+            }
+        }
+
         // ══ 阶段推进：原版"蜡烛全亮 ⇒ 尸体被翻出"的那一刻 ══
         // MissionManager 是**内部类型**（不允许直接 typeof），按 AGENTS 坑 #3
         // 用 [HarmonyTargetMethod] + AccessTools.TypeByName 定位。
@@ -164,6 +187,12 @@ namespace HideAndSeek.Features.Skill
                     $"[HS] LianRitual：尸体 #{corpseId} 仪式阶段 {done}/{stages}（主持者 #{pid}）。");
 
                 PulseSoulCandle(player);
+
+                // ── B1：需求「在阶段4进行(点燃第一根蜡烛)时，灵魂将被牵引至DT点，10 秒内不能离开」──
+                // 所以牵引发生在**阶段 4 推进的这一刻**，而不是"复活成功之后"。
+                // 做法与复活时同一套：把尸体主人搬到尸体位置，借 Move(force) 的 MoveLock 锁住。
+                if (done >= stages)
+                    PullSoul(corpse, player);
                 StageText(player, corpse, done, stages);
 
                 if (done < stages)
@@ -219,6 +248,47 @@ namespace HideAndSeek.Features.Skill
             {
                 Plugin.Log.LogWarning($"[HS] LianRitual：阶段文本发送失败 — {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 阶段 4 推进时把"灵魂"牵引到 DT 点：只搬人 + 锁住，**不复活**。
+        /// 复活是阶段 4 走完之后的事（<see cref="Revive"/>）。
+        /// </summary>
+        private static void PullSoul(GameCorpse corpse, GamePlayer host)
+        {
+            if (corpse == null)
+                return;
+            var owner = FindPlayer(corpse.ID);
+            if (owner?.PublicInfo == null || owner.Session == null)
+                return;                                 // 没有灵魂（下线）——复活那一步会播报"灵魂已然远去"
+
+            var pos = corpse.DeviceInfo?.Pos ?? owner.PublicInfo.Pos;
+            try
+            {
+                owner.PublicInfo.Pos = pos;
+                owner.Move(pos, force: true);            // 广播 S_RESPAWN 把角色搬过去 + MoveLock
+                HoldSoul(owner, pos, SoulHoldSeconds?.Value ?? 10f);
+                Plugin.Log.LogInfo($"[HS] LianRitual：阶段 4 —— 灵魂已被牵引至 DT 点（#{corpse.ID}）。");
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] LianRitual：牵引灵魂失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>按 PlayerId 在房里找玩家。</summary>
+        private static GamePlayer FindPlayer(int pid)
+        {
+            var room = GameRoom.Instance;
+            if (room?.Players == null)
+                return null;
+            for (int i = 0; i < room.Players.Count; i++)
+            {
+                var p = room.Players[i];
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == pid)
+                    return p;
+            }
+            return null;
         }
 
         /// <summary>把该尸体的主人复活：先在原位站起来，再广播 S_RESPAWN；并锁住 10 秒。</summary>
