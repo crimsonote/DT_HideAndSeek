@@ -33,7 +33,7 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(3f, "目标死亡后，杀手的时停秒数（0 = 关闭）。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> StasisSeconds;
 
-        [ConfigField(5f, "时停结束后清空体力的持续毫秒数（照原版 :174229 的 5000）。", Min = 0f, Max = 60000f)]
+        [ConfigField(5000f, "时停结束后清空体力的持续毫秒数。原版自己用的是 5000ms（:174229 AddBuff(Exhausted, 5000)）。", Min = 0f, Max = 60000f)]
         public static ConfigEntry<float> ExhaustMs;
 
         [ConfigField(30f, "目标死亡后，路易斯技能的周转秒数（0 = 不干预）。", Min = 0f, Max = 600f)]
