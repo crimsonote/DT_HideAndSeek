@@ -34,7 +34,9 @@ namespace HideAndSeek.Features.Skill
     ///   必须把真实光照发回去，否则莲会永久看得见（假状态残留）。
     /// </summary>
     [PatchFeature("LianAltar",
-        "莲·DT 点：站在藏尸点范围内满足条件时，只给他本人下发「这里没断电」的假光照（用于点蜡烛）；离开后自动恢复真实光照。",
+        "莲（灵魂感知）的全部能力：DT 点假光照（站进藏尸点范围内只给本人下发「这里没断电」）、"
+        + "尸体方向预警（有人死亡时只通知莲，指向尸体，可配时长与音效、到期主动撤回）、"
+        + "感知死亡后的移速加成。",
         defaultEnabled: false, side: FeatureSide.Host)]
     internal static class LianAltarFeature
     {
@@ -373,6 +375,153 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
+        // ══════════════════════════════════════════════════════════════════════
+        // 灵魂感知加速（原 [SoulSense] 段，现并入本段 —— 同源能力归同一段）
+        //
+        // 原版机制（Assembly-CSharp:176080-176090）：有人死时 `SendDeadNotify` 会给**所有活着的**
+        // `ESkillType.SoulSense` 玩家发一个 `S_NOTIFY_DEAD` 包（客户端据此放蜡烛图标）。
+        // 我们不改技能本身，只在那条通知上"搭一层"：谁收到了通知，就给他一段加速。
+        //
+        // ⚠ 速度必须挂在 `BuffComponent.RefreshSpeed` 的 **Postfix**：
+        // 原方法会用 `560 * delta` 重算速度，Prefix 里改会被覆盖。
+        // ⚠ 幽灵要跳过：`MakeSpectatorGhost` 会置 `State = Hide` 并直接设速度。
+        // ══════════════════════════════════════════════════════════════════════
+
+        [ConfigField(30f, "【灵魂感知】每次感知到死亡后，移速加成的持续秒数。", Min = 1f, Max = 300f)]
+        public static ConfigEntry<float> SoulBoostSeconds;
+
+        [ConfigField(1.5f, "【灵魂感知】感知死亡后的移速倍率。1.5 = 快 50%。", Min = 1f, Max = 3f)]
+        public static ConfigEntry<float> SoulBoostMul;
+
+        /// <summary>PlayerId → 灵魂感知加速的到期时刻（取 SurviveTime）。</summary>
+        private static readonly Dictionary<int, float> SoulUntil = new Dictionary<int, float>();
+
+        /// <summary>本局内被加持过的人，用于到期时主动重算速度。</summary>
+        private static readonly HashSet<int> SoulBoosted = new HashSet<int>();
+
+        /// <summary>这名玩家此刻是否拥有「灵魂感知」。与原版 :176085 用同一个判据。</summary>
+        private static bool HasSoulSense(GamePlayer p)
+        {
+            try
+            {
+                return p?.SkillComponent?.Data != null
+                    && p.SkillComponent.Data.Type == ESkillType.SoulSense;
+            }
+            catch { return false; }
+        }
+
+        // ── 触发：原版给莲发"有人死了"的那一刻（`SendDeadNotify` 是 private，用字符串定位）──
+        [HarmonyPatch(typeof(GamePlayer), "SendDeadNotify")]
+        internal static class SoulDeadNotifyHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                Diagnostics.Hit("LianAltar");
+                if (ModeRuntime.Bypass)
+                    return;
+
+                var room = GameRoom.Instance;
+                if (room?.AlivePlayers == null)
+                    return;
+
+                float now = Now;
+                float secs = SoulBoostSeconds?.Value ?? 30f;
+
+                // 只给**活着**的莲续期（与 SendDeadNotify 的发送条件一致：它也只发给 AlivePlayers）
+                for (int i = 0; i < room.AlivePlayers.Count; i++)
+                {
+                    var p = room.AlivePlayers[i];
+                    if (p?.PublicInfo == null || !HasSoulSense(p))
+                        continue;
+
+                    // 重复触发 ⇒ **刷新时长，不叠乘**（一波团灭时最多保持"一直有加速"）
+                    SoulUntil[p.PublicInfo.PlayerId] = now + secs;
+                }
+            }
+        }
+
+        // ── 加速：与 SpeedBoostFeature 同一挂点（Postfix），乘法叠加 ──
+        [HarmonyPatch(typeof(BuffComponent), nameof(BuffComponent.RefreshSpeed))]
+        internal static class SoulRefreshSpeedHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(BuffComponent __instance)
+            {
+                if (ModeRuntime.Bypass)
+                    return;
+
+                float mul = SoulBoostMul?.Value ?? 1.5f;
+                if (global::System.Math.Abs(mul - 1f) < 0.001f)
+                    return;                       // 1.0 不动，省一次广播
+
+                var player = __instance?.Owner;
+                if (player == null || !player.IsAlive || player.State == EPlayerState.Hide)
+                    return;                       // 幽灵：原版直接设速度，别掺和
+
+                int pid = player.PublicInfo?.PlayerId ?? 0;
+                if (pid == 0 || !SoulUntil.TryGetValue(pid, out float until) || Now >= until)
+                    return;                       // 不在加速期内
+
+                player.PrivateInfo.Speed *= mul;
+                player.SendChangeSpeed();
+            }
+        }
+
+        // ── 到期兜底：加速只在 RefreshSpeed 的 Postfix 里生效，而那个方法只在
+        //        "速度需要重算"（移动/状态变化）时才被调用 ⇒ 站着不动时到期不会自动恢复。
+        //        所以每秒检查"刚刚过期的人"，主动让他重算一次速度。 ──
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class SoulTickHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (ModeRuntime.Bypass || SoulUntil.Count == 0)
+                    return;
+
+                var room = GameRoom.Instance;
+                if (room?.Players == null)
+                    return;
+
+                float now = Now;
+                for (int i = 0; i < room.Players.Count; i++)
+                {
+                    var p = room.Players[i];
+                    if (p?.PublicInfo == null)
+                        continue;
+
+                    int pid = p.PublicInfo.PlayerId;
+                    if (!SoulUntil.TryGetValue(pid, out float until))
+                        continue;
+                    if (now < until)
+                    {
+                        SoulBoosted.Add(pid);
+                        continue;                     // 还在加速期内
+                    }
+
+                    // 刚过期：清记录 + 主动重算一次速度（否则站着不动会一直挂着加成）
+                    SoulUntil.Remove(pid);
+                    if (SoulBoosted.Remove(pid) && p.IsAlive && p.State != EPlayerState.Hide)
+                    {
+                        try { p.BuffComponent?.RefreshSpeed(); }
+                        catch (global::System.Exception ex)
+                        {
+                            Plugin.Log.LogWarning($"[HS] LianAltar：灵魂感知恢复速度失败 — {ex.Message}");
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void ClearSoulBoost()
+        {
+            // 记的是 SurviveTime，而它每局被 ResetSurvival() 设回 420（不是从 0）——
+            // 不清的话上一局的时刻在新局会算出负数，加速永不过期。
+            SoulUntil.Clear();
+            SoulBoosted.Clear();
+        }
+
         // ── 跨局清理，并给仍在"假光照"里的人收尾 ──
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         internal static class StartHook
@@ -411,6 +560,7 @@ namespace HideAndSeek.Features.Skill
             Faked.Clear();
             TraceUsed.Clear();
             TraceArrows.Clear();
+            ClearSoulBoost();       // 灵魂感知加速同理（同段的功能一起清）
         }
     }
 }
