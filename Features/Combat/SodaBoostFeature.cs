@@ -41,7 +41,16 @@ namespace HideAndSeek.Features.Combat
             Min = 1f, Max = 9999f)]
         public static ConfigEntry<int> SodaIdTo;
 
-        [ConfigField(1.5f, "喝下后的移速倍率。1.5 = 150%；SpeedBoost.BlackSpeedMul 是黑方的基础倍率，两者叠乘。",
+        /// <summary>
+        /// 汽水移速倍率的**唯一**默认值。
+        ///
+        /// 原来这个数字在四处各写了一遍（配置默认值 + 申领时的 fallback + 日志 fallback + 结算 fallback），
+        /// 改的时候必须四处同步，漏一处就会出现"配置说 1.5、实际按旧值算"的鬼问题。
+        /// 现在只有这一处，四处都引用它。
+        /// </summary>
+        private const float SodaMulDefault = 1.5f;
+
+        [ConfigField(SodaMulDefault, "喝下后的移速倍率。1.5 = 150%；SpeedBoost.BlackSpeedMul 是黑方的基础倍率，两者叠乘。",
             Min = 1f, Max = 3f)]
         public static ConfigEntry<float> SodaSpeedMul;
 
@@ -96,7 +105,7 @@ namespace HideAndSeek.Features.Combat
                 return false;
 
             float sec = SodaSeconds?.Value ?? 30f;
-            float mul = SodaSpeedMul?.Value ?? 1.5f;
+            float mul = SodaSpeedMul?.Value ?? SodaMulDefault;
 
             // 回执只讲"命令的结果"：申领到了什么、怎么用。
             // "手上满所以掉地上了"不是命令结果，不进回执（日志里有）。
@@ -170,7 +179,7 @@ namespace HideAndSeek.Features.Combat
 
                 // 静默：喝下汽水是"使用物品"，不是命令的报告（日志里有）
                 Plugin.Log.LogInfo(
-                    $"[HS] SodaBoost：玩家 #{pid} 喝下了汽水 {id}，{seconds:F0} 秒内移速 ×{SodaSpeedMul?.Value ?? 1.5f:F2}。");
+                    $"[HS] SodaBoost：玩家 #{pid} 喝下了汽水 {id}，{seconds:F0} 秒内移速 ×{SodaSpeedMul?.Value ?? SodaMulDefault:F2}。");
             }
         }
 
@@ -206,7 +215,7 @@ namespace HideAndSeek.Features.Combat
                 if (!Active.TryGetValue(player.PublicInfo.PlayerId, out expireAt) || Now >= expireAt)
                     return;
 
-                player.PrivateInfo.Speed *= SodaSpeedMul?.Value ?? 1.5f;
+                player.PrivateInfo.Speed *= SodaSpeedMul?.Value ?? SodaMulDefault;
                 player.SendChangeSpeed();
             }
         }
