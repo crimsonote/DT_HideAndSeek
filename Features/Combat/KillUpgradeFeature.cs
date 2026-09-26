@@ -51,7 +51,7 @@ namespace HideAndSeek.Features.Combat
             Min = 0f, Max = 5f)]
         public static ConfigEntry<float> VisionBonusPerLevel;
 
-        [ConfigField(0.1667f, "【移速】每级增加量（加到 SpeedBoost.BlackSpeedMul）。0.1667 × 3 级 = 0.5 → 满级移速 1.5。",
+        [ConfigField(0.0667f, "【移速】每级增加量（加到 SpeedBoost.BlackSpeedMul）。0.0667 × 3 级 ≈ 0.2 → 满级移速 1.2。",
             Min = 0f, Max = 2f)]
         public static ConfigEntry<float> SpeedBonusPerLevel;
 
