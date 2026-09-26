@@ -433,9 +433,18 @@ namespace HideAndSeek.Features.Rule
         private static readonly Dictionary<int, Attempt> Attempts = new Dictionary<int, Attempt>();
 
         /// <summary>第几声"额外 E"把进度条走空（走空即上锁）。</summary>
-        [ConfigField(21, "前 SealsNeeded 次不显示进度条；此后每次额外按 E 让进度条流失，流失这么多下后上锁。（值越大，条走得越慢）",
+        [ConfigField(3, "前 SealsNeeded 次不显示进度条；此后每次额外按 E 让进度条流失，流失这么多下后上锁。默认 3 ⇒ 起始 3 次 + 走条 3 次 = 共 6 次。",
             Min = 1f, Max = 60f)]
         public static ConfigEntry<int> DrainTaps;
+
+        /// <summary>
+        /// 是否显示"临时锁门进度条"。
+        ///
+        /// 关掉 = **回退到旧的无进度条行为**：按够 `SealsNeeded` 次就直接上锁，全程不碰门头那条，
+        /// 也不会有"条会自己漂 / 需要周期重发"这些问题。
+        /// </summary>
+        [ConfigField(true, "是否显示临时锁门进度条。关掉则按够 SealsNeeded 次直接上锁（旧的无进度条行为）。")]
+        public static ConfigEntry<bool> GaugeEnabled;
 
         /// <summary>
         /// 正在充能的门：门 ID → (门对象, 当前格数, 总量)。
@@ -587,7 +596,11 @@ namespace HideAndSeek.Features.Rule
         private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
             int need = SealsNeeded?.Value ?? 3;        // 前 need 次：什么都不显示
-            int drainTotal = DrainTaps?.Value ?? 21;    // 之后每次额外 E 让条流失，流失满即上锁
+            int drainTotal = DrainTaps?.Value ?? 3;    // 之后每次额外 E 让条流失，流失满即上锁
+
+            // 关掉进度条 ⇒ 回退到旧行为：按够 need 次直接上锁，全程不写门头那条
+            bool showGauge = GaugeEnabled == null || GaugeEnabled.Value;
+            int lockAt = showGauge ? need + drainTotal : need;
             float life = SealWindow?.Value ?? 6f;      // 这次尝试的存活窗口（秒）
             float real = NowReal;                      // ★ 单调真实时钟，不是 SurviveTime
 
@@ -619,25 +632,25 @@ namespace HideAndSeek.Features.Rule
             // 有效操作：计数（**不记时间、不做任何超时重置** —— 见调用点上方那段说明）
             a.Taps++;
 
-            if (a.Taps <= need)
+            if (a.Taps < lockAt)
             {
-                Plugin.Log.LogInfo(
-                    $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 敲击 {a.Taps}/{need}（未显示进度条）。");
+                if (showGauge && a.Taps > need)
+                {
+                    // 第 need 次之后的每一次额外 E：进度条出现并**逐次流失**
+                    int left = lockAt - a.Taps;
+                    if (left < 0)
+                        left = 0;
+                    PushGauge(door, left, drainTotal);
+                    Plugin.Log.LogInfo(
+                        $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁条 {left}/{drainTotal}（第 {a.Taps - need} 次额外敲击）。");
+                }
+                else
+                {
+                    Plugin.Log.LogInfo(
+                        $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 敲击 {a.Taps}/{lockAt}（未显示进度条）。");
+                }
                 return false;
             }
-
-            // 第 need 次之后的每一次额外 E：进度条出现并**逐次流失**
-            int extra = a.Taps - need;
-            int left = drainTotal - extra;
-            if (left < 0)
-                left = 0;
-
-            PushGauge(door, left, drainTotal);
-            Plugin.Log.LogInfo(
-                $"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁条 {left}/{drainTotal}（第 {extra} 次额外敲击）。");
-
-            if (left > 0)
-                return false;
 
             Attempts.Remove(doorId);                   // 走空 ⇒ 交还原版锁门
             return true;
