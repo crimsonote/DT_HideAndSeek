@@ -300,7 +300,7 @@ namespace HideAndSeek.Features.Rule
                 if (!HasLantern(player))
                     return true;
 
-                if (CountSwing(pid, doorId))
+                if (CountSwing(__instance, pid, doorId))
                     TrySeal(__instance, player, doorId, pid);
 
                 return true;                          // 无论是否黏门，原版开关门照常发生
@@ -316,8 +316,43 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static readonly Dictionary<string, int> Charge = new Dictionary<string, int>();
 
+        /// <summary>
+        /// 把"上锁进度"推到门自己的设备进度条上。
+        ///
+        /// 客户端 `Door.RefreshState`(:6134) 会执行
+        /// `UI_DeviceCasting.SetInfo(StateList[2], StateList[1])`(:90065) ——
+        /// 也就是拿 `StateList[2]` 当**当前值**、`StateList[1]` 当**总量**，
+        /// 画在门的 `Casting` 子节点上（世界空间，就在门上方）。所以只要写这两个格子再广播即可。
+        ///
+        /// 说明两点：
+        ///   · 门原本用这两个格子表示"黑方正在破坏门"的进度；我们在**上锁的这几秒**占用它，
+        ///     这是需求要的"实验性门锁进度条"。
+        ///   · 配色是客户端写死的紫红（`Door.RefreshState` 传 `isSabotage: true`，:6132），
+        ///     房主端改不了 —— 已记在 `.tmps\锁门进度条-备忘录.md`。
+        /// </summary>
+        private static void PushGauge(GameDoor door, int cur, int total)
+        {
+            if (door == null || total <= 0)
+                return;
+
+            var list = door.DeviceInfo?.StateList;
+            if (list == null || list.Count < 3)
+                return;                                 // 不是带进度条的门
+
+            try
+            {
+                list[1] = total;
+                list[2] = cur;
+                door.BroadcastState();
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] KeyLock：进度条推送失败 — {ex.Message}");
+            }
+        }
+
         /// <summary>记一次敲击。返回 true 表示"进度已满，该上锁了"。</summary>
-        private static bool CountSwing(int pid, int doorId)
+        private static bool CountSwing(GameDoor door, int pid, int doorId)
         {
             string key = pid + ":" + doorId;
             float now = Now;
@@ -347,6 +382,7 @@ namespace HideAndSeek.Features.Rule
                 Swings.Remove(key);
                 Charge[key] = 0;
                 Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度已激活 0/{need}。");
+                PushGauge(door, 0, need);          // 进度条出现（0/need）
                 return false;
             }
 
@@ -354,6 +390,7 @@ namespace HideAndSeek.Features.Rule
             int cur = Charge[key] + 1;
             Charge[key] = cur;
             Plugin.Log.LogInfo($"[HS] KeyLock：玩家 #{pid} 门 #{doorId} 上锁进度 {cur}/{need}。");
+            PushGauge(door, cur, need);
 
             if (cur < need)
                 return false;
