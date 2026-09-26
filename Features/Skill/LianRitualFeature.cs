@@ -70,6 +70,34 @@ namespace HideAndSeek.Features.Skill
         private static bool IsLian(GamePlayer p)
             => p?.SkillComponent?.Data != null && p.SkillComponent.Data.Type == ESkillType.SoulSense;
 
+        /// <summary>
+        /// 场上是否有一位**有莲能力、且正站在 DT 点范围内**的人。
+        ///
+        /// 需求原文：「莲(或有莲能力的小偷与其他人)在 DT 点范围，上述动作发生
+        /// (不一定需要是能力拥有者行动，可以其他人帮忙点蜡烛脱尸体)即可复活。
+        /// **但是只有其他人不触发**。」
+        ///
+        /// ⇒ 判据是"**有人在**"，不是"**是他在翻**" —— 翻尸体/点蜡烛可以是别人干的。
+        /// 返回第一位符合条件的人（用它来播报阶段文本），没有则返回 null。
+        /// </summary>
+        private static GamePlayer FindLianInDtRange()
+        {
+            var room = GameRoom.Instance;
+            if (room?.Players == null)
+                return null;
+            for (int i = 0; i < room.Players.Count; i++)
+            {
+                var p = room.Players[i];
+                if (p?.PublicInfo == null || !p.IsAlive)
+                    continue;
+                if (!IsLian(p))
+                    continue;                       // IsLian 已覆盖"偷到灵魂感知"的情况
+                if (InDtRange(p))
+                    return p;
+            }
+            return null;
+        }
+
         /// <summary>DT 点 = 能藏尸的设备：DeadlyTrickStage（魔法阵那类）与 Cabinet（柜子）。</summary>
         private static bool IsDtDevice(Device d) => d is DeadlyTrickStage || d is Cabinet;
 
@@ -152,7 +180,17 @@ namespace HideAndSeek.Features.Skill
                     return;
 
                 int corpseId = corpse.ID;
-                int pid = player.PublicInfo.PlayerId;
+
+                // 需求：触发条件是"**有一位有莲能力的人在 DT 点范围内**"，而不是"翻尸体的人就是莲"。
+                // 翻尸体/点蜡烛可以是别人干的；但只要没有莲在范围内，就**不触发**。
+                var lian = FindLianInDtRange();
+                if (lian?.PublicInfo == null)
+                {
+                    Plugin.Log.LogInfo(
+                        "[HS] LianRitual：有尸体被翻出，但 DT 点范围内没有莲 —— 不推进仪式。");
+                    return;
+                }
+                int pid = lian.PublicInfo.PlayerId;
 
                 // 换尸体 ⇒ 从新那具的第 1 阶段重来（需求明确要求）
                 if (Host.TryGetValue(corpseId, out int hostPid) && hostPid != pid)
@@ -381,24 +419,11 @@ namespace HideAndSeek.Features.Skill
                 // ① 仪式放弃判定：只在生存阶段
                 if (__instance.State == EGameState.Survive && Active.Count > 0)
                 {
+                    // 需求："离开 DT 点也视为放弃进度"。判据是"**还有没有莲在 DT 点内**"，
+                    // 而不是"当初那位主持者还在不在"（可以是别人替她翻尸体的）。
                     List<int> giveUp = null;
-                    foreach (int corpseId in Active)
-                    {
-                        if (!Host.TryGetValue(corpseId, out int hostPid))
-                            continue;
-
-                        GamePlayer host = null;
-                        for (int i = 0; i < __instance.Players.Count; i++)
-                        {
-                            var p = __instance.Players[i];
-                            if (p?.PublicInfo != null && p.PublicInfo.PlayerId == hostPid)
-                            { host = p; break; }
-                        }
-
-                        // 主持人不在 / 已死 / 不在 DT 点范围 ⇒ 放弃
-                        if (host == null || !host.IsAlive || !InDtRange(host))
-                            (giveUp ?? (giveUp = new List<int>())).Add(corpseId);
-                    }
+                    if (FindLianInDtRange() == null)
+                        giveUp = new List<int>(Active);
 
                     if (giveUp != null)
                     {
