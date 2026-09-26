@@ -507,11 +507,18 @@ namespace HideAndSeek.Features.Broadcast
                 Plugin.Log.LogWarning(
                     "[HS] Broadcast：开局提示时还没有黑方（GrantDelayMs 是否大于 StartDelayMs？），本次不公开黑方身份。");
 
-            // 白方开局消息（已含黑方身份）。循环外只算一次：所有白方拿到的是同一条文本，
-            // 而且该条整体还要作为一条记录进公共发信机。
+            // 白方开局消息。结构（需求 #1）：
+            //   ① **关于黑方的提示放到最开头**（原来是拼在末尾）
+            //   ② 紧随其后的"开头提示"与**自取刀模式下给白的那条**（StartBodySelfServe）一致
+            //   ③ 最后才是自动发刀模式专属的正文（StartBodyWhite）
+            // 循环外只算一次：所有白方拿到的是同一条文本，而且该条整体还要作为一条记录进公共发信机。
             string whiteTip = null;
-            if (auto && !string.IsNullOrEmpty(reveal))
-                whiteTip = Titled(TextService.Format(StartBodyWhite?.Value)) + "\n" + reveal;
+            if (auto)
+            {
+                string head = Titled(TextService.Format(StartBodySelfServe?.Value) + "\n"
+                                    + TextService.Format(StartBodyWhite?.Value));
+                whiteTip = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
+            }
 
             foreach (var player in room.Players)
             {
