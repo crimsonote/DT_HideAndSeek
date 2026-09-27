@@ -76,6 +76,30 @@ namespace HideAndSeek.Features.Skill
         private static bool UseCharacterArrow()
             => !string.Equals(ArrowStyle?.Value, "Corpse", global::System.StringComparison.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// 「CD 冻结中」的路易斯 PlayerId 集合。
+        ///
+        /// 需求：标记一个人之后 CD 显示成 30 但**不走**，直到目标死亡才开始走。
+        /// 机制依据（客户端）：
+        /// ```
+        /// :42319  if (Managers.Game.SkillCooltime > 0) SkillCooltime--;   ← 客户端**每秒自己减 1**
+        /// :42775  Handle_S_COOLTIME_SKILL ⇒ Managers.Game.SkillCooltime = pkt.Cooltime;  ← 包是**直接赋值**
+        /// ```
+        /// ⇒ 冻结 = **每秒把 30 重发一遍**（客户端减掉的那 1 被重置回去）；
+        ///   目标死亡时把这个 pid 移出集合 ⇒ 停止重发 ⇒ 客户端自然从 30 开始每秒递减。
+        /// </summary>
+        private static readonly HashSet<int> FrozenCd = new HashSet<int>();
+
+        /// <summary>
+        /// 「本帧刚标记完、等着接管随后那次 `CoolSkill`」的路易斯 PlayerId（-1 = 无）。
+        ///
+        /// 时序依据：`UseActiveSkill`(:177213) 里 `UseTelekinesis`(:177240) 先跑，
+        /// `if (num > 0) CoolSkill(num)`(:177248) 后跑 ——
+        /// 所以 `UseTelekinesis` 的 Postfix 天然早于 `CoolSkill`，可以在这里留个记号，
+        /// 让 `CoolSkill` 的 Prefix 知道"这一次是路易斯标记触发的"，从而接管它。
+        /// </summary>
+        private static int _pendingFreezePid = -1;
+
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
@@ -98,9 +122,127 @@ namespace HideAndSeek.Features.Skill
                 if (!IsLuis(owner))
                     return;
 
-                MarkedBy[targetId] = owner.PublicInfo.PlayerId;
-                TraceUntil.Remove(owner.PublicInfo.PlayerId);
-                NextTraceAt[owner.PublicInfo.PlayerId] = Now;   // 用技能后马上就能看到第一次追踪
+                int ownerPid = owner.PublicInfo.PlayerId;
+                MarkedBy[targetId] = ownerPid;
+                TraceUntil.Remove(ownerPid);
+                NextTraceAt[ownerPid] = Now;   // 用技能后马上就能看到第一次追踪
+
+                // 只有**真的标记上了**才接管 CD：原版 UseTelekinesis(:177576) 只在目标存活时
+                // 才设置 `Owner.SkillState = targetId * -1`，用它判断成功与否。
+                if (owner.SkillState < 0 && owner.SkillState * -1 == targetId)
+                    _pendingFreezePid = ownerPid;     // 等本帧稍后的 CoolSkill(5) 被我们的 Prefix 接管
+            }
+        }
+
+        // ── ①b 接管原版的 CoolSkill：把 Telekinesis 那 5 秒 CD 换成「冻结的 30 秒」 ──
+        //
+        // 原版：`UseActiveSkill`(:177213) 里 Telekinesis 分支给 `num = 5`（:177239），
+        //       随后统一 `if (num > 0) CoolSkill(num)`（:177248）。
+        //       `CoolSkill`(:177253) 会发 S_COOLTIME_SKILL 并挂一个"到点恢复可用"的作业。
+        //
+        // 我们要的语义：技能一用（标记成功）⇒ CD **显示 30 但不动**，直到目标死亡才开始走。
+        // ⇒ 所以**必须拦截掉原版这次 CoolSkill**（否则它那个 5 秒作业会在 5 秒后把技能解锁，
+        //   而且它发的值也会盖掉我们显示的 30），改成由我们在 `FrozenCd` 里冻结，
+        //   等目标死亡（DeadHook）再发一次 30 并挂上解锁作业。
+        [HarmonyPatch(typeof(SkillComponent), "CoolSkill")]
+        internal static class CoolSkillHook
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(SkillComponent __instance)
+            {
+                int pending = _pendingFreezePid;
+                if (pending < 0)
+                    return true;                      // 不是我们接管的，走原版
+                _pendingFreezePid = -1;                // 一次性记号，无论成败都清掉
+
+                if (ModeRuntime.Bypass)
+                    return true;
+
+                var owner = __instance?.Owner;
+                if (owner?.PublicInfo == null || owner.PublicInfo.PlayerId != pending)
+                    return true;
+                if (!IsLuis(owner))
+                    return true;
+
+                float recharge = RechargeSeconds?.Value ?? 30f;
+                if (recharge <= 0f)
+                    return true;                      // 配成 0 ⇒ 不干预 CD
+
+                try
+                {
+                    owner.CanUseSkill = false;
+                    owner.Session?.Send(new S_COOLTIME_SKILL { Cooltime = (int)recharge });
+                    FrozenCd.Add(pending);
+                    Plugin.Log.LogInfo(
+                        $"[HS] LuisAbility：路易斯 #{pending} 标记成功，CD 冻结在 {recharge:F0} 秒（等目标死亡后开始走）。");
+                }
+                catch (global::System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] LuisAbility：冻结 CD 失败 — {ex.Message}");
+                }
+
+                return false;                         // 跳过原版 CoolSkill（不挂它那个 5 秒解锁作业）
+            }
+        }
+
+        // ── ①c 冻结维持：每秒把 CD 值重发一遍，让客户端减掉的那 1 被重置回去 ──
+        //
+        // 客户端每秒 `SkillCooltime--`（:42319），而收包是直接赋值（:42775）——
+        // 所以每秒重发就等于"冻结"。⚠ 两边都是 1Hz 且互不同步，最坏会闪一帧 29，
+        // 下一 tick 就回到 30（人眼基本看不出）。
+        [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
+        internal static class FreezeHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (ModeRuntime.Bypass || FrozenCd.Count == 0 || __instance?.Players == null)
+                    return;
+                if (__instance.State != EGameState.Survive)
+                    return;
+
+                float recharge = RechargeSeconds?.Value ?? 30f;
+                if (recharge <= 0f)
+                    return;
+
+                List<int> stale = null;
+                foreach (int pid in FrozenCd)
+                {
+                    GamePlayer owner = null;
+                    for (int i = 0; i < __instance.Players.Count; i++)
+                    {
+                        var p = __instance.Players[i];
+                        if (p?.PublicInfo != null && p.PublicInfo.PlayerId == pid) { owner = p; break; }
+                    }
+
+                    // 兜底解冻：本人不在了 / 已死 / 他记的那个目标已经不在标记表里
+                    // （目标离线等异常情况下 OnDead 不会触发，不兜底会永久冻结）
+                    if (owner?.Session == null || !owner.IsAlive || !HasLiveMarkOf(pid))
+                    {
+                        (stale ?? (stale = new List<int>())).Add(pid);
+                        continue;
+                    }
+
+                    try { owner.Session.Send(new S_COOLTIME_SKILL { Cooltime = (int)recharge }); }
+                    catch { }
+                }
+
+                if (stale == null)
+                    return;
+                foreach (int pid in stale)
+                {
+                    FrozenCd.Remove(pid);
+                    Plugin.Log.LogInfo($"[HS] LuisAbility：路易斯 #{pid} 的 CD 冻结解除（标记已结束）。");
+                }
+            }
+
+            /// <summary>该路易斯是否还持有至少一个"标记且目标仍活着"的记录。</summary>
+            private static bool HasLiveMarkOf(int luisPid)
+            {
+                foreach (var kv in MarkedBy)
+                    if (kv.Value == luisPid)
+                        return true;
+                return false;
             }
         }
 
@@ -177,10 +319,13 @@ namespace HideAndSeek.Features.Skill
                     }
                 }
 
-                // 路易斯的技能转入周转
+                // 路易斯的技能转入周转 —— 也就是"目标死了，冻结的 CD 从这一刻开始走"
                 float recharge = RechargeSeconds?.Value ?? 30f;
                 if (recharge > 0f)
                 {
+                    // 先解冻：FreezeHook 每秒重发 30 的动作到此为止，客户端才会真的开始递减
+                    bool wasFrozen = FrozenCd.Remove(luisPid);
+
                     var room = GameRoom.Instance;
                     if (room?.Players != null)
                     {
@@ -202,6 +347,9 @@ namespace HideAndSeek.Features.Skill
                                     if (who != null)
                                         who.CanUseSkill = true;
                                 });
+                                Plugin.Log.LogInfo(
+                                    $"[HS] LuisAbility：路易斯 #{luisPid} 的目标已死，CD 开始走 {recharge:F0} 秒"
+                                    + (wasFrozen ? "（冻结已解除）。" : "。"));
                             }
                             catch (global::System.Exception ex)
                             {
@@ -210,6 +358,10 @@ namespace HideAndSeek.Features.Skill
                             break;
                         }
                     }
+                }
+                else
+                {
+                    FrozenCd.Remove(luisPid);   // 不干预 CD 时也要清掉冻结记录，免得它一直重发
                 }
 
                 Plugin.Log.LogInfo(
@@ -474,6 +626,8 @@ namespace HideAndSeek.Features.Skill
             TraceUntil.Clear();
             NextTraceAt.Clear();
             TraceMarks.Clear();
+            FrozenCd.Clear();          // CD 冻结表同理：不清会把上局的"冻结"带进新局
+            _pendingFreezePid = -1;    // 一次性记号，跨局也清掉
         }
     }
 }
