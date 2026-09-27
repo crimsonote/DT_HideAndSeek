@@ -213,7 +213,7 @@ namespace HideAndSeek.Features.Skill
             {
                 luis.Session.Send(new S_NOTIFY_ARROW
                 {
-                    Type = EArrowType.CharacterArrow,
+                    Type = EArrowType.CorpseArrow,
                     Pos = target.PublicInfo.Pos
                 });
                 TraceMarks[luis.PublicInfo.PlayerId] = target.PublicInfo.Pos;
@@ -307,7 +307,7 @@ namespace HideAndSeek.Features.Skill
                             {
                                 luis.Session.Send(new S_REMOVE_ARROW
                                 {
-                                    Type = EArrowType.CharacterArrow,
+                                    Type = EArrowType.CorpseArrow,
                                     Pos = dead
                                 });
                             }
@@ -325,7 +325,7 @@ namespace HideAndSeek.Features.Skill
                     NextTraceAt[luisPid] = now + interval;
                     TraceUntil[luisPid] = now + (TraceDurationSeconds?.Value ?? 3f);
 
-                    // ★ 改用 S_NOTIFY_ARROW + EArrowType.CharacterArrow。
+                    // ★ 改用 S_NOTIFY_ARROW + EArrowType.CorpseArrow。
                     //
                     // 为什么不用 S_PIN_MOVE：那个包在客户端会**同时**刷"场景 HUD 地图"和"平板"两处
                     // （Handle_S_PIN_MOVE :42246/:42247 是无条件两行，同一个 Type，客户端没有任何
@@ -370,7 +370,7 @@ namespace HideAndSeek.Features.Skill
                             // 删除：Pos 必须与发出去的那一发**精确同值**（RemoveArrow :13774 按值匹配）
                             p.Session.Send(new S_REMOVE_ARROW
                             {
-                                Type = EArrowType.CharacterArrow,
+                                Type = EArrowType.CorpseArrow,
                                 Pos = last
                             });
                         }
