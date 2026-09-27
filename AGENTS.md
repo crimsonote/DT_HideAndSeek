@@ -10,9 +10,9 @@
 
 ## 编码（最容易踩，且不报错）
 
-**所有 `.cs` 必须带 UTF-8 BOM。**
+**所有 `.cs` 与 `.ps1` 都必须带 UTF-8 BOM。**
 
-中文 Windows 上 Roslyn 对"无 BOM + 非 ASCII"的文件会退回**系统 ANSI（GBK）**读取，
+中文 Windows 上 Roslyn 对"无 BOM + 非 ASCII"的 `.cs` 会退回**系统 ANSI（GBK）**读取，
 中文字面量在**编译期**就已损坏，且不产生任何警告 —— 表现是游戏里看到乱码：
 
 ```text
@@ -20,12 +20,25 @@
 E5 81 按 GBK 解读     = 鍋      ← 实测就出现过"假人 → 鍋水漢"这种乱码
 ```
 
+`.ps1` 是同一类问题，但**症状不同且更响**：PowerShell 也按 ANSI 读无 BOM 的脚本，
+中文乱码后**乱码字节会破坏字符串引号的配对**，于是脚本根本解析不了：
+
+```text
+Missing closing '}' in statement block or type definition.
+Unexpected token ')' in expression or statement.
+The string is missing the terminator: ".
+# 且报错回显里中文本身是乱码，例如 "濡傛灉杩欐槸…"
+```
+
+⇒ 看到"脚本语法错误 + 报错里中文乱码"就该先查 BOM，别去改语法。
+（实机踩过：新写的 `deploy-version.ps1` 漏 BOM，被误判成 `Write-Host` 拼接写法错。）
+
 - 用工具（编辑器 / write 类 API）**重写文件后必须复查 BOM** —— 覆写常常会丢掉它
-- 复查与补齐：
+- 复查与补齐（`.cs` 与 `.ps1` 一起扫）：
 
 ```powershell
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-Get-ChildItem -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch '\\obj\\' } | ForEach-Object {
+Get-ChildItem -Recurse -Include *.cs,*.ps1 | Where-Object { $_.FullName -notmatch '\\obj\\' } | ForEach-Object {
     $b = [System.IO.File]::ReadAllBytes($_.FullName)
     if (-not ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) {
         [System.IO.File]::WriteAllText($_.FullName, [System.Text.Encoding]::UTF8.GetString($b), $utf8Bom)
