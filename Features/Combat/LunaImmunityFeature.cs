@@ -46,14 +46,11 @@ namespace HideAndSeek.Features.Combat
             if (GameRefs.IsRealBlackout(__instance))
                 return true;                      // 真停电：原版规则下护盾失效
 
-            // 复刻原版拒绝路径的收刀动作
-            AccessTools.Method(typeof(GamePlayer), "HolsterWeaponAfterSwing")?.Invoke(__instance, null);
-
-            if (PlayFeedback == null || PlayFeedback.Value)
-                room.SendSystemSFX(ESoundType.FailedSfx, __instance);
-
-            Plugin.Log.LogInfo(
-                $"[HS] LunaImmunity：拦截 #{__instance.PublicInfo.PlayerId} → #{targetId}（目标角色={target.CharacterId}，技能={target.SkillComponent?.Data?.Type}）。");
+            // 拒绝动作（收刀 + 失败音效 + 日志）与首刀保护共用同一出口，避免两套逐字拷贝
+            KillBlocker.Reject(
+                __instance, target, "LunaImmunity",
+                PlayFeedback == null || PlayFeedback.Value,
+                $"（目标角色={target.CharacterId}，技能={target.SkillComponent?.Data?.Type}）");
             return false;
         }
     }
