@@ -1,4 +1,5 @@
-﻿using System.Linq;
+﻿using System.Collections.Generic;
+using System.Linq;
 using BepInEx.Configuration;
 using HarmonyLib;
 using HideAndSeek.Core;
@@ -48,6 +49,12 @@ namespace HideAndSeek.Features.Rule
         [ConfigField(true, "目标处于保护中时，给攻击者发一条文字提示（露娜免疫没有这条，是本功能独有）。")]
         public static ConfigEntry<bool> NotifyAttacker;
 
+        [ConfigField(20f,
+            "文字提示的最小间隔（秒，0 = 每次都发）。文本消息要走网络包，而吞刀没有冷却 —— " +
+            "黑方可以对着受保护者短时间连砍很多次，每次都发会刷屏且浪费。",
+            Min = 0f, Max = 120f)]
+        public static ConfigEntry<float> NotifyCooldownSeconds;
+
         [ConfigField(true, "照露娜规则：**真停电**时保护失效（给黑方单发的假黑灯不算，以服务端区域光照为准）。")]
         public static ConfigEntry<bool> BreakOnBlackout;
 
@@ -71,6 +78,31 @@ namespace HideAndSeek.Features.Rule
 
         private static bool SfxOn()
             => PlayFeedback == null || PlayFeedback.Value;
+
+        /// <summary>每个攻击者上次收到提示的时刻（按 PlayerId 分开算，免得一个人刷屏影响别人）。</summary>
+        private static readonly Dictionary<int, float> _lastNotifyAt = new Dictionary<int, float>();
+
+        /// <summary>
+        /// 文字提示是否到了可发的时候（并记账）。
+        ///
+        /// 只有**文字提示**受这个间隔限制：音效是"刀被挡下"的即时反馈，少了玩家会以为卡刀，
+        /// 所以每次都放；文字是解释性的，重复发没有信息量。
+        /// 被间隔挡下时**不记账**，这样连砍期间的第一刀之后、等满间隔仍会补上一条。
+        /// </summary>
+        private static bool NotifyReady(GamePlayer attacker)
+        {
+            float cd = NotifyCooldownSeconds != null ? NotifyCooldownSeconds.Value : 20f;
+            if (cd <= 0f) return true;
+
+            int pid = attacker?.PublicInfo?.PlayerId ?? 0;
+            float now = UnityEngine.Time.realtimeSinceStartup;
+
+            float last;
+            if (_lastNotifyAt.TryGetValue(pid, out last) && now - last < cd) return false;
+
+            _lastNotifyAt[pid] = now;
+            return true;
+        }
 
         /// <summary>该玩家此刻是否是本局的受保护者（不含破防判断）。</summary>
         private static bool IsProtected(GamePlayer player)
@@ -107,10 +139,12 @@ namespace HideAndSeek.Features.Rule
             return true;
         }
 
-        /// <summary>本功能私有的那条文字提示（露娜免疫没有）。</summary>
+        /// <summary>本功能私有的那条文字提示（露娜免疫没有）。受 <see cref="NotifyCooldownSeconds"/> 限流。</summary>
         private static void NotifyBlocked(GamePlayer attacker, GamePlayer target)
         {
             if (NotifyAttacker != null && !NotifyAttacker.Value) return;
+            if (!NotifyReady(attacker)) return;
+
             try { ChatOut.ToPlayer(attacker, $"{target.Name} 处于首刀保护中，暂时无法击杀。"); }
             catch { }
         }
@@ -124,6 +158,9 @@ namespace HideAndSeek.Features.Rule
             {
                 _protectedAccount = _lastFirstDeadAccount;
                 _released = string.IsNullOrEmpty(_protectedAccount);
+
+                // 跨局清掉限流账本：新局的"第一刀提示"不该被上一局的间隔吃掉
+                _lastNotifyAt.Clear();
 
                 Plugin.Log.LogInfo(_released
                     ? "[HS] FirstDeathProtect：本局无保护对象（上一局没人死亡）。"
