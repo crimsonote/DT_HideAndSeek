@@ -21,8 +21,9 @@ namespace HideAndSeek.Features.Skill
     ///   2. 凶手若是路易斯自己 ⇒ **不施加**上述负面效果（需求明确）
     ///   3. 路易斯的技能随后重新进入周转（默认 30 秒）
     ///   4. 路易斯每 15 秒获得 3 秒的目标实时位置
-    ///      —— 走 `S_NOTIFY_ARROW` + `CorpseArrow`（只走 UI_Arrow，**地图与平板零痕迹**），
-    ///         窗口内挂在目标的 `Move` 上持续刷新（见 `SendTraceArrow` 里"为什么不用 S_PIN_MOVE"）
+    ///      —— 箭头样式由 `ArrowStyle` 决定（默认 `Character` = 红毛同款的**角色箭头**，
+    ///         贴图按目标角色取；`Corpse` = 地图零痕迹的尸体箭头），
+    ///         窗口内挂在目标的 `Move` 上持续刷新 —— 两条通道的差别见 `SendTraceArrow`
     ///
     /// ⚠ 跨局必须清标记表：它按 PlayerId 索引，而座位号跨局会复用（今天已因此栽过两次）。
     /// </summary>
@@ -46,6 +47,12 @@ namespace HideAndSeek.Features.Skill
         [ConfigField(3f, "每次位置追踪持续的秒数。", Min = 0.5f, Max = 30f)]
         public static ConfigEntry<float> TraceDurationSeconds;
 
+        [ConfigField("Character", "追踪箭头的样式。\n" +
+            "Character = 「角色箭头」（与红毛 ComplyRules 同款）：箭头贴图按**目标的角色**显示（如 Luna_Map_Black）；\n" +
+            "            代价是平板地图上会多出一个标记（客户端 :42247 无条件刷，房主端避不开）。\n" +
+            "Corpse    = 「尸体箭头」（原版尸体通报那种箭头）：只走 UI_Arrow，**地图与平板零痕迹**。")]
+        public static ConfigEntry<string> ArrowStyle;
+
         /// <summary>被标记的目标 PlayerId → 标记他的路易斯 PlayerId。</summary>
         private static readonly Dictionary<int, int> MarkedBy = new Dictionary<int, int>();
 
@@ -55,8 +62,19 @@ namespace HideAndSeek.Features.Skill
         /// <summary>路易斯 PlayerId → 下次可以再发一次追踪的时刻。</summary>
         private static readonly Dictionary<int, float> NextTraceAt = new Dictionary<int, float>();
 
-        /// <summary>路易斯 PlayerId → 最后一次发出的箭头位置（删除时 Pos 必须精确同值）。</summary>
-        private static readonly Dictionary<int, PosInfo> TraceMarks = new Dictionary<int, PosInfo>();
+        /// <summary>
+        /// 路易斯 PlayerId → （被指向的目标 PlayerId, 最后一次发出的位置）。
+        ///
+        /// 两个都要记：撤销时 `Corpse` 样式要按 `(Type, Pos)` 精确匹配删（`:13779`），
+        /// `Character` 样式要把目标 PlayerId 填回 `S_PIN_MOVE.Type` 才认得出删哪个。
+        /// 位置必须 `Clone()` —— `PublicInfo.Pos` 会随玩家移动被原地改写，存引用会删不掉。
+        /// </summary>
+        private static readonly Dictionary<int, (int targetPid, PosInfo pos)> TraceMarks =
+            new Dictionary<int, (int, PosInfo)>();
+
+        /// <summary>是否用「角色箭头」（红毛同款）。默认 Character。</summary>
+        private static bool UseCharacterArrow()
+            => !string.Equals(ArrowStyle?.Value, "Corpse", global::System.StringComparison.OrdinalIgnoreCase);
 
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
@@ -201,15 +219,29 @@ namespace HideAndSeek.Features.Skill
         }
 
         /// <summary>
-        /// 给路易斯发一次"指向目标"的箭头。
+        /// 给路易斯发一次"指向目标"的箭头。样式由 `ArrowStyle` 决定，两条通道的客户端链路完全不同：
         ///
-        /// ⚠ 与红毛那条的关键区别：红毛走 `SetComplyRulesArrow`（:13807 会先 `Find` 复用同一个
-        /// `UI_Arrow`），而我们走 `MyPlayer.SetArrow`（:13765）—— 它**每次调用都新建**一个
-        /// `UI_Arrow` 并 `Arrows.Add`，**没有去重**。所以这里必须"**先撤上一发、再发这一发**"，
-        /// 否则 3 秒窗口内 10Hz 刷新会堆出几百个箭头对象。
+        /// **Character（默认，红毛 ComplyRules 同款）** —— `S_PIN_MOVE{ Type = 目标的真实 PlayerId }`
+        /// ```
+        /// :42242 Handle_S_PIN_MOVE → :42246 UI_GameScene.RefreshComplyRulesPin
+        ///   → :74747 SetComplyRulesArrow(pin)
+        ///     → :13801 GetPlayerCache(target.ID)（**ID 必须是真实 PlayerId**，否则直接 return）
+        ///       → :89667 贴图 = `{该角色}_Map_Black.sprite` ⇒ **箭头显示的是目标的角色**
+        /// ```
+        /// · 重复发**不需要**先撤：`SetComplyRulesArrow` 会 `Find` 复用同一个 `UI_Arrow`（:13807）
+        /// · ⚠ 副作用：同一个包也刷平板（`:42247` 是无条件的那一行），**打开平板时会多一个标记**
+        ///   —— 客户端没有按 ID 分岔的逻辑，房主端避不开；不打开平板则看不到。
+        /// · 撤销：`S_PIN_MOVE{ Type = 同一个 PlayerId, Pos = (0,0) }` ⇒ `DeletePin` + `RemoveComplyRulesArrow`
         ///
-        /// 另外 `RemoveArrow`(:13774) 是按 **(Type, Pos) 值匹配**删除的，而 `PublicInfo.Pos`
-        /// 会随玩家移动被**原地改写** ⇒ 记下来用于删除的位置必须 `Clone()`，不能存引用。
+        /// **Corpse** —— `S_NOTIFY_ARROW{ Type = CorpseArrow }`
+        /// ```
+        /// :42569 Handle_S_NOTIFY_ARROW → :13765 MyPlayer.SetArrow → UI_Arrow 通用分支
+        ///   （:89719 每帧摆到"自己 + 朝目标 × 200"处并旋转朝目标）
+        /// ```
+        /// · ✅ 地图与平板**零痕迹**（平板副作用 `NoteCorpseArrow` 只在 Detective 阶段，:42573）
+        /// · ⚠ 贴图只能是尸体/电箱/军械库那三种之一（`:89629` 的 switch），**拿不到角色贴图**
+        /// · ⚠ 必须"先撤旧、再发新"：`SetArrow`(:13765) 每次调用都 `MakeWorldSpaceUI` **新建**一个
+        ///   `UI_Arrow` 且 `Arrows.Add`，**没有去重** ⇒ 3 秒窗口内 10Hz 重发会堆出几百个箭头对象
         /// </summary>
         private static void SendTraceArrow(GamePlayer luis, GamePlayer target)
         {
@@ -217,40 +249,75 @@ namespace HideAndSeek.Features.Skill
                 return;
 
             int luisPid = luis.PublicInfo.PlayerId;
+            int targetPid = target.PublicInfo.PlayerId;
             try
             {
-                // ① 先撤上一发（必须用上一发的原值精确匹配）
-                PosInfo prev;
-                if (TraceMarks.TryGetValue(luisPid, out prev) && prev != null)
+                if (UseCharacterArrow())
                 {
-                    luis.Session.Send(new S_REMOVE_ARROW
+                    // 角色箭头：反复发同一个 (Type, Pos) 不会叠加，客户端会复用那一个 UI_Arrow
+                    luis.Session.Send(new S_PIN_MOVE
+                    {
+                        Type = targetPid,
+                        Pos = target.PublicInfo.Pos,
+                        IsForce = false
+                    });
+                }
+                else
+                {
+                    // 尸体箭头：先撤上一发（必须用上一发的**原值**精确匹配，:13779 是按值删的）
+                    (int _, PosInfo prev) = TraceMarks.TryGetValue(luisPid, out var old) ? old : (0, null);
+                    if (prev != null)
+                    {
+                        luis.Session.Send(new S_REMOVE_ARROW
+                        {
+                            Type = EArrowType.CorpseArrow,
+                            Pos = prev
+                        });
+                    }
+
+                    luis.Session.Send(new S_NOTIFY_ARROW
                     {
                         Type = EArrowType.CorpseArrow,
-                        Pos = prev
+                        Pos = target.PublicInfo.Pos
                     });
                 }
 
-                // ② 再发这一发。
-                //
-                // 为什么不用 S_PIN_MOVE（红毛 ComplyRules 那条）：
-                //   客户端 Handle_S_PIN_MOVE(:42242) 是**无条件刷两处**（:42246 场景 HUD / :42247 平板），
-                //   没有按 ID 分岔的逻辑 ⇒ **平板地图上必然多一个标记**，房主端避不开。
-                //   而这条链（:42569 → MyPlayer.SetArrow :13765 → UI_Arrow）只走 UI_Arrow，**完全不碰 pin / 地图**。
-                // 代价：箭头不是"绑定小地图 pin"的那种，而是 UI_Arrow 的通用分支
-                //   （:89719 每帧摆到"自己 + 朝目标 × 200"处并旋转朝目标）—— 观感仍是从自己指向目标的箭头。
-                luis.Session.Send(new S_NOTIFY_ARROW
-                {
-                    Type = EArrowType.CorpseArrow,
-                    Pos = target.PublicInfo.Pos
-                });
-
-                // 记下这一发的位置（克隆：Pos 会被原地改写，存引用会导致稍后删不掉）
-                TraceMarks[luisPid] = target.PublicInfo.Pos.Clone();
+                // 记下"指向谁 + 这一发的位置"。位置必须克隆：PublicInfo.Pos 会被原地改写
+                TraceMarks[luisPid] = (targetPid, target.PublicInfo.Pos.Clone());
             }
             catch (global::System.Exception ex)
             {
                 Plugin.Log.LogWarning($"[HS] LuisAbility：追踪发包失败 — {ex.Message}");
             }
+        }
+
+        /// <summary>撤销某人身上的追踪箭头（按当前的 `ArrowStyle` 走对应的删除方式）。</summary>
+        private static void ClearTraceArrow(GamePlayer target, int markTargetPid, PosInfo markPos)
+        {
+            if (target?.Session == null)
+                return;
+            try
+            {
+                if (UseCharacterArrow())
+                {
+                    // 删除哨兵：Pos = (0,0) ⇒ 客户端 DeletePin + RemoveComplyRulesArrow
+                    target.Session.Send(new S_PIN_MOVE
+                    {
+                        Type = markTargetPid,
+                        Pos = new PosInfo(),
+                        IsForce = false
+                    });
+                }
+                else if (markPos != null)
+                {
+                    target.Session.Send(new S_REMOVE_ARROW
+                    {
+                        Type = EArrowType.CorpseArrow,
+                        Pos = markPos
+                    });
+                }
+            }
+            catch { }
         }
 
         // ── ③a 跟随：挂目标的 Move（和红毛一样，10 Hz 级），只在追踪窗口内发 ──
@@ -326,22 +393,12 @@ namespace HideAndSeek.Features.Skill
                     if (!luis.IsAlive || !target.IsAlive)
                     {
                         // 需求：目标死亡后 ⇒ **不再通报位置**。
-                        // 注意不只是"停止重发" —— 箭头是死数据，必须主动撤掉（同 S_REMOVE_ARROW）。
-                        PosInfo dead;
-                        if (TraceMarks.TryGetValue(luisPid, out dead))
+                        // 注意不只是"停止重发" —— 箭头是死数据（或 pin），必须主动撤掉。
+                        if (TraceMarks.TryGetValue(luisPid, out var deadMark))
                         {
                             TraceMarks.Remove(luisPid);
                             TraceUntil.Remove(luisPid);
-                            try
-                            {
-                                // 撤：Pos 必须与最后一发精确同值（RemoveArrow :13779 按值匹配）
-                                luis.Session.Send(new S_REMOVE_ARROW
-                                {
-                                    Type = EArrowType.CorpseArrow,
-                                    Pos = dead
-                                });
-                            }
-                            catch { }
+                            ClearTraceArrow(luis, deadMark.targetPid, deadMark.pos);
                         }
                         continue;
                     }
@@ -355,12 +412,11 @@ namespace HideAndSeek.Features.Skill
                     NextTraceAt[luisPid] = now + interval;
                     TraceUntil[luisPid] = now + (TraceDurationSeconds?.Value ?? 3f);
 
-                    // 发包细节见 SendTraceArrow：走 S_NOTIFY_ARROW + CorpseArrow，
-                    // 那条链（:42569 → MyPlayer.SetArrow :13765 → UI_Arrow）完全不碰 pin / 地图。
+                    // 发包细节见 SendTraceArrow：按 ArrowStyle 走 S_PIN_MOVE（角色箭头）或 S_NOTIFY_ARROW（尸体箭头），
                     SendTraceArrow(luis, target);   // 起步那一发；后续由 Move 钩子跟随
                 }
 
-                // 追踪到期 ⇒ 发删除哨兵（Pos = null）
+                // 追踪到期 ⇒ 撤掉箭头（按 ArrowStyle 走对应的删除方式，见 ClearTraceArrow）
                 if (TraceUntil.Count == 0)
                     return;
                 List<int> expired = null;
@@ -376,8 +432,7 @@ namespace HideAndSeek.Features.Skill
                 {
                     TraceUntil.Remove(luisPid);
 
-                    PosInfo last;
-                    if (!TraceMarks.TryGetValue(luisPid, out last))
+                    if (!TraceMarks.TryGetValue(luisPid, out var lastMark))
                         continue;                     // 没有发过，没什么可撤
                     TraceMarks.Remove(luisPid);
 
@@ -386,16 +441,7 @@ namespace HideAndSeek.Features.Skill
                         var p = room.Players[i];
                         if (p?.PublicInfo == null || p.PublicInfo.PlayerId != luisPid || p.Session == null)
                             continue;
-                        try
-                        {
-                            // 删除：Pos 必须与发出去的那一发**精确同值**（RemoveArrow :13774 按值匹配）
-                            p.Session.Send(new S_REMOVE_ARROW
-                            {
-                                Type = EArrowType.CorpseArrow,
-                                Pos = last
-                            });
-                        }
-                        catch { }
+                        ClearTraceArrow(p, lastMark.targetPid, lastMark.pos);
                         break;
                     }
                 }
