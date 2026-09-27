@@ -1,4 +1,4 @@
-# deploy-version.ps1 —— 部署**指定版本**的构建快照（用于从实验版回退到正式版）
+﻿# deploy-version.ps1 —— 部署**指定版本**的构建快照（用于从实验版回退到正式版）
 #
 # 为什么需要它：
 #   实验性改动（例如设置页折叠栏）会部署上去覆盖游戏里的正式版。
@@ -30,9 +30,10 @@ $releases = Join-Path (Split-Path $PSScriptRoot -Parent) ".tmps\releases"
 if ($List -or [string]::IsNullOrWhiteSpace($Version)) {
     Write-Host "可用的版本快照（$releases）：" -ForegroundColor Cyan
     if (-not (Test-Path $releases)) {
-        Write-Host "  （还没有任何快照。发布正式版时执行：`n" +
-                   "     Copy-Item bin\Release\netstandard2.1\HideAndSeek.dll " +
-                   "$releases\<tag>\HideAndSeek.dll）" -ForegroundColor Yellow
+        Write-Host "  （还没有任何快照）" -ForegroundColor Yellow
+        Write-Host "  发布正式版时这样快照（vX.Y.Z 换成版本号）：" -ForegroundColor Yellow
+        Write-Host ("    New-Item -ItemType Directory -Force '" + $releases + "\vX.Y.Z'")
+        Write-Host ("    Copy-Item bin\Release\netstandard2.1\HideAndSeek.dll '" + $releases + "\vX.Y.Z\'")
         exit 0
     }
     $any = $false
