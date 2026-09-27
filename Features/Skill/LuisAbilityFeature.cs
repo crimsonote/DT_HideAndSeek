@@ -381,9 +381,16 @@ namespace HideAndSeek.Features.Skill
         ///       → :89667 贴图 = `{该角色}_Map_Black.sprite` ⇒ **箭头显示的是目标的角色**
         /// ```
         /// · 重复发**不需要**先撤：`SetComplyRulesArrow` 会 `Find` 复用同一个 `UI_Arrow`（:13807）
+        /// · ★ **首包必须 `IsForce = true`**（`first` 变量）—— 客户端 :74749 分两条路：
+        ///   `true` → `SetLocalPosition` 直接定位；`false` → `SetTargetPosition`，:86096 是 **0.1 秒
+        ///   DOLocalMove 补间**。控件刚由 `CreatePin` 建出来时，它的位置与目标位置差着，
+        ///   用 `false` 会先**从原地飘一下**才到位；之后窗口内的刷新才该用 `false` 平滑跟随。
+        ///   原版红毛同此：标记那一刻 `isForce: true`（:177398），之后移动才 `false`（:175918）；
+        ///   美幸那边也是这个做法（`MiyukiScanFeature.SendPinTracked` 用 HashSet.Add 判首包）。
         /// · ⚠ 副作用：同一个包也刷平板（`:42247` 是无条件的那一行），**打开平板时会多一个标记**
         ///   —— 客户端没有按 ID 分岔的逻辑，房主端避不开；不打开平板则看不到。
         /// · 撤销：`S_PIN_MOVE{ Type = 同一个 PlayerId, Pos = (0,0) }` ⇒ `DeletePin` + `RemoveComplyRulesArrow`
+        ///   （删除走的是 `pos == Vector2.zero` 那条分支，在 `isForce` 判断**之前**就 return 了，故 `IsForce` 无意义）
         ///
         /// **Corpse** —— `S_NOTIFY_ARROW{ Type = CorpseArrow }`
         /// ```
@@ -404,6 +411,15 @@ namespace HideAndSeek.Features.Skill
             int targetPid = target.PublicInfo.PlayerId;
             try
             {
+                // 「首包不补间」——与美幸那边同一个做法（`MiyukiScanFeature.SendPinTracked`）：
+                // 客户端 RefreshComplyRulesPin 收到 pin 后，:74749 分两条路：
+                //   IsForce=true  → SetLocalPosition 直接定位（新控件不会"从原地滑入"）
+                //   IsForce=false → SetTargetPosition，:86096 是 0.1 秒 DOLocalMove 补间
+                // 控件刚建出来时它的位置与目标位置差着，用 false 会先飘一下 ⇒ 首包必须 true。
+                // 原版红毛也是这么做的：标记那一刻 `isForce: true`（:177398），之后移动才 false（:175918）。
+                bool first = !TraceMarks.TryGetValue(luisPid, out var prevMark)
+                             || prevMark.targetPid != targetPid;
+
                 if (UseCharacterArrow())
                 {
                     // 角色箭头：反复发同一个 (Type, Pos) 不会叠加，客户端会复用那一个 UI_Arrow
@@ -411,13 +427,13 @@ namespace HideAndSeek.Features.Skill
                     {
                         Type = targetPid,
                         Pos = target.PublicInfo.Pos,
-                        IsForce = false
+                        IsForce = first
                     });
                 }
                 else
                 {
                     // 尸体箭头：先撤上一发（必须用上一发的**原值**精确匹配，:13779 是按值删的）
-                    (int _, PosInfo prev) = TraceMarks.TryGetValue(luisPid, out var old) ? old : (0, null);
+                    PosInfo prev = first ? null : prevMark.pos;
                     if (prev != null)
                     {
                         luis.Session.Send(new S_REMOVE_ARROW
