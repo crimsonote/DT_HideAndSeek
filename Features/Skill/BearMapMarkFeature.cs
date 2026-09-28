@@ -30,6 +30,9 @@ namespace HideAndSeek.Features.Skill
     ///     （<c>Session.Send</c>，:175932），离开范围时发 <c>Pos = (0,0)</c> 删除。
     ///   ⇒ 只有凛的地图上会出现这些点，其它人看不到。
     ///
+    /// ★ 阵营与角色**相互独立**：小熊的主人（<c>Rin</c>）可能是**白方也可能是黑方**，
+    ///   所以本功能的"目标"不按阵营筛 —— 只看"够格 + 在小熊范围内 + 视线不被挡"。
+    ///
     /// ⚠️ 只在 <c>Survive</c> 阶段发 <c>S_PIN_MOVE</c>：教学关里
     /// <c>GetSceneUI&lt;UI_GameScene&gt;()</c> 为 null、<c>Managers.Tablet.Tablet</c> 从未赋值，
     /// 客户端 <c>Handle_S_PIN_MOVE</c>（:42242-42248）会抛 NRE 且没有 try/catch
@@ -207,7 +210,7 @@ namespace HideAndSeek.Features.Skill
                 Plugin.Log.LogWarning($"[HS] BearMapMark：发 pin 失败 — {ex.Message}");
             }
 
-            // ── 诊断：黑方此刻能不能"看见"这个目标 ──
+            // ── 诊断：主人此刻能不能"看见"这个目标 ──
             // 世界箭头要求 pin 的 ID 能查到真实 Player（SetComplyRulesArrow :13801-13805 查不到就 return），
             // 而客户端的 Player 对象由服务端 AddPlayer 决定 ⇒ 若 AOI 把目标剔除了，
             // 客户端上根本没有这个人 ⇒ **只有地图 pin、没有世界箭头**。
@@ -367,7 +370,12 @@ namespace HideAndSeek.Features.Skill
                     //   世界箭头要求主人的客户端上存在该 Player 对象
                     //   （SetComplyRulesArrow :13801-13805 查不到 GetPlayerCache 就直接 return），
                     //   而平板 pin 不要求 —— 这就是"有 pin、没箭头"的原因。
-                    //   AddPlayer 幂等；主人是白方时 AOI 不会拦（它只裁黑方）。
+                    //   AddPlayer 幂等。主人**可能是白方也可能是黑方**
+                    //   （阵营与角色相互独立）：
+                    //     · 白方主人：AOI 不裁白方，但原版那条机制下静止目标同样
+                    //       可能从未被介绍给他 ⇒ 这一步对白方**同样必要**
+                    //     · 黑方主人：会走 AOI 判定，范围内放行（小熊半径 448 与
+                    //       AoiCullingFeature.MarionetteEnterRange 448 一致）
                     target.AddPlayer(owner);
 
                     SendPin(owner, target, remove: false, isForce: isNew);   // ★ 首帧不补间
