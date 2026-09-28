@@ -57,6 +57,11 @@ namespace HideAndSeek.Features.Skill
             "要求视线不被挡住（照原版：中间隔着墙就不算在范围内）。关掉则只看距离。")]
         public static ConfigEntry<bool> RequireLineOfSight;
 
+        [ConfigField(true,
+            "详细诊断日志（测试期默认开）：打印每次巡检的评估人数/跳过原因、以及每个目标与小熊的距离与判定结论。" +
+            "定位完问题后关掉即可。")]
+        public static ConfigEntry<bool> LogDetail;
+
         [ConfigField(0f,
             "位置更新的最小重发间隔（秒，0 = 不节流）。默认 0 与红毛一致 —— 目标每次移动都推一包，" +
             "箭头才会平滑跟随；限流会让它在快速移动时一顿一顿。",
@@ -86,6 +91,8 @@ namespace HideAndSeek.Features.Skill
         private static bool InSurvive()
             => GameRoom.Instance?.State == EGameState.Survive;
 
+        private static bool Detail() => LogDetail == null || LogDetail.Value;
+
         // ───────────────────────── 判定 ─────────────────────────
 
         /// <summary>
@@ -95,7 +102,10 @@ namespace HideAndSeek.Features.Skill
         private static bool IsEligible(GamePlayer p)
         {
             if (p?.PublicInfo == null) return false;
-            if (p.IsSpectator || p.IsDummy) return false;
+            // ⚠️ 与原版的**有意差异**：原版 DetectNearbyPlayer(:7308) 会跳过 IsDummy，
+            //    但那是"靠近提醒"，而本功能是**地图标记** —— 假人同样该被标
+            //    （实战里它们是场上目标；测试环境里更是只有假人可验）。所以这里不跳过假人。
+            if (p.IsSpectator) return false;
             if (p.PublicInfo.IsGhost) return false;
             if (p.State == EPlayerState.Hide || p.State == EPlayerState.Sit) return false;
             return true;
@@ -315,13 +325,34 @@ namespace HideAndSeek.Features.Skill
                         $"[HS] BearMapMark：发现小熊 id={summon.ID}，主人=#{ownerPid}，" +
                         $"位置=({sp.x:F0},{sp.y:F0})，StateList=[{string.Join(",", summon.DeviceInfo.StateList)}]");
                 }
-                if (ownerPid <= 0 || ownerPid == targetPid) continue;   // 不标记主人自己
+                if (ownerPid == targetPid)
+                {
+                    if (Detail())
+                        Plugin.Log.LogInfo(
+                            $"[HS] BearMapMark(judge)：目标 #{targetPid}({target.Name}) 就是小熊 #{summon.ID} 的主人，跳过（不标自己）");
+                    continue;
+                }
+                if (ownerPid <= 0) continue;
 
                 Vector2 summonPos = PositionOf(summon);
                 bool inside = InsideRange(summonPos, targetPos);
-                if (inside && LosRequired() && !HasLineOfSight(summonPos, targetPos)) inside = false;
+                bool blocked = false;
+                if (inside && LosRequired() && !HasLineOfSight(summonPos, targetPos))
+                {
+                    inside = false;
+                    blocked = true;
+                }
 
                 bool marked = IsMarked(ownerPid, targetPid);
+
+                if (Detail())
+                {
+                    float dist = Vector2.Distance(summonPos, targetPos);
+                    Plugin.Log.LogInfo(
+                        $"[HS] BearMapMark(judge)：目标 #{targetPid}({target.Name}) ↔ 小熊 #{summon.ID}(主人 #{ownerPid})" +
+                        $" 距离={dist:F0} 范围X={RangeXValue():F0} 范围Y={RangeYValue():F0}" +
+                        $" → inside={inside}{(blocked ? "（被墙挡）" : "")} marked={marked}");
+                }
 
                 if (inside && !marked)
                 {
@@ -364,12 +395,34 @@ namespace HideAndSeek.Features.Skill
             var players = GameRoom.Instance?.Players;
             if (players == null) return;
 
+            int evaluated = 0;
+            var skipped = new List<string>();
             for (int i = 0; i < players.Count; i++)
             {
                 var p = players[i];
                 if (p?.PublicInfo == null) continue;
-                if (!p.IsAlive) continue;                 // 死者由下面的失效清理负责
+                if (!p.IsAlive) { skipped.Add($"#{p.PublicInfo.PlayerId}死"); continue; }
+                evaluated++;
+                if (!IsEligible(p))
+                {
+                    skipped.Add($"#{p.PublicInfo.PlayerId}不够格(ghost={p.PublicInfo.IsGhost},dummy={p.IsDummy},state={p.State})");
+                    continue;
+                }
                 Evaluate(p);
+            }
+
+            if (Detail())
+            {
+                int bearCount = 0;
+                var sums = GameDeviceManager.Instance?.Summons;
+                if (sums != null) for (int i = 0; i < sums.Count; i++) if (IsUsable(sums[i])) bearCount++;
+
+                int markedCount = 0;
+                foreach (var kv in _marked) markedCount += kv.Value.Count;
+
+                Plugin.Log.LogInfo(
+                    $"[HS] BearMapMark(sweep)：玩家 {players.Count}，评估 {evaluated}，小熊 {bearCount}，已标记 {markedCount}" +
+                    (skipped.Count > 0 ? "；跳过：" + string.Join(" ", skipped) : ""));
             }
 
             // 清理失效：目标死了/走了/不再够格，或主人的小熊已经没了
