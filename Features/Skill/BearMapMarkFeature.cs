@@ -463,6 +463,62 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
+        // ───────────────────── 客户端探针（定位用）─────────────────────
+        // ⚠️ 这三条只打日志、不改行为。世界箭头是在**客户端**生成的，
+        //    服务端侧"已标记"只能证明包发出去了，证明不了箭头为什么没出现。
+        //    三种可能各有其特征，看到哪一条就能定性：
+        //      · ① 没打  ⇒ pin 根本没到场景（问题在服务端或阶段）
+        //      · ① 打了、② 没打 ⇒ 卡在 pin.AlreadyComplyRules 或 GetPlayerCache==null
+        //      · ② 打了、③ 没打 ⇒ 卡在 UI_Arrow 内部（贴图/位置/激活）
+        //    定位完可以整块删掉。
+
+        [HarmonyPatch(typeof(UI_GameScene), nameof(UI_GameScene.RefreshComplyRulesPin))]
+        internal static class PinProbe
+        {
+            [HarmonyPostfix]
+            private static void Postfix(int id, Vector2 pos, bool isForce)
+            {
+                if (!Detail()) return;
+
+                var cached = Managers.Player != null ? Managers.Player.GetPlayerCache(id) : null;
+                var me = Managers.Player != null ? Managers.Player.MyPlayer : null;
+                Plugin.Log.LogInfo(
+                    $"[HS] BearMapMark(probe①)：场景收到 pin id=#{id} pos=({pos.x:F0},{pos.y:F0}) isForce={isForce}；" +
+                    $"GetPlayerCache={(cached == null ? "**null**" : cached.Name)}；我={me?.Color}；" +
+                    $"我自己缓存里有这个人={Managers.Player?.Players?.ContainsKey(id)}");
+            }
+        }
+
+        [HarmonyPatch(typeof(MyPlayer), nameof(MyPlayer.SetComplyRulesArrow))]
+        internal static class ArrowProbe
+        {
+            [HarmonyPrefix]
+            private static void Prefix(UI_MinimapSubItem target)
+            {
+                if (!Detail()) return;
+
+                int id = target != null ? target.ID : -1;
+                var cached = Managers.Player != null ? Managers.Player.GetPlayerCache(id) : null;
+                Plugin.Log.LogInfo(
+                    $"[HS] BearMapMark(probe②)：SetComplyRulesArrow 被调用，target.ID=#{id}，" +
+                    $"GetPlayerCache={(cached == null ? "**null → 它会直接 return，不会有箭头**" : cached.Name)}，" +
+                    $"pin 的 AlreadyComplyRules={(target != null ? target.AlreadyComplyRules.ToString() : "?")}");
+            }
+        }
+
+        [HarmonyPatch(typeof(UI_Arrow), nameof(UI_Arrow.SetInfo), new[] { typeof(ECharacterType), typeof(UI_MinimapSubItem) })]
+        internal static class UiArrowProbe
+        {
+            [HarmonyPostfix]
+            private static void Postfix(ECharacterType type, UI_MinimapSubItem target)
+            {
+                if (!Detail()) return;
+                Plugin.Log.LogInfo(
+                    $"[HS] BearMapMark(probe③)：UI_Arrow.SetInfo 已执行，角色={type}，" +
+                    $"target.ID={(target != null ? target.ID.ToString() : "?")} ⇒ 箭头对象已创建");
+            }
+        }
+
         // ───────────────────────── 补丁 ─────────────────────────
 
         /// <summary>
