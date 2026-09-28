@@ -5,6 +5,8 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using UnityEngine;
+using HideAndSeek.Features.Combat;
 using GamePlayer = Server.Game.Player;
 using GameSkill = Server.Game.SkillComponent;
 
@@ -52,6 +54,24 @@ namespace HideAndSeek.Features.Vision
         [ConfigField(900f, "离开可见范围的距离。须明显大于进入距离（滞回），否则边界会抖动。",
             Min = 200f, Max = 5000f)]
         public static ConfigEntry<float> ExitRange;
+
+        [ConfigField(true,
+            "隔墙裁剪：视线被墙挡住时，即使距离够近也不可见（原版视野本来就带遮挡，这里是恢复它）。" +
+            "关掉即恢复成「只看距离」。")]
+        public static ConfigEntry<bool> BlockByWalls;
+
+        [ConfigField(true,
+            "视野升级到 1 级后解除隔墙限制（穿墙视野，作为成长奖励）。")]
+        public static ConfigEntry<bool> WallsUnlockByVision;
+
+        [ConfigField(224f,
+            "贴脸豁免半径：距离小于它时不判遮挡（224 = 一格）。" +
+            "没有它会出现「两人贴墙分站两侧、走到脸上却完全看不见」，见 .tmps/AOI-墙壁遮挡-调查.md §8。",
+            Min = 0f, Max = 1000f)]
+        public static ConfigEntry<float> WallGraceRange;
+
+        /// <summary>遮挡层（4096 = "Block"，与原版视野判定同一个 mask）。</summary>
+        private const int BlockLayerMask = 4096;
 
         [ConfigField(3f, "最短可见秒数：进入视野后至少保持这么久不被剔除。", Min = 0f, Max = 60f)]
         public static ConfigEntry<float> MinVisibleSeconds;
@@ -161,6 +181,44 @@ namespace HideAndSeek.Features.Vision
             cy = pos?.Y ?? 0f;
         }
 
+        /// <summary>
+        /// 这次"看得见"会不会被墙挡住 —— **只用于"进入"方向**；
+        /// 剔除仍只看距离（退出宽松），否则会出现"因遮挡被移除、下一秒又被加回"的抖动。
+        ///
+        /// 三层短路，任一满足即视为没被挡住：
+        ///   ① 隔墙裁剪关掉了 ⇒ 恢复"只看距离"的原行为
+        ///   ② 视野已升级到 1 级且允许解锁 ⇒ 穿墙视野
+        ///   ③ 贴脸豁免：距离 ≤ WallGraceRange（默认 224 = 一格）
+        ///      —— 没有它就会出现"贴墙分站两侧、走到脸上却看不见"（这是几何必然）
+        ///
+        /// 射线从**圆心**发出：普通情况圆心 = 黑方自己；小熊豁免时圆心 = 召唤物坐标，
+        /// 于是判定自然变成"小熊能不能探测到那个人"，与客户端的本地判定一致。
+        /// </summary>
+        private static bool WallBlocks(GamePlayer black, GamePlayer other, float cx, float cy, float dSq)
+        {
+            if (BlockByWalls == null || !BlockByWalls.Value)
+                return false;
+
+            if (WallsUnlockByVision != null && WallsUnlockByVision.Value
+                && KillUpgradeFeature.LevelOf(KillUpgradeFeature.DirVision) >= 1)
+                return false;
+
+            float grace = WallGraceRange != null ? WallGraceRange.Value : 224f;
+            if (grace > 0f && dSq <= grace * grace)
+                return false;
+
+            var target = other?.PublicInfo?.Pos;
+            if (target == null) return false;
+
+            Vector2 from = new Vector2(cx, cy);
+            Vector2 to = new Vector2(target.X, target.Y);
+            Vector2 dir = to - from;
+            float mag = dir.magnitude;
+            if (mag <= 0.01f) return false;          // 重叠，视为可见
+
+            return Physics2D.Raycast(from, dir, mag, BlockLayerMask).collider != null;
+        }
+
         /// <summary>解出某黑方本次应使用的圆心与进入/退出半径。</summary>
         private static void Resolve(GamePlayer black,
             out float cx, out float cy, out float enter, out float exit)
@@ -208,7 +266,8 @@ namespace HideAndSeek.Features.Vision
                 // 少了这一条，主动补 AddPlayer 就会把死人的幽灵塞给黑方。
                 if (other.State == EPlayerState.Hide)
                     continue;
-                if (DistanceSq(other, cx, cy) <= enterSq)
+                float dSqOther = DistanceSq(other, cx, cy);
+                if (dSqOther <= enterSq && !WallBlocks(black, other, cx, cy, dSqOther))
                     other.AddPlayer(black);      // 幂等：不在列表才真正发送 S_SPAWN
             }
         }
@@ -231,8 +290,9 @@ namespace HideAndSeek.Features.Vision
 
             Resolve(player, out float cx, out float cy, out float enter, out _);
 
-            if (DistanceSq(__instance, cx, cy) <= enter * enter)
-                return true;                      // 在范围内，允许
+            float dSqTarget = DistanceSq(__instance, cx, cy);
+            if (dSqTarget <= enter * enter && !WallBlocks(player, __instance, cx, cy, dSqTarget))
+                return true;                      // 在范围内且没被墙挡住，允许
 
             __result = false;
             return false;
@@ -321,8 +381,10 @@ namespace HideAndSeek.Features.Vision
 
                     if (dSq <= enterSq)
                     {
-                        // 进入范围 → 确保可见（补回可能被剔除掉的目标）
-                        other.AddPlayer(black);
+                        // 进入范围 → 确保可见（补回可能被剔除掉的目标）。
+                        // 被墙挡住时不补回，但也**不剔除** —— 维持现状，等距离真正超出 exitSq 再收。
+                        if (!WallBlocks(black, other, cx, cy, dSq))
+                            other.AddPlayer(black);
                         continue;
                     }
 
