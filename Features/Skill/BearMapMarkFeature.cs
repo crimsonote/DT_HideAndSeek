@@ -57,9 +57,9 @@ namespace HideAndSeek.Features.Skill
             "要求视线不被挡住（照原版：中间隔着墙就不算在范围内）。关掉则只看距离。")]
         public static ConfigEntry<bool> RequireLineOfSight;
 
-        [ConfigField(true,
-            "详细诊断日志（测试期默认开）：打印每次巡检的评估人数/跳过原因、以及每个目标与小熊的距离与判定结论。" +
-            "定位完问题后关掉即可。")]
+        [ConfigField(false,
+            "详细诊断日志：打印每次巡检的评估人数/跳过原因、以及每个目标与小熊的距离与判定结论。" +
+            "排查问题时再打开（每秒多条，正常游玩不必开）。")]
         public static ConfigEntry<bool> LogDetail;
 
         [ConfigField(0f,
@@ -213,7 +213,9 @@ namespace HideAndSeek.Features.Skill
             // 客户端上根本没有这个人 ⇒ **只有地图 pin、没有世界箭头**。
             if (!remove)
             {
-                bool visible = owner.SharedPlayers != null && owner.SharedPlayers.Contains(target);
+                // SharedPlayers 的语义是"能看到我(this)的人"（AddPlayer :175828-175832）
+                // ⇒ "owner 能看到 target" 要查 **target 的**集合
+                bool visible = target.SharedPlayers != null && target.SharedPlayers.Contains(owner);
                 if (!visible)
                 {
                     Plugin.Log.LogWarning(
@@ -360,6 +362,14 @@ namespace HideAndSeek.Features.Skill
                     if (owner == null) continue;
 
                     bool isNew = SetMarked(ownerPid, targetPid, true);
+
+                    // ★ 发 pin 之前，**主动把目标"介绍给"主人**：
+                    //   世界箭头要求主人的客户端上存在该 Player 对象
+                    //   （SetComplyRulesArrow :13801-13805 查不到 GetPlayerCache 就直接 return），
+                    //   而平板 pin 不要求 —— 这就是"有 pin、没箭头"的原因。
+                    //   AddPlayer 幂等；主人是白方时 AOI 不会拦（它只裁黑方）。
+                    target.AddPlayer(owner);
+
                     SendPin(owner, target, remove: false, isForce: isNew);   // ★ 首帧不补间
                     ResendAllowed(ownerPid, targetPid);
                     Plugin.Log.LogInfo($"[HS] BearMapMark：主人 #{ownerPid} 的小熊进入目标 #{targetPid}（{target.Name}），已标记。");
