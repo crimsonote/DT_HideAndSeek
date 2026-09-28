@@ -60,10 +60,6 @@ namespace HideAndSeek.Features.Skill
             "要求视线不被挡住（照原版：中间隔着墙就不算在范围内）。关掉则只看距离。")]
         public static ConfigEntry<bool> RequireLineOfSight;
 
-        [ConfigField(false,
-            "详细诊断日志：打印每次巡检的评估人数/跳过原因、以及每个目标与小熊的距离与判定结论。" +
-            "排查问题时再打开（每秒多条，正常游玩不必开）。")]
-        public static ConfigEntry<bool> LogDetail;
 
         [ConfigField(0f,
             "位置更新的最小重发间隔（秒，0 = 不节流）。默认 0 与红毛一致 —— 目标每次移动都推一包，" +
@@ -74,11 +70,12 @@ namespace HideAndSeek.Features.Skill
         /// <summary>主人 PlayerId → 已被标记的目标 PlayerId 集合（用于发删除哨兵）。</summary>
         private static readonly Dictionary<int, HashSet<int>> _marked = new Dictionary<int, HashSet<int>>();
 
-        /// <summary>主人 PlayerId → 各目标上次发包时刻（限流用）。</summary>
-        private static readonly Dictionary<int, Dictionary<int, float>> _lastSent = new Dictionary<int, Dictionary<int, float>>();
+        /// <summary>上次发包时刻，键 = 主人与目标的复合 id（只是节流用，默认间隔 0 即不节流）。</summary>
+        private static readonly Dictionary<long, float> _lastSentAt = new Dictionary<long, float>();
 
-        /// <summary>已经打过"发现小熊"日志的 id（避免每秒刷屏）。</summary>
-        private static readonly HashSet<int> _loggedSummons = new HashSet<int>();
+        private static long PairKey(int ownerPid, int targetPid)
+            => ((long)ownerPid << 32) | (uint)targetPid;
+
 
         private static bool Enabled()
             => !ModeRuntime.Bypass && RangeX != null && RangeY != null;
@@ -94,7 +91,6 @@ namespace HideAndSeek.Features.Skill
         private static bool InSurvive()
             => GameRoom.Instance?.State == EGameState.Survive;
 
-        private static bool Detail() => LogDetail == null || LogDetail.Value;
 
         // ───────────────────────── 判定 ─────────────────────────
 
@@ -255,16 +251,11 @@ namespace HideAndSeek.Features.Skill
             float interval = Interval();
             if (interval <= 0f) return true;
 
-            if (!_lastSent.TryGetValue(ownerPid, out var map))
-            {
-                map = new Dictionary<int, float>();
-                _lastSent[ownerPid] = map;
-            }
-
+            long key = PairKey(ownerPid, targetPid);
             float now = Time.realtimeSinceStartup;
-            if (map.TryGetValue(targetPid, out float last) && now - last < interval) return false;
+            if (_lastSentAt.TryGetValue(key, out float last) && now - last < interval) return false;
 
-            map[targetPid] = now;
+            _lastSentAt[key] = now;
             return true;
         }
 
@@ -272,8 +263,7 @@ namespace HideAndSeek.Features.Skill
         private static void ClearMark(GamePlayer owner, int ownerPid, int targetPid)
         {
             SetMarked(ownerPid, targetPid, false);
-            _lastSent.TryGetValue(ownerPid, out var map);
-            map?.Remove(targetPid);
+            _lastSentAt.Remove(PairKey(ownerPid, targetPid));
 
             if (owner != null)
             {
@@ -299,7 +289,7 @@ namespace HideAndSeek.Features.Skill
             }
 
             _marked.Clear();
-            _lastSent.Clear();
+            _lastSentAt.Clear();
         }
 
         // ───────────────────────── 主流程 ─────────────────────────
@@ -322,42 +312,18 @@ namespace HideAndSeek.Features.Skill
                 if (!IsUsable(summon)) continue;
 
                 int ownerPid = OwnerOf(summon);
-                if (_loggedSummons.Add(summon.ID))
-                {
-                    // 首次见到某个小熊时记一条：便于确认"服务端到底能不能枚举到小熊"
-                    Vector2 sp = PositionOf(summon);
-                    Plugin.Log.LogInfo(
-                        $"[HS] BearMapMark：发现小熊 id={summon.ID}，主人=#{ownerPid}，" +
-                        $"位置=({sp.x:F0},{sp.y:F0})，StateList=[{string.Join(",", summon.DeviceInfo.StateList)}]");
-                }
                 if (ownerPid == targetPid)
                 {
-                    if (Detail())
-                        Plugin.Log.LogInfo(
-                            $"[HS] BearMapMark(judge)：目标 #{targetPid}({target.Name}) 就是小熊 #{summon.ID} 的主人，跳过（不标自己）");
                     continue;
                 }
                 if (ownerPid <= 0) continue;
 
                 Vector2 summonPos = PositionOf(summon);
                 bool inside = InsideRange(summonPos, targetPos);
-                bool blocked = false;
                 if (inside && LosRequired() && !HasLineOfSight(summonPos, targetPos))
-                {
-                    inside = false;
-                    blocked = true;
-                }
+                    inside = false;                      // 被墙挡住 ⇒ 视为不在范围内
 
                 bool marked = IsMarked(ownerPid, targetPid);
-
-                if (Detail())
-                {
-                    float dist = Vector2.Distance(summonPos, targetPos);
-                    Plugin.Log.LogInfo(
-                        $"[HS] BearMapMark(judge)：目标 #{targetPid}({target.Name}) ↔ 小熊 #{summon.ID}(主人 #{ownerPid})" +
-                        $" 距离={dist:F0} 范围X={RangeXValue():F0} 范围Y={RangeYValue():F0}" +
-                        $" → inside={inside}{(blocked ? "（被墙挡）" : "")} marked={marked}");
-                }
 
                 if (inside && !marked)
                 {
@@ -427,20 +393,6 @@ namespace HideAndSeek.Features.Skill
                     continue;
                 }
                 Evaluate(p);
-            }
-
-            if (Detail())
-            {
-                int bearCount = 0;
-                var sums = GameDeviceManager.Instance?.Summons;
-                if (sums != null) for (int i = 0; i < sums.Count; i++) if (IsUsable(sums[i])) bearCount++;
-
-                int markedCount = 0;
-                foreach (var kv in _marked) markedCount += kv.Value.Count;
-
-                Plugin.Log.LogInfo(
-                    $"[HS] BearMapMark(sweep)：玩家 {players.Count}，评估 {evaluated}，小熊 {bearCount}，已标记 {markedCount}" +
-                    (skipped.Count > 0 ? "；跳过：" + string.Join(" ", skipped) : ""));
             }
 
             // 清理失效：目标死了/走了/不再够格，或主人的小熊已经没了
