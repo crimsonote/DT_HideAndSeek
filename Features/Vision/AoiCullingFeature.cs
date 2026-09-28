@@ -382,14 +382,34 @@ namespace HideAndSeek.Features.Vision
                     if (dSq <= enterSq)
                     {
                         // 进入范围 → 确保可见（补回可能被剔除掉的目标）。
-                        // 被墙挡住时不补回，但也**不剔除** —— 维持现状，等距离真正超出 exitSq 再收。
+                        // 被墙挡住时不补回（等距离真正进到"看得见"的一侧再加）。
                         if (!WallBlocks(black, other, cx, cy, dSq))
                             other.AddPlayer(black);
                         continue;
                     }
 
-                    if (dSq <= exitSq)
-                        continue;                 // 滞回区间 → 维持现状，不增不减
+                    // 超出 ExitRange：只看距离，**不做遮挡判定**（省掉全图组合的射线）
+                    if (dSq > exitSq)
+                    {
+                        long keyFar = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);
+                        if (VisibleSince.TryGetValue(keyFar, out int sinceFar) && minVisible > 0f
+                            && now - sinceFar < minVisible)
+                            continue;             // 还在最短可见保护期内
+
+                        Plugin.Log.LogInfo(
+                            $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 剔除 #{other.PublicInfo.PlayerId}" +
+                            $"（距离 {Math.Sqrt(dSq):F0} > 阈值 {exit:F0}，圆心 {cx:F0},{cy:F0}）");
+                        other.RemovePlayer(black);
+                        VisibleSince.Remove(keyFar);
+                        continue;
+                    }
+
+                    // 滞回区间（enterSq < dSq <= exitSq）：
+                    // ★ 遮挡在这里**同样生效** —— 走到墙后就该看不见。
+                    //   否则会出现"在开阔处被看到一次之后，躲进墙后仍然可见"（房主指出的不对称）。
+                    //   防抖交给上面的 MinVisibleSeconds：刚看到就进墙后，至少保留 minVisible 秒。
+                    if (!WallBlocks(black, other, cx, cy, dSq))
+                        continue;                 // 看得见 → 维持现状
 
                     long key = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);
                     if (VisibleSince.TryGetValue(key, out int since) && minVisible > 0f
@@ -398,10 +418,10 @@ namespace HideAndSeek.Features.Vision
 
                     Plugin.Log.LogInfo(
                         $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 剔除 #{other.PublicInfo.PlayerId}" +
-                        $"（距离 {Math.Sqrt(dSq):F0} > 阈值 {exit:F0}，圆心 {cx:F0},{cy:F0}）");
-
-                    other.RemovePlayer(black);    // 幂等：不在 SharedPlayers 时直接返回 false
+                        $"（被墙挡住，距离 {Math.Sqrt(dSq):F0}，圆心 {cx:F0},{cy:F0}）");
+                    other.RemovePlayer(black);
                     VisibleSince.Remove(key);
+                    continue;
                 }
             }
         }
