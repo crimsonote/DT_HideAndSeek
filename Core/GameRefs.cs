@@ -13,6 +13,15 @@ namespace HideAndSeek.Core
         /// 是否属于"露娜系"：本人是露娜，或被 RuleBreaker 偷到露娜技能（Catastrophe）的玩家。
         /// 对应客户端 MyPlayer.HasLunaShield（:14414）里除黑灯判断外的两条。
         /// </summary>
+        /// <summary>
+        /// 是否属于"露娜系"：本人是露娜，或被 RuleBreaker 偷到露娜技能（Catastrophe）的玩家。
+        /// 对应客户端 MyPlayer.HasLunaShield（:14414）里除黑灯判断外的两条。
+        ///
+        /// ★ "偷到的人也算露娜系"是**刻意的**，而且两个方向都用到：
+        ///   · 能力判定：他也该有露娜护盾（LunaImmunityFeature 正靠这条）
+        ///   · **胜负判定**：BlackWinFeature 的"非露娜系白方全部淘汰"也靠这条 ——
+        ///     小偷偷到露娜能力后，场上就不再有"普通白方"，黑方胜利条件当场成立。
+        /// </summary>
         public static bool IsLunaSide(GamePlayer player)
         {
             if (player == null)

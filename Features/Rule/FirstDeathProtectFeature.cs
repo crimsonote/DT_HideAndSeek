@@ -145,7 +145,9 @@ namespace HideAndSeek.Features.Rule
             if (NotifyAttacker != null && !NotifyAttacker.Value) return;
             if (!NotifyReady(attacker)) return;
 
-            try { ChatOut.ToPlayer(attacker, $"{target.Name} 处于首刀保护中，暂时无法击杀。"); }
+            // 走**密聊**（客户端弹泡 + 密聊记录），而不是普通聊天栏 ——
+            // 见 ChatOut.SecretToPlayer 的注释（房主反馈过发错频道）
+            try { attacker.Session?.Send(ChatOut.SecretToPlayer(attacker, $"{target.Name} 处于首刀保护中，暂时无法击杀。")); }
             catch { }
         }
 

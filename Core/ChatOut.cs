@@ -57,5 +57,27 @@ namespace HideAndSeek.Core
             Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
             IsDead = false
         };
+
+        /// <summary>
+        /// 给**某一个玩家**发密聊 —— 客户端走弹泡（<c>UI_SecretChatOverlay</c> :82596）与密聊记录，
+        /// **不进普通聊天栏**。用于"只该他看到"的提示。
+        ///
+        /// 与 <see cref="ToPlayer"/> 的差别只在**频道**：那个是 NormalChat（进聊天栏，
+        /// 显示上像"他自己发的消息"）。首刀保护的提示最初用了 NormalChat，
+        /// 房主反馈"没有按预期通过黑方秘密通道 / 浮泡发出"，就是这里发错了频道。
+        ///
+        /// ⚠ 客户端 <c>UI_SecretChatOverlay.OnSecretChatReceived</c> 有
+        /// <c>State != Survive → skip</c>（BroadcastFeature :205-207 记过这个坑）
+        /// ⇒ 调用方必须只在 **Survive** 阶段发；首刀保护本就只在生存阶段生效，符合前提。
+        /// </summary>
+        internal static S_CHAT_MESSAGE SecretToPlayer(GamePlayer player, string text) => new S_CHAT_MESSAGE
+        {
+            Type = EChatType.SecretChat,
+            DeviceId = MagicDeviceId,
+            Text = text,
+            PlayerId = player?.PublicInfo?.PlayerId ?? 0,
+            Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+            IsDead = false
+        };
     }
 }
