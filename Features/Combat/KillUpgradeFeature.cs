@@ -235,7 +235,7 @@ namespace HideAndSeek.Features.Combat
             switch (dir)
             {
                 case DirVision:
-                    return $"黑方地图视野提升 {((VisionBonusPerLevel?.Value ?? 0.5f) * level * 100f):F0}%";
+                    return $"黑方地图视野提升 {((VisionBonusPerLevel?.Value ?? 0.5f) * level * 100f):F0}%" + VisionSuffix(level);
                 case DirSpeed:
                     return $"黑方速度提升 {((SpeedBonusPerLevel?.Value ?? 0.1f) * level * 100f):F0}%";
                 case DirTask:
@@ -244,6 +244,23 @@ namespace HideAndSeek.Features.Combat
                     return "强化完成";
             }
         }
+        /// <summary>
+        /// 视野升级提示的后缀。**只在升到 1 级那一次**返回内容 ——
+        /// 那一次正是"隔墙限制被解除"的时刻；2/3 级再重复同一句话，
+        /// 能力早已在那儿，不提供新信息（三条告示会拖着同一条尾巴），算冗余。
+        ///
+        /// 另外，只在 AOI 的隔墙裁剪（BlockByWalls）与它的"视野 1 级解除"（WallsUnlockByVision）
+        /// **都开着**时才加 —— 否则那句话是假的，会误导黑方。
+        /// </summary>
+        private static string VisionSuffix(int level)
+        {
+            if (level != 1) return "";
+
+            bool wallsOn = AoiCullingFeature.BlockByWalls == null || AoiCullingFeature.BlockByWalls.Value;
+            bool unlockOn = AoiCullingFeature.WallsUnlockByVision == null || AoiCullingFeature.WallsUnlockByVision.Value;
+            return wallsOn && unlockOn ? "（且可隔墙捕获/探测）" : "";
+        }
+
         internal static string DirName(int dir)
         {
             switch (dir)
