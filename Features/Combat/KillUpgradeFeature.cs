@@ -256,8 +256,13 @@ namespace HideAndSeek.Features.Combat
         {
             if (level != 1) return "";
 
-            bool wallsOn = AoiCullingFeature.BlockByWalls == null || AoiCullingFeature.BlockByWalls.Value;
-            bool unlockOn = AoiCullingFeature.WallsUnlockByVision == null || AoiCullingFeature.WallsUnlockByVision.Value;
+            // ⚠️ null 必须当作"**没开**"，与 AoiCullingFeature 内部的判据保持一致：
+            //   WallBlocks 里是 `BlockByWalls == null || !Value ⇒ 不裁`，
+            //   也就是配置项未绑定（AOI 段没启用）时，隔墙裁剪**根本不生效**
+            //   ⇒ 提示也必须跟着不出现，否则就是假提示。
+            //   （这两个判据一开始被我写反了：`== null ||` 会把 null 当成开着。）
+            bool wallsOn = AoiCullingFeature.BlockByWalls != null && AoiCullingFeature.BlockByWalls.Value;
+            bool unlockOn = AoiCullingFeature.WallsUnlockByVision != null && AoiCullingFeature.WallsUnlockByVision.Value;
             return wallsOn && unlockOn ? "（且可隔墙捕获/探测）" : "";
         }
 
