@@ -57,8 +57,9 @@ namespace HideAndSeek.Features.Skill
             "要求视线不被挡住（照原版：中间隔着墙就不算在范围内）。关掉则只看距离。")]
         public static ConfigEntry<bool> RequireLineOfSight;
 
-        [ConfigField(0.5f,
-            "标记位置的重发间隔（秒）。红毛是「每次移动推一次」，这里额外限流，避免高频移动时刷包。",
+        [ConfigField(0f,
+            "位置更新的最小重发间隔（秒，0 = 不节流）。默认 0 与红毛一致 —— 目标每次移动都推一包，" +
+            "箭头才会平滑跟随；限流会让它在快速移动时一顿一顿。",
             Min = 0f, Max = 2f)]
         public static ConfigEntry<float> ResendInterval;
 
@@ -67,6 +68,9 @@ namespace HideAndSeek.Features.Skill
 
         /// <summary>主人 PlayerId → 各目标上次发包时刻（限流用）。</summary>
         private static readonly Dictionary<int, Dictionary<int, float>> _lastSent = new Dictionary<int, Dictionary<int, float>>();
+
+        /// <summary>已经打过"发现小熊"日志的 id（避免每秒刷屏）。</summary>
+        private static readonly HashSet<int> _loggedSummons = new HashSet<int>();
 
         private static bool Enabled()
             => !ModeRuntime.Bypass && RangeX != null && RangeY != null;
@@ -105,12 +109,18 @@ namespace HideAndSeek.Features.Skill
             return list[1];
         }
 
-        /// <summary>小熊是否已激活（<c>StateList[0] == 1</c>，与客户端 <c>ShowRange</c> 的判据一致）。</summary>
-        private static bool IsActive(GameSummon s)
-        {
-            var list = s?.DeviceInfo?.StateList;
-            return list != null && list.Count > 0 && list[0] == 1;
-        }
+        /// <summary>
+        /// 这个小熊是否可用。
+        ///
+        /// ⚠️ **绝对不要判 <c>StateList[0] == 1</c>** —— 服务端 <c>Summon</c> 的构造只写
+        /// <c>StateList[0] = 0</c>（ACS:163269-163270），**全工程没有任何地方把它置 1**
+        /// （客户端 <c>ShowRange</c> 里那个 <c>== 1</c> 是"要不要画范围圈"，与服务端无关）。
+        /// 本功能最初照客户端判据写了 <c>IsActive</c>，结果**每个小熊都被跳过、一个箭头都不出**。
+        /// 列表里的小熊由 <c>RemoveSummon</c>（ACS:164430）负责移出，
+        /// 所以这里只需确认能取到主人（<c>StateList</c> 至少有两项）。
+        /// </summary>
+        private static bool IsUsable(GameSummon s)
+            => s?.DeviceInfo?.StateList != null && s.DeviceInfo.StateList.Count >= 2;
 
         private static Vector2 PositionOf(GameSummon s)
         {
@@ -165,7 +175,7 @@ namespace HideAndSeek.Features.Skill
         /// 记住「谁」用真实 <c>PlayerId</c>（自定义 id 只能产生地图 pin、不跟随），
         /// 删除时发 <c>(0,0)</c>。
         /// </summary>
-        private static void SendPin(GamePlayer owner, GamePlayer target, bool remove)
+        private static void SendPin(GamePlayer owner, GamePlayer target, bool remove, bool isForce = false)
         {
             if (owner?.Session == null || target?.PublicInfo == null) return;
 
@@ -177,12 +187,30 @@ namespace HideAndSeek.Features.Skill
                     Pos = remove
                         ? new PosInfo { X = 0f, Y = 0f }
                         : target.EffectivePosition,
-                    IsForce = false
+                    // ★ 首帧必须 IsForce=true：false 会让客户端走 0.1s 的补间（"飘"过来），
+                    //   首包用 true 直接落位（与 MiyukiScanFeature.SendPinTracked 的教训一致）
+                    IsForce = isForce
                 });
             }
             catch (global::System.Exception ex)
             {
                 Plugin.Log.LogWarning($"[HS] BearMapMark：发 pin 失败 — {ex.Message}");
+            }
+
+            // ── 诊断：黑方此刻能不能"看见"这个目标 ──
+            // 世界箭头要求 pin 的 ID 能查到真实 Player（SetComplyRulesArrow :13801-13805 查不到就 return），
+            // 而客户端的 Player 对象由服务端 AddPlayer 决定 ⇒ 若 AOI 把目标剔除了，
+            // 客户端上根本没有这个人 ⇒ **只有地图 pin、没有世界箭头**。
+            if (!remove)
+            {
+                bool visible = owner.SharedPlayers != null && owner.SharedPlayers.Contains(target);
+                if (!visible)
+                {
+                    Plugin.Log.LogWarning(
+                        $"[HS] BearMapMark：主人 #{owner.PublicInfo.PlayerId} 当前**看不到**目标 " +
+                        $"#{target.PublicInfo.PlayerId}（{target.Name}）—— 客户端没有该 Player 对象，" +
+                        "世界箭头不会生成（只会出现地图 pin）。检查 AOI 是否把他剔除了。");
+                }
             }
         }
 
@@ -191,7 +219,8 @@ namespace HideAndSeek.Features.Skill
         private static bool IsMarked(int ownerPid, int targetPid)
             => _marked.TryGetValue(ownerPid, out var set) && set.Contains(targetPid);
 
-        private static void SetMarked(int ownerPid, int targetPid, bool marked)
+        /// <summary>记账；<paramref name="marked"/> 为 true 时返回"这次是不是新增"（用于决定首帧 IsForce）。</summary>
+        private static bool SetMarked(int ownerPid, int targetPid, bool marked)
         {
             if (!_marked.TryGetValue(ownerPid, out var set))
             {
@@ -199,9 +228,11 @@ namespace HideAndSeek.Features.Skill
                 _marked[ownerPid] = set;
             }
 
-            if (marked) set.Add(targetPid);
-            else if (set.Count == 0) _marked.Remove(ownerPid);
-            else set.Remove(targetPid);
+            if (marked) return set.Add(targetPid);
+
+            set.Remove(targetPid);
+            if (set.Count == 0) _marked.Remove(ownerPid);
+            return false;
         }
 
         private static bool ResendAllowed(int ownerPid, int targetPid)
@@ -273,9 +304,17 @@ namespace HideAndSeek.Features.Skill
             for (int i = 0; i < summons.Count; i++)
             {
                 var summon = summons[i];
-                if (summon == null || !IsActive(summon)) continue;
+                if (!IsUsable(summon)) continue;
 
                 int ownerPid = OwnerOf(summon);
+                if (_loggedSummons.Add(summon.ID))
+                {
+                    // 首次见到某个小熊时记一条：便于确认"服务端到底能不能枚举到小熊"
+                    Vector2 sp = PositionOf(summon);
+                    Plugin.Log.LogInfo(
+                        $"[HS] BearMapMark：发现小熊 id={summon.ID}，主人=#{ownerPid}，" +
+                        $"位置=({sp.x:F0},{sp.y:F0})，StateList=[{string.Join(",", summon.DeviceInfo.StateList)}]");
+                }
                 if (ownerPid <= 0 || ownerPid == targetPid) continue;   // 不标记主人自己
 
                 Vector2 summonPos = PositionOf(summon);
@@ -289,8 +328,8 @@ namespace HideAndSeek.Features.Skill
                     var owner = FindPlayer(ownerPid);
                     if (owner == null) continue;
 
-                    SetMarked(ownerPid, targetPid, true);
-                    SendPin(owner, target, remove: false);
+                    bool isNew = SetMarked(ownerPid, targetPid, true);
+                    SendPin(owner, target, remove: false, isForce: isNew);   // ★ 首帧不补间
                     ResendAllowed(ownerPid, targetPid);
                     Plugin.Log.LogInfo($"[HS] BearMapMark：主人 #{ownerPid} 的小熊进入目标 #{targetPid}（{target.Name}），已标记。");
                 }
@@ -347,7 +386,7 @@ namespace HideAndSeek.Features.Skill
                     for (int i = 0; i < summons.Count; i++)
                     {
                         var s = summons[i];
-                        if (s != null && IsActive(s) && OwnerOf(s) == ownerPid) { ownerHasBear = true; break; }
+                        if (s != null && IsUsable(s) && OwnerOf(s) == ownerPid) { ownerHasBear = true; break; }
                     }
                 }
 
@@ -376,6 +415,17 @@ namespace HideAndSeek.Features.Skill
                 Diagnostics.Hit("BearMapMark");
                 Evaluate(__instance);
             }
+        }
+
+        /// <summary>
+        /// 小熊被放下的瞬间立即巡检 —— 否则"放下时范围内已经有人"要等最多 1 秒才标记，
+        /// 而那正是最该立刻看到的时候。
+        /// </summary>
+        [HarmonyPatch(typeof(GameDeviceManager), nameof(GameDeviceManager.CreateSummon))]
+        internal static class SummonHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix() => SweepAll();
         }
 
         /// <summary>兜底巡检（项目里已有两处用 <c>SurvivalTick</c> 做同类的每秒节奏）。</summary>
