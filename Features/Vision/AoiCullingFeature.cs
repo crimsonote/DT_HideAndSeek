@@ -219,28 +219,99 @@ namespace HideAndSeek.Features.Vision
             return Physics2D.Raycast(from, dir, mag, BlockLayerMask).collider != null;
         }
 
-        /// <summary>解出某黑方本次应使用的圆心与进入/退出半径。</summary>
-        private static void Resolve(GamePlayer black,
-            out float cx, out float cy, out float enter, out float exit)
+        /// <summary>一组裁剪范围：圆心 + 进入/退出半径。</summary>
+        private struct ClipRange
         {
-            enter = EnterRange?.Value ?? 750f;
-            exit = ExitRange?.Value ?? 1100f;
+            public float Cx;
+            public float Cy;
+            public float Enter;
+            public float Exit;
+        }
 
+        /// <summary>本次要用的范围列表（复用，避免每 tick 分配）。</summary>
+        private static readonly List<ClipRange> _ranges = new List<ClipRange>(2);
+
+        /// <summary>
+        /// 收集该黑方本次的**全部**裁剪范围 —— **并集**语义：
+        ///   ① 玩家本体：以自己为圆心，EnterRange / ExitRange（TimeStop 豁免照旧放大）
+        ///   ② 若已放出小熊：**追加**一组「召唤物圆心 + MarionetteEnterRange / ExitRange」
+        ///
+        /// ⚠ 这里是"替换 → 并集"的修复点。16504fd 把原来的
+        ///     <c>range = Math.Max(baseRange, MarionetteDetectRadius)</c>
+        ///   改成了 <c>range = MarionetteEnterRange</c>，于是**放出小熊后玩家本体视野被削到 448**。
+        ///   而小熊是放在地上不动的召唤物：玩家一走开，判定就只剩"离小熊近不近"，
+        ///   连自己身边的人也看不见（哪怕贴脸）。两个圆心必须各判一次。
+        /// </summary>
+        private static void ResolveRanges(GamePlayer black)
+        {
+            _ranges.Clear();
+
+            float enter = EnterRange?.Value ?? 750f;
+            float exit = ExitRange?.Value ?? 1100f;
             if (SkillAwareOn && SkillTypeOf(black) == ESkillType.TimeStop)
             {
                 enter = Math.Max(enter, TimeStopSearchRange);
                 exit = Math.Max(exit, TimeStopSearchRange);
             }
 
-            if (TryMiniCenter(black, out cx, out cy))
+            OwnCenter(black, out float ox, out float oy);
+            _ranges.Add(new ClipRange { Cx = ox, Cy = oy, Enter = enter, Exit = exit });
+
+            if (TryMiniCenter(black, out float mx, out float my))
             {
-                enter = MarionetteEnterRange?.Value ?? 448f;
-                exit = MarionetteExitRange?.Value ?? 648f;
+                _ranges.Add(new ClipRange
+                {
+                    Cx = mx,
+                    Cy = my,
+                    Enter = MarionetteEnterRange?.Value ?? 448f,
+                    Exit = MarionetteExitRange?.Value ?? 648f
+                });
             }
-            else
+        }
+
+        /// <summary>是否落在任一"进入"范围内；命中时回传那一组（圆心供遮挡射线用）与它的平方距离。</summary>
+        private static bool InAnyEnter(GamePlayer other, out ClipRange hit, out float dSq)
+        {
+            for (int i = 0; i < _ranges.Count; i++)
             {
-                OwnCenter(black, out cx, out cy);
+                ClipRange r = _ranges[i];
+                float d = DistanceSq(other, r.Cx, r.Cy);
+                if (d <= r.Enter * r.Enter)
+                {
+                    hit = r;
+                    dSq = d;
+                    return true;
+                }
             }
+
+            hit = default;
+            dSq = 0f;
+            return false;
+        }
+
+        /// <summary>
+        /// 是否落在任一"退出"范围内（滞回用），命中时回传**最近**的那一组。
+        /// 只看距离、不做遮挡判定（退出宽松，避免"因遮挡移除 → 下一秒又加回"）。
+        /// </summary>
+        private static bool InAnyExit(GamePlayer other, out ClipRange hit, out float dSq)
+        {
+            bool any = false;
+            hit = default;
+            dSq = float.MaxValue;
+
+            for (int i = 0; i < _ranges.Count; i++)
+            {
+                ClipRange r = _ranges[i];
+                float d = DistanceSq(other, r.Cx, r.Cy);
+                if (d <= r.Exit * r.Exit && (!any || d < dSq))
+                {
+                    any = true;
+                    hit = r;
+                    dSq = d;
+                }
+            }
+
+            return any;
         }
 
         /// <summary>
@@ -252,8 +323,7 @@ namespace HideAndSeek.Features.Vision
             if (room == null || black == null)
                 return;
 
-            Resolve(black, out float cx, out float cy, out float enter, out _);
-            float enterSq = enter * enter;
+            ResolveRanges(black);
 
             var all = room.Players;
             for (int i = 0; i < all.Count; i++)
@@ -266,8 +336,9 @@ namespace HideAndSeek.Features.Vision
                 // 少了这一条，主动补 AddPlayer 就会把死人的幽灵塞给黑方。
                 if (other.State == EPlayerState.Hide)
                     continue;
-                float dSqOther = DistanceSq(other, cx, cy);
-                if (dSqOther <= enterSq && !WallBlocks(black, other, cx, cy, dSqOther))
+                // 命中任一范围（自身 ∪ 小熊）且没被墙挡住 ⇒ 确保可见
+                if (InAnyEnter(other, out ClipRange hit, out float dEnter)
+                    && !WallBlocks(black, other, hit.Cx, hit.Cy, dEnter))
                     other.AddPlayer(black);      // 幂等：不在列表才真正发送 S_SPAWN
             }
         }
@@ -288,11 +359,12 @@ namespace HideAndSeek.Features.Vision
 
             Diagnostics.Hit("AoiCulling");
 
-            Resolve(player, out float cx, out float cy, out float enter, out _);
+            ResolveRanges(player);
 
-            float dSqTarget = DistanceSq(__instance, cx, cy);
-            if (dSqTarget <= enter * enter && !WallBlocks(player, __instance, cx, cy, dSqTarget))
-                return true;                      // 在范围内且没被墙挡住，允许
+            // 命中任一范围（自身 ∪ 小熊）且没被墙挡住 ⇒ 允许
+            if (InAnyEnter(__instance, out ClipRange hit, out float dEnter)
+                && !WallBlocks(player, __instance, hit.Cx, hit.Cy, dEnter))
+                return true;
 
             __result = false;
             return false;
@@ -359,9 +431,7 @@ namespace HideAndSeek.Features.Vision
                 // 之前只在 PrefixAddPlayer 加后门是不够的 —— 剔除走的是这里的循环。
                 if (MiyukiScanFeature.IsUnlocking(black))
                     continue;
-                Resolve(black, out float cx, out float cy, out float enter, out float exit);
-                float enterSq = enter * enter;
-                float exitSq = exit * exit;
+                ResolveRanges(black);
 
                 for (int j = 0; j < all.Count; j++)
                 {
@@ -377,20 +447,18 @@ namespace HideAndSeek.Features.Vision
                         continue;
                     }
 
-                    float dSq = DistanceSq(other, cx, cy);
-
-                    if (dSq <= enterSq)
+                    // ① 进入：命中任一范围（自身 ∪ 小熊）且没被墙挡住 ⇒ 确保可见
+                    if (InAnyEnter(other, out ClipRange hitEnter, out float dEnter))
                     {
-                        // 进入范围 → 确保可见（补回可能被剔除掉的目标）。
-                        // 被墙挡住时不补回（等距离真正进到"看得见"的一侧再加）。
-                        if (!WallBlocks(black, other, cx, cy, dSq))
+                        if (!WallBlocks(black, other, hitEnter.Cx, hitEnter.Cy, dEnter))
                             other.AddPlayer(black);
                         continue;
                     }
 
-                    // 超出 ExitRange：只看距离，**不做遮挡判定**（省掉全图组合的射线）
-                    if (dSq > exitSq)
+                    // ② 滞回：命中任一"退出"范围 ⇒ 维持现状（只看距离）
+                    if (!InAnyExit(other, out ClipRange hitExit, out float dExit))
                     {
+                        // ③ 全部范围都超出 ⇒ 剔除（受最短可见保护）
                         long keyFar = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);
                         if (VisibleSince.TryGetValue(keyFar, out int sinceFar) && minVisible > 0f
                             && now - sinceFar < minVisible)
@@ -398,17 +466,16 @@ namespace HideAndSeek.Features.Vision
 
                         Plugin.Log.LogInfo(
                             $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 剔除 #{other.PublicInfo.PlayerId}" +
-                            $"（距离 {Math.Sqrt(dSq):F0} > 阈值 {exit:F0}，圆心 {cx:F0},{cy:F0}）");
+                            "（超出全部范围）");
                         other.RemovePlayer(black);
                         VisibleSince.Remove(keyFar);
                         continue;
                     }
 
-                    // 滞回区间（enterSq < dSq <= exitSq）：
-                    // ★ 遮挡在这里**同样生效** —— 走到墙后就该看不见。
-                    //   否则会出现"在开阔处被看到一次之后，躲进墙后仍然可见"（房主指出的不对称）。
+                    // 滞回区间内：★ 遮挡**同样生效** —— 走到墙后就该看不见。
+                    //   否则会出现"在开阔处被看到一次之后，躲进墙后仍然可见"。
                     //   防抖交给上面的 MinVisibleSeconds：刚看到就进墙后，至少保留 minVisible 秒。
-                    if (!WallBlocks(black, other, cx, cy, dSq))
+                    if (!WallBlocks(black, other, hitExit.Cx, hitExit.Cy, dExit))
                         continue;                 // 看得见 → 维持现状
 
                     long key = PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId);
@@ -418,7 +485,7 @@ namespace HideAndSeek.Features.Vision
 
                     Plugin.Log.LogInfo(
                         $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 剔除 #{other.PublicInfo.PlayerId}" +
-                        $"（被墙挡住，距离 {Math.Sqrt(dSq):F0}，圆心 {cx:F0},{cy:F0}）");
+                        $"（被墙挡住，距离 {Math.Sqrt(dExit):F0}，圆心 {hitExit.Cx:F0},{hitExit.Cy:F0}）");
                     other.RemovePlayer(black);
                     VisibleSince.Remove(key);
                     continue;
