@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using BepInEx.Configuration;
 using DummyClient;
 using HarmonyLib;
@@ -450,10 +451,27 @@ namespace HideAndSeek.Features.Rule
 
                 // 客户端只有在 EGameState.Trial 才会创建回放宿主 UI_TrialEvent
                 // （:38706 → ShowTrialUI :74986）；没有它 S_TRIAL_STATE 会被直接跳过（:43043）。
-                room.ChangeGameState(EGameState.Trial);
+                //
+                // ★★ 这里刻意**只广播状态包给客户端，不动服务端 State**。实测第一次就是这里错了：
+                //   走 room.ChangeGameState(Trial) 会把服务端也置成 Trial，于是
+                //     (a) GameRoom.TrialTick（:171536，`if (State == Trial)`）开始每秒跑 Trial.Tick()，
+                //         原版裁判状态机接管并不断广播 S_TRIAL_STATE{Discuss/VotePhase/VoteResult}，
+                //         把我们的 Replay 覆盖掉；因为我们没走 TrialManager.Init，
+                //         DiscussionSecond 是 0 ⇒ 讨论瞬间过期，很快就播到"投票结果"；
+                //     (b) GameOver() 末尾是 `if (State == EGameState.Survive) PushAfter(7500, …TotalResult)`
+                //         （:171403）—— 服务端不在 Survive，结算那一步反而不执行，
+                //         最后一整局由原版裁判流程带回了大厅。
+                //
+                //   只让客户端进 Trial 就同时避开这两条：服务端 State 始终是 Survive，
+                //   TrialTick 不跑、GameOver / TriggerWhiteWin 的前置条件也都满足。
+                //   客户端在那段期间以为是 Trial —— 这正是原版回放期间的形态，
+                //   结算时的 ChangeGameState(TotalResult) 会把它带出去。
+                Plugin.Log.LogInfo($"[HS] EndReplay：先让客户端建立回放 UI（{plan.Count} 段）。");
 
-                // 让状态切换先落地一帧以上，再推 Replay
-                room.PushAfter(600, () => BroadcastReplay(plan));
+                // 客户端的状态切换处理器末尾会 CompleteAndSend()（客户端 :38714），
+                // 所以这条等待能确认"回放宿主 UI 已经建好"，比固定延时可靠。
+                room.WaitCompletePacket(() => BroadcastReplay(plan), room.CompleteWaitCount(), 4000, 1500);
+                room.Broadcast(new S_CHANGE_GAME_STATE { State = EGameState.Trial });
             }
             catch (Exception ex)
             {
@@ -474,8 +492,7 @@ namespace HideAndSeek.Features.Rule
                 }
 
                 int clips = plan.Count;
-                float per = SecondsPerClipEstimate?.Value ?? 5f;
-                int budget = (int)(5000 + clips * per * 1000f + 4000f);
+                int budget = EstimateBudgetMs(plan);
 
                 Plugin.Log.LogInfo($"[HS] EndReplay：广播 Replay 状态（{clips} 段，预算 {budget}ms）。");
 
@@ -490,6 +507,22 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] EndReplay：推送回放失败 — {ex.Message}");
                 FinishReplay("推送失败");
             }
+        }
+
+        /// <summary>
+        /// 回放预算：客户端 `StartReplay` 先播 5 秒"真相公开"标题，再逐段放；
+        /// 慢镜期间 `Update` 推进更慢，所以按 1.6 倍留量，再加上段间转场与固定余量。
+        /// 这只是**超时兜底** —— 客户端放完会在 `RecordManager.Stop()` 里
+        /// `CompleteAndSend()`（:32164），正常情况下我们会提前收到回执。
+        /// </summary>
+        private static int EstimateBudgetMs(List<Clip> plan)
+        {
+            float per = SecondsPerClipEstimate?.Value ?? 5f;
+            double total = 5000;
+            foreach (var c in plan)
+                total += Math.Max(c.Before + c.After, per) * 1000.0 * 1.6 + 600;
+            total += 8000;
+            return (int)Math.Max(15000, Math.Min(120000, total));
         }
 
         /// <summary>回放收尾：继续原本的结算。只会真正执行一次。</summary>
@@ -515,6 +548,89 @@ namespace HideAndSeek.Features.Rule
         }
 
         // ── ⑤ 磁带重裁：在广播前把每段裁到配置的窗口 ────────────────────
+        /// <summary>
+        /// 客户端侧诊断：游戏的 `UnityEngine.Debug.Log` **不进** BepInEx 的 LogOutput.log
+        /// （实测：日志里只有各插件的日志源），所以回放链路上客户端的韩文日志平时看不到。
+        /// 这里把两个关键节点用 <see cref="Plugin.Log"/> 记一遍，让下次实测能从一份日志里定位。
+        ///
+        /// 这些补丁只在本机装了插件时生效 —— 远程客户端本来也不该被要求装。
+        /// </summary>
+        [HarmonyPatch]
+        internal static class ClientTrialStateHook
+        {
+            private static MethodBase Target()
+                => AccessTools.Method(AccessTools.TypeByName("PacketHandler"), "Handle_S_TRIAL_STATE");
+
+            [HarmonyPrepare]
+            private static bool Prepare()
+            {
+                bool ok = Target() != null;
+                if (!ok)
+                    Plugin.Log.LogWarning("[HS] EndReplay：找不到客户端 PacketHandler.Handle_S_TRIAL_STATE，客户端诊断不可用（不影响播放）。");
+                return ok;
+            }
+
+            [HarmonyTargetMethod]
+            private static MethodBase TargetMethod() => Target();
+
+            [HarmonyPostfix]
+            private static void Postfix(object __1)
+            {
+                try
+                {
+                    var pkt = Traverse.Create(__1).Property("Pkt").GetValue();
+                    var state = Traverse.Create(pkt).Property("State").GetValue();
+                    var scene = Managers.UI.SceneUI as UI_GameScene;
+                    bool ui = scene != null && scene.TrialUI != null;
+                    Plugin.Log.LogInfo($"[HS] EndReplay（客户端）：收到 S_TRIAL_STATE = {state}，回放宿主 UI {(ui ? "已就绪" : "尚未建立")}。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：诊断日志失败 — {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>客户端侧诊断：`RecordManager.Play()` 是真正开始播的入口（:31866）。</summary>
+        [HarmonyPatch(typeof(RecordManager), nameof(RecordManager.Play))]
+        internal static class ClientPlayHook
+        {
+            [HarmonyPrefix]
+            private static void Prefix(RecordManager __instance)
+            {
+                try
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay（客户端）：RecordManager.Play 开始，可用磁带 {__instance.PlayTapeCount} 段。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：诊断日志失败 — {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// 客户端侧诊断：`BeginTape` 是每段的实际入口；它会因为"首帧不是 SpawnShot"
+        /// 或"帧数 < 2"而整段跳过（:31905），本模块合成的 SpawnShot 正是为此。
+        /// </summary>
+        [HarmonyPatch(typeof(RecordManager), "BeginTape")]
+        internal static class ClientBeginTapeHook
+        {
+            [HarmonyPrefix]
+            private static void Prefix(RecordManager __instance)
+            {
+                try
+                {
+                    Plugin.Log.LogInfo(
+                        $"[HS] EndReplay（客户端）：BeginTape 第 {__instance.PlayTapeCount} 段表 / 是否最后一段={(__instance.IsLastTape ? "是" : "否")}。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：诊断日志失败 — {ex.Message}");
+                }
+            }
+        }
+
         /// <summary>
         /// 原版 `HostPacketHandler.Handle_C_TAPE`（:174890）收到 C_TAPE 后直接 Broadcast(S_TAPE)。
         /// 这里整段接管：是登记过的片段就按我们的窗口重裁后再广播；否则放行给原版。
