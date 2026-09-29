@@ -95,11 +95,10 @@ namespace HideAndSeek.Features.Rule
             "正常情况下客户端的完成回执会提前结束等待，这个值只在回执丢失时用到。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SecondsPerClipEstimate;
 
-        [ConfigField(20000, "客户端审判 UI 就绪后，等多久再推 Replay（毫秒）。" +
-            "★ 必须盖过**加载页**：进 Trial 时客户端会显示 UI_Loading（那张『学级裁判 开庭』就是它），" +
-            "它由客户端本地的淡入动画收尾、另有 CompleteWatchdog 兜底 —— Trial 是 18 秒" +
-            "（UI_Loading.StartLoading：62299-62304）。加载页没收掉之前推 Replay，" +
-            "整段回放都会被它盖住（回放确实在播、BGM 也换了，但看不见）。",
+        [ConfigField(7000, "收掉加载页并让开场字幕开演后，等多久再推 Replay（毫秒）。" +
+            "加载页由 S_FADE_IN 立刻收掉，所以这里只需等**入场演出/开场字幕**自己播完" +
+            "（SlidingText 约 3.0s + AlertMessage 约 4.5s）；等太短会把字幕序列 Kill 掉、" +
+            "文字被冻在画面上（实测踩过）。",
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
@@ -532,18 +531,29 @@ namespace HideAndSeek.Features.Rule
                 return;
             }
 
-            int wait = TrialIntroWaitMs?.Value ?? 20000;
+            int wait = TrialIntroWaitMs?.Value ?? 7000;
 
-            // ★ 照原版补上这一包：`StartFirstTalk()` 只在**进入 Discuss 状态**时被调用
-            //   （UI_TrialEvent.StartState :1658-1661）。原版流程里 Discuss 是裁判的第一站，
-            //   字幕就在那时开演、6.5 秒后由序列自己 SetActive(false) 收掉；
-            //   等轮到 Replay（几分钟后）时它早已干净。
-            //   我们从 Survive 直接跳到 Replay，从没发过 Discuss ⇒ 字幕序列根本没开始，
-            //   而它的元素仍在，StartReplay 的 ResetSlideVisual 把它设成 alpha=1 就冻住了。
-            //   ⇒ 主动发一包 Discuss 让字幕**正常开演并正常收尾**，这是原版路径。
+            // ★★ 关键一包：`S_FADE_IN`（包 id 1004）—— 客户端处理器就一句
+            //        public static void Handle_S_FADE_IN(...) { Managers.UI.EndLoading(); }
+            //      （客户端 :42390）
+            //
+            //  进 Trial 时客户端会先显示 `UI_Loading`（那张「学级裁判 开庭」就是它：
+            //  `StartLoading(state)` 把标题设成 `<状态名>Loading`），并播放 TrialEffect 入场演出；
+            //  加载页**自己不关自己**（类内没有 EndLoading 调用），关闭它的都是外部调用点，
+            //  其中 :42393 就是这条 S_FADE_IN。原版靠它淡入，我们之前从没发过 ⇒
+            //  加载页只能等 18 秒兜底（`CompleteWatchdog.Arm(Trial => 18f)`），
+            //  而我们的回放早就推下去了 —— 整段回放被加载页盖住。
+            //
+            //  发这一包后加载页立刻收掉，于是不再需要盲等 18 秒；下面的 wait 只剩
+            //  "等入场演出/开场字幕自然播完"（否则 StartReplay 的 ResetSlideVisual 会把它冻住）。
+            room.Broadcast(new S_FADE_IN());
+
+            // 保险：同时补一包 Discuss。入场演出（TrialEffect → AppendTrialTitle）本来就会演一遍
+            // 「开庭」标题，重复赋值是幂等的；但若客户端的入场分支走了另一条路（`TrialEffect`
+            // 里 `num == false` 的降级分支），这样能保证字幕序列**确实开演并自行收尾**。
             room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Discuss });
 
-            Plugin.Log.LogInfo($"[HS] EndReplay：已发 Discuss 让审判开场字幕正常开演，等 {wait}ms 播完再推 Replay。");
+            Plugin.Log.LogInfo($"[HS] EndReplay：已发 S_FADE_IN 收掉加载页 + Discuss 让开场字幕开演，等 {wait}ms 再推 Replay。");
             room.PushAfter(wait, () => BroadcastReplay(plan));
         }
 
