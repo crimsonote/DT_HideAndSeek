@@ -102,12 +102,22 @@ namespace HideAndSeek.Features.Rule
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
-        [ConfigField(false, "【试验，默认关闭】用「虚拟观察者」当回放主视角（把合成首帧的角色改成 id=0）。" +
-            "实测结论：对**房主自己的屏幕是空操作** —— 房主就是录制者，`_blackId` 本来就等于 0" +
-            "（BeginTape：`(Spawn.PlayerId != _myPlayerId) ? ... : 0`），而那个 id=0 的临时玩家" +
-            "正是房主自己的替身。对远端玩家只是把剪影从「凶手」挪到「你自己的替身」身上，等于换个错人打码。" +
-            "⇒ 遮罩只能在客户端去掉。本项保留仅作对照实验用。")]
+        [ConfigField(true, "【试验】用「隐藏观察者」当回放主视角（把合成首帧的角色换成别的 id）。" +
+            "为什么必须换 id：客户端 BeginTape 里 `ChangeMyPlayer(_blackId)` 用的是 `_cache[id]` " +
+            "**直接索引、没有兜底** ⇒ id 不存在就 KeyNotFoundException、这一段回放直接中断。" +
+            "而原版在远端客户端上播放凶手磁带时凶手刚被 Despawn 过也照样能跑 " +
+            "⇒ **凡是本局出现过的 id 都安全**（含已死者、已离场者）。" +
+            "换成「已死亡玩家的 id + IsGhost」后：镜头跟随一个不可见观察者，" +
+            "真实玩家（黑方/受害者/旁观者）全部本色 ⇒ 黑白遮罩在数据层被绕开。")]
         public static ConfigEntry<bool> ObserverCamera;
+
+        [ConfigField(-1, "隐藏观察者用哪个 id：-1 = 自动挑一个**已死亡玩家**（最干净）；" +
+            "0 = 原版的回放临时玩家（房主自己的替身，必然可见且会被剪影）；" +
+            ">0 = 手动指定（填日志里列出的、本局出现过的 id）。")]
+        public static ConfigEntry<int> ObserverPlayerId;
+
+        [ConfigField(true, "把观察者标记成幽灵（IsGhost），让它不被渲染成正常角色。")]
+        public static ConfigEntry<bool> ObserverGhost;
 
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
@@ -879,30 +889,44 @@ namespace HideAndSeek.Features.Rule
                                               && s.TimeStamp <= start)?.Spawn
                       ?? firstSpawn;
 
-            // ★★ 试验：把合成首帧的角色换成**回放临时玩家（id = 0）**，即"虚拟观察者"。
-            //
-            //   客户端 `BeginTape`（新版 :381-392）的顺序是：
-            //       ForceSpawnReplayTemp(MyPlayer.Name);   // ← 凭空造 id=0 的临时玩家
+            // ★★ 试验：把合成首帧的角色换成**「隐藏观察者」**（默认 = 一位已死亡玩家的 id
+            //     ＋ IsGhost），用来骗过客户端的剪影。客户端 `BeginTape`（新版 :381-392）：
+            //       ForceSpawnReplayTemp(MyPlayer.Name);   // ← 凭空造 id=0 的回放临时玩家
             //       Despawn(所有人);
             //       _blackId = (tape[0].Spawn.PlayerId != _myPlayerId) ? tape[0].Spawn.PlayerId : 0;
-            //       ChangeMyPlayer(_blackId);              // ← 内部是 _cache[id]，没有兜底
+            //       ChangeMyPlayer(_blackId);              // ← 内部是 `_cache[id]`，没有兜底
             //       ApplySpawn(tape[0].Spawn);
-            //       Players[_blackId].ChangeSilhouette(true);   // ← 遮罩打给 _blackId
+            //       Players[_blackId].ChangeSilhouette(true);   // ← 剪影只打给 _blackId，与阵营无关
             //
-            //   ⇒ `ChangeMyPlayer` 用的是 `_cache[id]`，此刻 `_cache` 里只有刚造出来的 id=0
-            //     ⇒ **只能用 0**。而这正好就是"不存在的隐藏角色"：
-            //       镜头跟随它、遮罩打在它身上，真实玩家（黑方/受害者/旁观者）全部本色出场。
-            //     顺便我们还拿到了镜头控制权（位置由这枚 spawn 的 Pos 决定）。
+            //   · 剪影认的是**磁带首帧那个角色**，所以把首帧换成"谁都不是"的人，
+            //     真实玩家（黑方/受害者/旁观者）就全部本色出场。
+            //   · `ChangeMyPlayer` 用 `_cache[id]` 直接索引、**没有兜底** ⇒ id 必须真实存在。
+            //     本局出现过的 id 都在缓存里（原版就在远端客户端上播过刚被 Despawn 的凶手的磁带）
+            //     ⇒ 选"已死亡玩家"最干净：缓存里有、场上已无。
+            //   · 镜头由这枚 spawn 的 Pos 决定，沿用录制者在窗口起点的位置 ⇒ 镜头仍跟着人。
             //
-            //   ⚠ 代价：`ForceSpawnReplayTemp` 给它的名字是**本地玩家自己的名字**，
-            //     所以它可能以"你的替身"的样子出现在画面里；另外 `Update` 会把
-            //     `PlayerId == _myPlayerId` 的 SpawnShot 改写成 0，而 0 == `_blackId` ⇒ 整帧被跳过
-            //     （本地玩家自己的 spawn 帧因此消失，能否由 MoveShot 补回来需要实测）。
+            //   ⚠ id=0（原版临时玩家）是**房主自己的替身**：房主就是录制者，
+            //     `_blackId` 本来就等于 0，剪影躲不掉（实测结论：对房主屏幕是空操作）。
+            //   ⚠ 客户端的 `Update` 会把 `PlayerId == _myPlayerId` 的 SpawnShot 改写成 0，
+            //     而 0 == `_blackId` ⇒ 房主自己的 spawn 帧仍会被跳过（能否由 MoveShot 补回待实测）。
             var spawn = src;
+            int obsId = 0;
             if (ObserverCamera?.Value ?? true)
             {
-                spawn = src.Clone();
-                spawn.PlayerId = 0;
+                obsId = ResolveObserverId();
+
+                // id 0 = 原版行为（房主自己的替身，必被剪影）；>0 = 换成"隐藏观察者"。
+                if (obsId > 0)
+                {
+                    spawn = src.Clone();
+                    spawn.PlayerId = obsId;
+                    if (ObserverGhost?.Value ?? true)
+                        spawn.IsGhost = true;
+                }
+                else
+                {
+                    obsId = 0;
+                }
             }
 
             var result = new List<SnapShot>(tape.Count)
@@ -930,9 +954,43 @@ namespace HideAndSeek.Features.Rule
             Plugin.Log.LogInfo(
                 $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
                 $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧 " +
-                $"主视角={(observer ? "虚拟观察者(id=0)" : "#" + recorderId)} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
+                $"主视角={(observer && obsId > 0 ? "隐藏观察者#" + obsId + ((ObserverGhost?.Value ?? true) ? "(Ghost)" : "") : "原版 #" + recorderId)} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
 
             return result;
+        }
+
+        /// <summary>
+        /// 挑"隐藏观察者"的 id（合成首帧那个"谁都不是"的角色）。
+        /// · -1（默认）= 自动：优先**已死亡玩家**（已被 Despawn、缓存条目仍在、不会在场上出现）✓最干净
+        /// ·  0        = 原版的回放临时玩家（房主自己的替身，必然可见、必被剪影）
+        /// · >0        = 手动指定（用日志里列出的、本局出现过的 id）
+        /// 取不到就退回 0（原版行为），绝不猜一个可能不存在的 id —— 那会让整段回放中断。
+        /// </summary>
+        private static int ResolveObserverId()
+        {
+            int cfg = ObserverPlayerId?.Value ?? -1;
+            if (cfg >= 0)
+                return cfg;
+
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room != null)
+                {
+                    foreach (var p in room.DeadPlayers)
+                    {
+                        int id = p?.PublicInfo?.PlayerId ?? 0;
+                        if (id > 0)
+                            return id;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：自动挑观察者 id 失败，退回原版主视角 — {ex.Message}");
+            }
+
+            return 0;
         }
     }
 }
