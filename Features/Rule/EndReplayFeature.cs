@@ -769,6 +769,8 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static List<SnapShot> TrimTape(List<SnapShot> tape, Clip clip)
         {
+            // 锚点取**最后一枚** NormalTimeEdit：磁带窗口是 [击杀−3, 击杀+5]（原版 `BuildUploadTape`），
+            // 里面通常还含**更早那次击杀**的编辑三元组（Slow/Normal/Glitch），取第一枚会锚错时刻。
             float? anchor = null;
             foreach (var s in tape)
             {
@@ -776,7 +778,6 @@ namespace HideAndSeek.Features.Rule
                     && s.Edit.Type == EEditShotType.NormalTimeEdit)
                 {
                     anchor = s.TimeStamp;
-                    break;
                 }
             }
 
@@ -786,8 +787,9 @@ namespace HideAndSeek.Features.Rule
                 return tape;
             }
 
-            var spawn = tape.FirstOrDefault(s => s.Type == ESnapShotType.SpawnShot)?.Spawn;
-            if (spawn == null)
+            // 录制者是谁：磁带首帧的 Spawn 就是他（客户端 `BeginTape` 也据此决定镜头跟随谁）。
+            var firstSpawn = tape.FirstOrDefault(s => s.Type == ESnapShotType.SpawnShot)?.Spawn;
+            if (firstSpawn == null)
             {
                 Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】没有 SpawnShot，按原样播放。");
                 return tape;
@@ -795,6 +797,21 @@ namespace HideAndSeek.Features.Rule
 
             float start = anchor.Value - clip.Before;
             float end = anchor.Value + clip.After;
+
+            // ★ 合成首帧用的 Spawn 信息必须带**窗口起点那一刻的位置**。
+            //   磁带首帧往往是很早的开局 SpawnShot（`RecordAllType` 的 isStartShot，位置＝出生点），
+            //   直接沿用会让客户端 `FollowCamera` 把镜头贴到出生点 —— 实测就是这样：
+            //   `[Replay] tape 2/4 카메라 즉시 이동 → (4025.34, 4150.52, -50.00)`，
+            //   镜头对着空地，看起来"只有标题没有内容"。
+            //
+            //   好消息是 `RecordAllType` 每秒都会给**所有玩家**各记一枚 SpawnShot（用 ClientTime 基准、
+            //   带当时的位置），所以取"录制者自己在窗口起点之前最后一枚"就是我们要的位置。
+            int recorderId = firstSpawn.PlayerId;
+            var spawn = tape.LastOrDefault(s => s.Type == ESnapShotType.SpawnShot
+                                                && s.Spawn != null
+                                                && s.Spawn.PlayerId == recorderId
+                                                && s.TimeStamp <= start)?.Spawn
+                        ?? firstSpawn;
 
             var result = new List<SnapShot>(tape.Count)
             {
@@ -814,6 +831,11 @@ namespace HideAndSeek.Features.Rule
                     continue;                       // 窗口已由我们自己定，客户端的慢镜/花屏编辑不再需要
                 result.Add(s);
             }
+
+            Plugin.Log.LogInfo(
+                $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
+                $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧 " +
+                $"(镜头跟随 #{recorderId}，位置=({spawn.Pos?.X:F0},{spawn.Pos?.Y:F0}))");
 
             return result;
         }
