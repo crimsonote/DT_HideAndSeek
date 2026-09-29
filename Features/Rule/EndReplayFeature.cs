@@ -102,6 +102,13 @@ namespace HideAndSeek.Features.Rule
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
+        [ConfigField(true, "【试验】用「虚拟观察者」当回放主视角。" +
+            "开启时，每段磁带合成首帧的角色改成客户端自己造的回放临时玩家（id = 0）——" +
+            "它不是对局里的任何人，于是镜头跟随它、剪影也打在它身上，" +
+            "真实玩家（黑方/受害者/旁观者）全部本色出场，黑方那层黑白遮罩就此消失。" +
+            "关掉则回到原版行为（主视角＝该段录制者，会被打上剪影）。")]
+        public static ConfigEntry<bool> ObserverCamera;
+
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
         {
@@ -866,11 +873,37 @@ namespace HideAndSeek.Features.Rule
             //   好消息是 `RecordAllType` 每秒都会给**所有玩家**各记一枚 SpawnShot（用 ClientTime 基准、
             //   带当时的位置），所以取"录制者自己在窗口起点之前最后一枚"就是我们要的位置。
             int recorderId = firstSpawn.PlayerId;
-            var spawn = tape.LastOrDefault(s => s.Type == ESnapShotType.SpawnShot
-                                                && s.Spawn != null
-                                                && s.Spawn.PlayerId == recorderId
-                                                && s.TimeStamp <= start)?.Spawn
-                        ?? firstSpawn;
+            var src = tape.LastOrDefault(s => s.Type == ESnapShotType.SpawnShot
+                                              && s.Spawn != null
+                                              && s.Spawn.PlayerId == recorderId
+                                              && s.TimeStamp <= start)?.Spawn
+                      ?? firstSpawn;
+
+            // ★★ 试验：把合成首帧的角色换成**回放临时玩家（id = 0）**，即"虚拟观察者"。
+            //
+            //   客户端 `BeginTape`（新版 :381-392）的顺序是：
+            //       ForceSpawnReplayTemp(MyPlayer.Name);   // ← 凭空造 id=0 的临时玩家
+            //       Despawn(所有人);
+            //       _blackId = (tape[0].Spawn.PlayerId != _myPlayerId) ? tape[0].Spawn.PlayerId : 0;
+            //       ChangeMyPlayer(_blackId);              // ← 内部是 _cache[id]，没有兜底
+            //       ApplySpawn(tape[0].Spawn);
+            //       Players[_blackId].ChangeSilhouette(true);   // ← 遮罩打给 _blackId
+            //
+            //   ⇒ `ChangeMyPlayer` 用的是 `_cache[id]`，此刻 `_cache` 里只有刚造出来的 id=0
+            //     ⇒ **只能用 0**。而这正好就是"不存在的隐藏角色"：
+            //       镜头跟随它、遮罩打在它身上，真实玩家（黑方/受害者/旁观者）全部本色出场。
+            //     顺便我们还拿到了镜头控制权（位置由这枚 spawn 的 Pos 决定）。
+            //
+            //   ⚠ 代价：`ForceSpawnReplayTemp` 给它的名字是**本地玩家自己的名字**，
+            //     所以它可能以"你的替身"的样子出现在画面里；另外 `Update` 会把
+            //     `PlayerId == _myPlayerId` 的 SpawnShot 改写成 0，而 0 == `_blackId` ⇒ 整帧被跳过
+            //     （本地玩家自己的 spawn 帧因此消失，能否由 MoveShot 补回来需要实测）。
+            var spawn = src;
+            if (ObserverCamera?.Value ?? true)
+            {
+                spawn = src.Clone();
+                spawn.PlayerId = 0;
+            }
 
             var result = new List<SnapShot>(tape.Count)
             {
@@ -891,10 +924,11 @@ namespace HideAndSeek.Features.Rule
                 result.Add(s);
             }
 
+            bool observer = (ObserverCamera?.Value ?? true);
             Plugin.Log.LogInfo(
                 $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
                 $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧 " +
-                $"(镜头跟随 #{recorderId}，位置=({spawn.Pos?.X:F0},{spawn.Pos?.Y:F0}))");
+                $"主视角={(observer ? "虚拟观察者(id=0)" : "#" + recorderId)} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
 
             return result;
         }
