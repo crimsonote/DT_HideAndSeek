@@ -302,7 +302,19 @@ namespace HideAndSeek.Features.Rule
         {
             try
             {
-                if (_played || _inReplay || !IsArmed())
+                // ★ 回放序列进行中：之后进来的每一次结算都必须继续拦下。
+                //   BlackWinFeature.TryTrigger 挂在 GameRoom.SurvivalTick 上（每秒跑），
+                //   拦下第一次 GameOver 之后它下一 tick 还会再调一次 —— 若这里放行，
+                //   真正的结算会在回放还没播完时就跑掉（实测第一次就是这样：
+                //   客户端日志里 971 行刚广播 Replay，974 行 TotalResult 就已经发生了）。
+                //   结算由 FinishReplay 在回放结束后主动续上。
+                if (_inReplay)
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay（{reason}）：回放进行中，继续拦截结算。");
+                    return true;
+                }
+
+                if (_played || !IsArmed())
                     return false;
 
                 var room = GameRoom.Instance;
@@ -468,9 +480,15 @@ namespace HideAndSeek.Features.Rule
                 //   结算时的 ChangeGameState(TotalResult) 会把它带出去。
                 Plugin.Log.LogInfo($"[HS] EndReplay：先让客户端建立回放 UI（{plan.Count} 段）。");
 
-                // 客户端的状态切换处理器末尾会 CompleteAndSend()（客户端 :38714），
-                // 所以这条等待能确认"回放宿主 UI 已经建好"，比固定延时可靠。
-                room.WaitCompletePacket(() => BroadcastReplay(plan), room.CompleteWaitCount(), 4000, 1500);
+                // ★ 客户端的换状态是**异步**的：Handle_S_CHANGE_GAME_STATE（客户端 :42362）
+                //   只调 Managers.UI.StartLoading(pkt.State) 开始淡入淡出过渡，真正落到
+                //   ChangeState（即建回放宿主 UI_TrialEvent 的那一段，:38698-38714）要等过渡走完。
+                //   客户端日志实测：广播后客户端仍停在旧状态（`Client Survive -> TotalResult`），
+                //   所以那一刻 TrialUI 还是 null，S_TRIAL_STATE{Replay} 被原版直接跳过（:43043）。
+                //
+                //   ChangeState 末尾会 CompleteAndSend()（:38714），所以"等这条回执"就是
+                //   "等过渡走完 + 回放宿主 UI 已建好"。给足 8 秒：过渡本身可能被淡入淡出拖长。
+                room.WaitCompletePacket(() => BroadcastReplay(plan), room.CompleteWaitCount(), 8000, 1500);
                 room.Broadcast(new S_CHANGE_GAME_STATE { State = EGameState.Trial });
             }
             catch (Exception ex)
@@ -493,6 +511,20 @@ namespace HideAndSeek.Features.Rule
 
                 int clips = plan.Count;
                 int budget = EstimateBudgetMs(plan);
+
+                // 主机进程里既有服务端也有它自己的客户端，所以能顺手当一次"探针"：
+                // 本机客户端若已建好回放宿主 UI，至少说明这次等待是等对了。
+                // 远端客户端无法探测，只能靠日志判断。
+                try
+                {
+                    var scene = Managers.UI.SceneUI as UI_GameScene;
+                    bool localReady = scene != null && scene.TrialUI != null;
+                    Plugin.Log.LogInfo($"[HS] EndReplay：本机客户端回放宿主 UI {(localReady ? "已就绪" : "仍为空")}（远端客户端无法探测）。");
+                }
+                catch (Exception probeEx)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：探测本机回放宿主 UI 失败 — {probeEx.Message}");
+                }
 
                 Plugin.Log.LogInfo($"[HS] EndReplay：广播 Replay 状态（{clips} 段，预算 {budget}ms）。");
 
@@ -555,6 +587,29 @@ namespace HideAndSeek.Features.Rule
         ///
         /// 这些补丁只在本机装了插件时生效 —— 远程客户端本来也不该被要求装。
         /// </summary>
+        /// <summary>
+        /// 客户端侧诊断：把"回放宿主 UI 到底建没建"直接记下来。
+        /// 这一条是针对实测暴露的核心问题 —— 客户端换状态是异步的
+        /// （`Handle_S_CHANGE_GAME_STATE` 只调 `StartLoading`，:42386），
+        /// 过渡走完才轮到 `ShowTrialUI()`（:38706）。
+        /// </summary>
+        [HarmonyPatch(typeof(UI_GameScene), nameof(UI_GameScene.ShowTrialUI))]
+        internal static class ClientShowTrialUiHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(UI_GameScene __instance)
+            {
+                try
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay（客户端）：ShowTrialUI 已执行，回放宿主 UI {( __instance.TrialUI != null ? "建立成功" : "仍然为空")}。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：诊断日志失败 — {ex.Message}");
+                }
+            }
+        }
+
         [HarmonyPatch]
         internal static class ClientTrialStateHook
         {
