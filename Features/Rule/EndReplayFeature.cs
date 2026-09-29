@@ -102,11 +102,11 @@ namespace HideAndSeek.Features.Rule
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
-        [ConfigField(true, "【试验】用「虚拟观察者」当回放主视角。" +
-            "开启时，每段磁带合成首帧的角色改成客户端自己造的回放临时玩家（id = 0）——" +
-            "它不是对局里的任何人，于是镜头跟随它、剪影也打在它身上，" +
-            "真实玩家（黑方/受害者/旁观者）全部本色出场，黑方那层黑白遮罩就此消失。" +
-            "关掉则回到原版行为（主视角＝该段录制者，会被打上剪影）。")]
+        [ConfigField(false, "【试验，默认关闭】用「虚拟观察者」当回放主视角（把合成首帧的角色改成 id=0）。" +
+            "实测结论：对**房主自己的屏幕是空操作** —— 房主就是录制者，`_blackId` 本来就等于 0" +
+            "（BeginTape：`(Spawn.PlayerId != _myPlayerId) ? ... : 0`），而那个 id=0 的临时玩家" +
+            "正是房主自己的替身。对远端玩家只是把剪影从「凶手」挪到「你自己的替身」身上，等于换个错人打码。" +
+            "⇒ 遮罩只能在客户端去掉。本项保留仅作对照实验用。")]
         public static ConfigEntry<bool> ObserverCamera;
 
         // ── 片段登记 ────────────────────────────────────────────────────
@@ -919,8 +919,10 @@ namespace HideAndSeek.Features.Rule
             {
                 if (s.TimeStamp <= start || s.TimeStamp > end)
                     continue;
-                if (s.Type == ESnapShotType.EditShot)
-                    continue;                       // 窗口已由我们自己定，客户端的慢镜/花屏编辑不再需要
+                // ★ 保留 EditShot（曾经这里一律 continue 裁掉，结果把"揭晓"也裁没了）：
+                //   · SlowTimeEdit  插在击杀−0.3s ⇒ 落在窗口内 ⇒ 慢镜 + 最后一段的 ChangeSilhouette(false) 揭晓
+                //   · NormalTimeEdit 插在击杀瞬间  ⇒ 落在窗口内 ⇒ 把 TimeScale/镜头复位
+                //   · GlitchEdit     插在击杀+1.5s ⇒ 落在窗口外，会被上面的时间判断自然裁掉
                 result.Add(s);
             }
 
