@@ -548,12 +548,12 @@ namespace HideAndSeek.Features.Rule
             //  "等入场演出/开场字幕自然播完"（否则 StartReplay 的 ResetSlideVisual 会把它冻住）。
             room.Broadcast(new S_FADE_IN());
 
-            // 保险：同时补一包 Discuss。入场演出（TrialEffect → AppendTrialTitle）本来就会演一遍
-            // 「开庭」标题，重复赋值是幂等的；但若客户端的入场分支走了另一条路（`TrialEffect`
-            // 里 `num == false` 的降级分支），这样能保证字幕序列**确实开演并自行收尾**。
-            room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Discuss });
+            // ⚠ 不要补发 `S_TRIAL_STATE{Discuss}`：客户端还有一个"按镜像状态重算"的驱动器
+            //   （`_state = TrialMirror.LatestState` 那段），会把 Discuss 当成**真的进入讨论阶段**
+            //   ⇒ 讨论计时走完就推进到 VotePhase，玩家会看到「开始讨论 / 投票」页面（实测就是这么冒出来的）。
+            //   开场标题由 TrialEffect（FadeOut 的 Trial 分支）自己演，不需要它。
 
-            Plugin.Log.LogInfo($"[HS] EndReplay：已发 S_FADE_IN 收掉加载页 + Discuss 让开场字幕开演，等 {wait}ms 再推 Replay。");
+            Plugin.Log.LogInfo($"[HS] EndReplay：已发 S_FADE_IN 收掉加载页，等 {wait}ms 让入场演出播完再推 Replay。");
             room.PushAfter(wait, () => BroadcastReplay(plan));
         }
 
