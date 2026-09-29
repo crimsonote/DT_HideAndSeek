@@ -50,7 +50,13 @@ namespace HideAndSeek.Features.UI
                 // 公开黑方身份（角色名 + 玩家昵称）：段 [Broadcast].RevealBlackOnKnife。
                 // 注意：这不是播报总开关（那是 [Broadcast].AnnounceEnabled），
                 // 只控制"是否把黑方身份通告出去"。
-                LobbySettingItem.Toggle("reveal_black", "启用自动通告黑幕", () => BroadcastFeature.RevealBlackOnKnife));
+                LobbySettingItem.Toggle("reveal_black", "启用自动通告黑幕", () => BroadcastFeature.RevealBlackOnKnife),
+
+                // 结束时播放回放：段 [EndReplay].PlayOnEnd。
+                // 对局结束时（因刀杀死亡的人数超过白方阈值）在结算前为所有人播一段回放：
+                // 黑方拿刀 → 每次刀杀 → 最后时段各存活者的行动。窗口长度由 [EndReplay] 的
+                // *BeforeSec/*AfterSec 配置。热开关，改后即时生效。
+                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => EndReplayFeature.PlayOnEnd));
         }
     }
 }
