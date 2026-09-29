@@ -50,11 +50,35 @@ Get-ChildItem -Recurse -Include *.cs,*.ps1 | Where-Object { $_.FullName -notmatc
 
 - 验证编译产物里的中文是否正确（比看源码可靠）：
 
+  ⚠️ **不要**用"把 dll 按 UTF-8 解码再搜字符串"的做法 —— 它只在**碰巧**成立时有效：
+  普通字符串字面量存在 **`#US` 堆、是 UTF-16**；只有 `[ConfigField("…")]` / `[PatchFeature(description: "…")]`
+  这类**自定义特性的参数**才在 `#Blob` 堆里、是 UTF-8。而把整个 PE 文件按固定 2 字节解码又会因为
+  各堆长度差而错位。结果是「该找到的找不到、不该找到的找到了」—— 实机踩过：`假人`（在特性里）能搜到，
+  而同一批**新增的日志文案**（在 `#US` 里）搜不到，白排查了一轮"产物是不是没更新"。
+
+  可靠做法是用 BepInEx 自带的 `Mono.Cecil` 直接读 IL 里的字符串操作数：
+
 ```powershell
-$u8 = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($dll))
-$u8 -match '假人'      # 应为 True
-$u8 -match '鍋'        # 应为 False
+$dll   = "$GameDir\BepInEx\plugins\HideAndSeek.dll"
+[void][System.Reflection.Assembly]::LoadFrom("$GameDir\BepInEx\core\Mono.Cecil.dll")
+$asm   = [Mono.Cecil.AssemblyDefinition]::ReadAssembly($dll)
+"AssemblyVersion = " + $asm.Name.Version
+$all   = New-Object System.Collections.Generic.List[string]
+$stack = New-Object System.Collections.Stack
+$asm.MainModule.Types | ForEach-Object { $stack.Push($_) }
+while ($stack.Count -gt 0) {
+    $ty = $stack.Pop()
+    $ty.NestedTypes | ForEach-Object { $stack.Push($_) }
+    foreach ($m in $ty.Methods) {
+        if (-not $m.HasBody) { continue }
+        foreach ($ins in $m.Body.Instructions) { if ($ins.Operand -is [string]) { $all.Add($ins.Operand) } }
+    }
+}
+@($all | Where-Object { $_.Contains('配置搬迁') }).Count      # 新增文案应为 1 以上
+@($all | Where-Object { $_.Contains('鍋') }).Count           # 乱码哨兵应为 0
 ```
+
+  这一招同时能确认「**部署的 dll 到底是不是这一版源码构建的**」，比看文件时间戳可靠。
 
 ---
 
