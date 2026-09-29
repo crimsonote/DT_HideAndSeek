@@ -188,9 +188,14 @@ using GameDeviceManager = Server.Game.DeviceManager;
 Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
 黑方移动时立即校正 + 每秒 tick 兜底，两处都主动 `AddPlayer`。
 
-同时要跳过 `State == EPlayerState.Hide`：死亡玩家被 `MakeSpectatorGhost` 置为
-`Hide` + `IsGhost=true`，原版会跳过他们，我们补 `AddPlayer` 时也必须跳过，
-否则会把死人的幽灵塞给黑方。
+同时要跳过 `State == EPlayerState.Hide` —— 它**有两个来源**，两个都要跳：
+
+- **活人躲进柜子**：`Cabinet.HideCabinet`（`:162129`）置 `State = Hide` + `HidePlayer`（出柜时 `ExitCabinet` `:162138` 复位成 `Idle`）；
+- **死亡 / 幽灵**：`MakeSpectatorGhost`（`:175590`）置 `Hide` + `IsGhost = true`。
+
+原版 `SearchAndUpdatePlayer`（`:173429`）同样跳过他们，我们补 `AddPlayer` 时也必须跳过 ——
+否则会把死人的幽灵、以及柜子里的活人一起塞给黑方。
+（把这条只理解成"死亡"是常见误读：`Hide` 同时是"躲柜子"，见 `.tmps/刀杀与DT-判定-调查.md` §6。）
 
 ### 5. 假黑灯是客户端的本地状态
 

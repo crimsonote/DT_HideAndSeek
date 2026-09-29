@@ -347,10 +347,20 @@ DiscoverFeatures(自己程序集)
 
 **Hide 状态与幽灵的跳过**
 
-死亡玩家会被 `MakeSpectatorGhost` 置为 `State = Hide` + `IsGhost = true`，原版
-`SearchAndUpdatePlayer` 会跳过他们。我们主动补 `AddPlayer` 时必须同样跳过（`:209`），
-否则会把死人的幽灵塞给黑方；反过来在 tick 里对 `Hide` 状态还要**主动 `RemovePlayer`**（`:314-317`），
-因为它可能从别处进过 `SharedPlayers`。
+`State == EPlayerState.Hide` **有两个来源**，两个都要跳：
+
+| 来源 | 位置 | 说明 |
+|---|---|---|
+| **活人躲进柜子** | `Cabinet.HideCabinet`（`:162129`）| 置 `State = Hide` + `HidePlayer`；出柜由 `ExitCabinet`（`:162138`）复位成 `Idle` |
+| **死亡 / 幽灵** | `MakeSpectatorGhost`（`:175590`）、`ExitPlayer`（`:176098`）| 置 `Hide` + `IsGhost = true` |
+
+原版 `SearchAndUpdatePlayer`（`:173429`）会跳过他们。我们主动补 `AddPlayer` 时必须同样跳过
+（`RevealNearby`），否则会把死人的幽灵、以及柜子里的活人一起塞给黑方；反过来在 tick 里对
+`Hide` 状态还要**主动 `RemovePlayer`**（`PostfixSurvivalTick`），因为它可能从别处进过 `SharedPlayers`。
+
+> ⚠️ 只把这条理解成"死亡幽灵"是常见误读 —— `Hide` 同时是"躲柜子"。
+> 本节旧版本引用的 `AoiCullingFeature.cs :209` / `:314-317` 早已失效（指向的是 `WallBlocks`
+> 与范围辅助函数），现已改为方法名引用，别再按行号找。
 
 **与技能豁免的交互（`SkillAware`）**
 
@@ -914,7 +924,8 @@ using GameRoom = Server.Game.GameRoom;
 `X.AddPlayer(Y)` 的语义是"把 X 介绍给 Y"。原版让某人**重新可见**的唯一途径是**被观察者自己移动**。
 站着不动的目标一旦被 `RemovePlayer`，客户端上那个 `Player` 对象已 despawn，走到跟前也看不见。
 → AOI 必须"黑方移动时立即校正 + 每秒 tick 兜底"，两处都主动 `AddPlayer`。
-→ 同时必须跳过 `State == EPlayerState.Hide`（死亡幽灵），否则会把死人的幽灵塞给黑方。
+→ 同时必须跳过 `State == EPlayerState.Hide`（**躲柜子的活人** `Cabinet.HideCabinet :162129`
+　＋ **死亡幽灵** `MakeSpectatorGhost :175590`），否则会把死人的幽灵、以及柜子里的活人一起塞给黑方。
 
 ### 6. 假黑灯是客户端的本地状态
 

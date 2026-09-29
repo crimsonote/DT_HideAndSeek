@@ -45,8 +45,19 @@ $csprojVer = ([regex]::Match($csprojTxt, '<Version>([^<]+)</Version>')).Groups[1
 if ($pluginVer -and $pluginVer -eq $csprojVer) { Ok ("版本一致：Plugin.cs 与 csproj 都是 " + $pluginVer) }
 else { Fail ("版本不一致：Plugin.cs=" + $pluginVer + "  csproj=" + $csprojVer) }
 
-$tag = (& git -C $root describe --tags --exact-match 2>$null)
-if ($LASTEXITCODE -eq 0 -and $tag) {
+# ⚠️ 别把这段简化回 `$tag = (& git ... 2>$null)`：
+#    本脚本开头设了 $ErrorActionPreference = 'Stop'，而在 Windows PowerShell 5.1 下，
+#    原生命令写 stderr 会变成**终止错误** —— `git describe --exact-match` 在"没有匹配 tag"
+#    时正是写 stderr，于是本该走下面 WARN 分支的情况会让脚本直接崩在这一行
+#    （PS 7 / pwsh 下不会，所以只在没装 pwsh 的机器上暴露）。
+#    这里临时把 ErrorActionPreference 降级，并用 $LASTEXITCODE 判成败。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$tag = & git -C $root describe --tags --exact-match 2>$null
+$tagExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+
+if ($tagExit -eq 0 -and $tag) {
     $tagVer = $tag -replace '^v', ''
     if ($tagVer -eq $pluginVer) { Ok ("当前提交已被 " + $tag + " 标记，与代码版本相符") }
     else { Fail ("tag " + $tag + " 与代码版本 " + $pluginVer + " 不符") }

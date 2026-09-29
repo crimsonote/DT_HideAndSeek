@@ -331,9 +331,11 @@ namespace HideAndSeek.Features.Vision
                 var other = all[i];
                 if (other == null || other == black)
                     continue;
-                // 跳过 Hide 状态：死亡玩家会被 MakeSpectatorGhost（:175590）置为
-                // State=Hide + IsGhost=true，原版 SearchAndUpdatePlayer 同样跳过他们。
-                // 少了这一条，主动补 AddPlayer 就会把死人的幽灵塞给黑方。
+                // 跳过 Hide 状态。它有两个来源，都要跳：
+                //   ① 活人躲进柜子 —— Cabinet.HideCabinet（:162129）置 State=Hide + HidePlayer；
+                //   ② 死亡 / 幽灵 —— MakeSpectatorGhost（:175590）置 Hide + IsGhost=true。
+                // 原版 SearchAndUpdatePlayer（:173429）同样跳过；少了这一条，主动补 AddPlayer
+                // 就会把死人的幽灵、以及柜子里的活人一起塞给黑方。
                 if (other.State == EPlayerState.Hide)
                     continue;
                 // 命中任一范围（自身 ∪ 小熊）且没被墙挡住 ⇒ 确保可见
