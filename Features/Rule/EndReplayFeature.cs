@@ -95,6 +95,12 @@ namespace HideAndSeek.Features.Rule
             "正常情况下客户端的完成回执会提前结束等待，这个值只在回执丢失时用到。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SecondsPerClipEstimate;
 
+        [ConfigField(5000, "客户端审判 UI 建好后，等多久再推 Replay（毫秒）。" +
+            "开场文字由 SlidingText 序列在约 3.0 秒后自己 SetActive(false) 隐藏；" +
+            "推得太早会 Kill 掉该序列、把文字永久冻在画面上（实测踩过）。5 秒留足余量。",
+            Min = 0f, Max = 30000f)]
+        public static ConfigEntry<int> TrialIntroWaitMs;
+
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
         {
@@ -488,7 +494,7 @@ namespace HideAndSeek.Features.Rule
                 //
                 //   ChangeState 末尾会 CompleteAndSend()（:38714），所以"等这条回执"就是
                 //   "等过渡走完 + 回放宿主 UI 已建好"。给足 8 秒：过渡本身可能被淡入淡出拖长。
-                room.WaitCompletePacket(() => BroadcastReplay(plan), room.CompleteWaitCount(), 8000, 1500);
+                room.WaitCompletePacket(() => WaitTrialIntroThenReplay(plan), room.CompleteWaitCount(), 8000, 1500);
                 room.Broadcast(new S_CHANGE_GAME_STATE { State = EGameState.Trial });
             }
             catch (Exception ex)
@@ -496,6 +502,37 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] EndReplay：进入回放失败 — {ex.Message}");
                 FinishReplay("进入失败");
             }
+        }
+
+        /// <summary>
+        /// 等审判 UI 的**开场演出**播完，再推 Replay。
+        ///
+        /// ★ 这是实测踩出来的坑，不看客户端源码根本想不到：
+        ///   `StartReplay()`（UI_TrialEvent）第一件事就是调 `ResetSlideVisual()`（:2348），而它是：
+        ///
+        ///       _slideSequence.Kill();              // 杀掉开场序列
+        ///       color.a = 1f; text.color = color;   // 又把文字设成完全不透明
+        ///
+        ///   而开场 `SlidingText()`（:1570）的收尾是 `slideText.SetActive(false)`（在序列 OnComplete 里）
+        ///   —— 序列被 Kill 掉之后这句永远不会执行。于是**开场文字被冻在画面上、且完全不透明**，
+        ///   一直压在整段回放上（实机现象：标题卡过后"学级裁判 开庭 / 赌上性命的真相告白"始终可见）。
+        ///
+        ///   开场时长（源码里的常量）：`SlidingText` 0.5+1+0.5 ≈ 2.0s，随后 `AlertMessage` 0.5+3.5+0.5 ≈ 4.5s，
+        ///   合计约 6.5s。默认等 8 秒留余量；等完之后 `ResetSlideVisual` 面对的已是一个空且隐藏的文字元素，
+        ///   与原版走到 Replay 时的状态一致。
+        /// </summary>
+        private static void WaitTrialIntroThenReplay(List<Clip> plan)
+        {
+            var room = GameRoom.Instance;
+            if (room == null)
+            {
+                FinishReplay("房间已不存在");
+                return;
+            }
+
+            int wait = TrialIntroWaitMs?.Value ?? 8000;
+            Plugin.Log.LogInfo($"[HS] EndReplay：等审判开场演出播完（{wait}ms）再推 Replay，避免开场文字被冻住。");
+            room.PushAfter(wait, () => BroadcastReplay(plan));
         }
 
         private static void BroadcastReplay(List<Clip> plan)
