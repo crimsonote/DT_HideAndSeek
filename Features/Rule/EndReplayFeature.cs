@@ -95,10 +95,12 @@ namespace HideAndSeek.Features.Rule
             "正常情况下客户端的完成回执会提前结束等待，这个值只在回执丢失时用到。", Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SecondsPerClipEstimate;
 
-        [ConfigField(5000, "客户端审判 UI 建好后，等多久再推 Replay（毫秒）。" +
-            "开场文字由 SlidingText 序列在约 3.0 秒后自己 SetActive(false) 隐藏；" +
-            "推得太早会 Kill 掉该序列、把文字永久冻在画面上（实测踩过）。5 秒留足余量。",
-            Min = 0f, Max = 30000f)]
+        [ConfigField(20000, "客户端审判 UI 就绪后，等多久再推 Replay（毫秒）。" +
+            "★ 必须盖过**加载页**：进 Trial 时客户端会显示 UI_Loading（那张『学级裁判 开庭』就是它），" +
+            "它由客户端本地的淡入动画收尾、另有 CompleteWatchdog 兜底 —— Trial 是 18 秒" +
+            "（UI_Loading.StartLoading：62299-62304）。加载页没收掉之前推 Replay，" +
+            "整段回放都会被它盖住（回放确实在播、BGM 也换了，但看不见）。",
+            Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
         // ── 片段登记 ────────────────────────────────────────────────────
@@ -530,7 +532,7 @@ namespace HideAndSeek.Features.Rule
                 return;
             }
 
-            int wait = TrialIntroWaitMs?.Value ?? 8000;
+            int wait = TrialIntroWaitMs?.Value ?? 20000;
 
             // ★ 照原版补上这一包：`StartFirstTalk()` 只在**进入 Discuss 状态**时被调用
             //   （UI_TrialEvent.StartState :1658-1661）。原版流程里 Discuss 是裁判的第一站，
