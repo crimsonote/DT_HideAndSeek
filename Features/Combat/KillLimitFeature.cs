@@ -29,6 +29,12 @@ namespace HideAndSeek.Features.Combat
         private static bool _logged;
 
         [HarmonyPrefix]
+        // 上游 DT_Tools 的 BlackAttackFeature 也 Prefix 同一个 getter，同样是"写 __result 后返回 false"。
+        // Harmony 只让**第一个**返回 false 的 Prefix 生效，所以先后顺序直接决定谁说了算；
+        // 默认优先级相同时按补丁挂载次序排，会随插件加载顺序漂移。这里固定本模块先跑：
+        // 捉迷藏模式开着就由本模块接管；模式关闭时下面的 Bypass 分支返回 true，
+        // 上游那条照常生效。⇒ 两种情况下结果都不再依赖加载顺序。
+        [HarmonyPriority(Priority.First)]
         private static bool Prefix(ref int __result)
         {
             Diagnostics.Hit("KillLimit");

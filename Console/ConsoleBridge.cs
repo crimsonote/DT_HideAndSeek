@@ -18,17 +18,24 @@ namespace HideAndSeek.Console
     ///      程序集里的 IConsoleCommand，本模块的命令不会自动出现；这里在它生成的 JSON 数组里
     ///      追加 hs_* 条目，使 /api/commands 与前端补全能看见。
     ///
-    /// 上游未安装、或内部结构变动导致方法缺失时，HarmonyPrepare 会让对应补丁类整体跳过，
-    /// 不影响其余功能。
+    /// 这是一个**可选**集成 —— 配置文件独立化之后，它是本插件唯一还与上游有关的地方（配置侧只剩
+    /// "把设置镜像到上游 CONFIG 页"这一条便利路径，见 Core/DtBridge.cs）。之所以保留，是因为
+    /// hs_* 目前没有别的执行入口。开关语义：
+    ///   - [ConsoleBridge].Enabled = false ⇒ 两个补丁都不挂载，hs_* 完全不接进上游（整类跳过）；
+    ///   - 上游未安装 ⇒ HarmonyPrepare 让补丁类整体跳过，只记 INFO、不报错，其余功能不受影响；
+    ///   - 上游已安装但方法缺失 ⇒ 记 WARNING（这才是真正需要关注的情况）。
     /// </summary>
     [PatchFeature(
         section: "ConsoleBridge",
-        description: "把 hs_* 命令接入 DT_Tools 的 Web 控制台（零改动上游；未安装 DT_Tools 时自动失效）：既可执行，也显示在命令列表与补全中。",
+        description: "把 hs_* 命令接入 DT_Tools 的 Web 控制台（可选集成，零改动上游）。关掉本段即完全断开与上游的连接；未安装 DT_Tools 时自动跳过，不报错。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class ConsoleBridge
     {
         private const string DtConsoleTypeName = "DT_Tools.Console.WebConsole";
+
+        /// <summary>与 <see cref="PatchFeatureAttribute.Section"/> 上的段名保持一致（Diagnostics 按段名查挂载状态）。</summary>
+        private const string Section = "ConsoleBridge";
 
         /// <summary>hs_* 命令的元数据，用于补进 DT_Tools 的命令列表。</summary>
         private static readonly (string Name, string Usage, string Description)[] HsCommands =
@@ -51,6 +58,9 @@ namespace HideAndSeek.Console
 
         private static Type DtConsoleType() => AccessTools.TypeByName(DtConsoleTypeName);
 
+        /// <summary>上游 DT_Tools 是否已加载（只查类型，不判断其 Awake 是否执行）。</summary>
+        private static bool UpstreamPresent => DtConsoleType() != null;
+
         /// <summary>
         /// 补丁挂上之后，主动重建 DT_Tools 的命令列表缓存。
         ///
@@ -66,9 +76,21 @@ namespace HideAndSeek.Console
         {
             try
             {
+                // 命令桥是可选集成：段被关掉、或上游没装，都必须**整类**跳过而不是只跳过一半 ——
+                // 否则 hs_* 会出现在上游命令列表里，点了却没反应（ExecuteHook 没挂上）。
+                // 这两种情况都只记 INFO，不产生 WARNING/ERROR。
+                if (!Diagnostics.IsLoaded(Section))
+                {
+                    Plugin.Log.LogInfo($"[HS] ConsoleBridge：命令桥已关闭（[{Section}].Enabled = false），hs_* 不接入上游控制台。");
+                    return;
+                }
+
                 var type = DtConsoleType();
                 if (type == null)
+                {
+                    Plugin.Log.LogInfo("[HS] ConsoleBridge：未检测到上游 DT_Tools，hs_* 命令桥自动跳过（其余功能不受影响）。");
                     return;
+                }
 
                 var instance = AccessTools.PropertyGetter(type, "Instance")?.Invoke(null, null);
                 if (instance == null)
@@ -104,10 +126,16 @@ namespace HideAndSeek.Console
             [HarmonyPrepare]
             private static bool Prepare()
             {
-                bool ok = Target() != null;
-                if (!ok)
-                    Plugin.Log.LogInfo("[HS] 未找到 DT_Tools 的 WebConsole.ExecuteCommand，hs_* 命令不可执行（其余功能不受影响）。");
-                return ok;
+                if (Target() != null)
+                    return true;
+
+                // 上游没装 ⇒ 这是正常情况（可选集成），只记 INFO；
+                // 装了却找不到方法 ⇒ 上游内部结构变动，才值得 WARNING。
+                if (UpstreamPresent)
+                    Plugin.Log.LogWarning("[HS] ConsoleBridge：DT_Tools 已加载但找不到 WebConsole.ExecuteCommand，hs_* 命令不可执行（其余功能不受影响）。");
+                else
+                    Plugin.Log.LogInfo("[HS] ConsoleBridge：未检测到上游 DT_Tools，hs_* 命令桥自动跳过（其余功能不受影响）。");
+                return false;
             }
 
             [HarmonyTargetMethod]
@@ -172,10 +200,14 @@ namespace HideAndSeek.Console
             [HarmonyPrepare]
             private static bool Prepare()
             {
-                bool ok = Target() != null;
-                if (!ok)
-                    Plugin.Log.LogWarning("[HS] ConsoleBridge：找不到 WebConsole.BuildCommandsJson，hs_* 不会出现在命令列表（仍可执行）。");
-                return ok;
+                if (Target() != null)
+                    return true;
+
+                if (UpstreamPresent)
+                    Plugin.Log.LogWarning("[HS] ConsoleBridge：DT_Tools 已加载但找不到 WebConsole.BuildCommandsJson，hs_* 不会出现在命令列表（仍可执行）。");
+                else
+                    Plugin.Log.LogInfo("[HS] ConsoleBridge：未检测到上游 DT_Tools，跳过命令列表注入。");
+                return false;
             }
 
             [HarmonyTargetMethod]

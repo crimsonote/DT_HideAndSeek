@@ -46,6 +46,18 @@ namespace HideAndSeek.Core
             entry.FailedNested = failedNested;
         }
 
+        /// <summary>
+        /// 该段是否已被 PatchLoader 挂载。段级 Enabled = false 时为 false ——
+        /// 调用方据此判断"整个段被跳过了"，而不是"段内的某个钩子没挂上"。
+        /// </summary>
+        public static bool IsLoaded(string section)
+        {
+            if (string.IsNullOrEmpty(section))
+                return false;
+
+            return Map.TryGetValue(section, out var entry) && entry.Loaded;
+        }
+
         /// <summary>功能被触发时调用（放在 Prefix/Postfix 首行）。</summary>
         public static void Hit(string section)
         {

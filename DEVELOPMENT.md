@@ -1,4 +1,4 @@
-﻿# HideAndSeek 开发接手文档
+# HideAndSeek 开发接手文档
 
 > 《Deadly Trick》(Steam appid 3088400, 对照版本 **0.1.14b**) 的**房主端**捉迷藏玩法模块。
 > BepInEx 5.4.23.5 + HarmonyX 2.x，`netstandard2.1`，Unity Mono，仅房主安装。
@@ -32,11 +32,11 @@
 
 | 项 | 值 |
 |---|---|
-| 模块路径 | `D:\git\DT_Tools\HideAndSeek\`（独立 git 仓库，分支 `main`） |
+| 模块路径 | `D:\git\DT_Tools\HideAndSeek\`（独立 git 仓库；开发在 `dev`，发布打 tag） |
 | 上游 | `D:\git\DT_Tools\DT_Tools\`（**绝对不可修改**） |
-| 插件 GUID / 版本 | `YumeHatsuyuki.DeadlyTrick.HideAndSeek` / `0.1.0`（`Plugin.cs:16-17`） |
+| 插件 GUID / 版本 | `YumeHatsuyuki.DeadlyTrick.HideAndSeek` / `1.4.0`（`Plugin.cs:16-17`） |
 | 产物 | `bin\Release\netstandard2.1\HideAndSeek.dll` → 复制到 `BepInEx\plugins\` |
-| 共享引用 | `..\libs\*.dll`（游戏程序集，两个项目共用）+ 游戏目录 `BepInEx\core\` 的 `BepInEx.dll` / `0Harmony.dll` |
+| 共享引用 | 游戏安装目录 `DeadlyTrick_Data\Managed\*.dll`（默认，唯一权威来源）+ `BepInEx\core\` 的 `BepInEx.dll` / `0Harmony.dll`。**不依赖 DT_Tools 仓库的 `libs/`** —— 本插件是独立仓库，单独 clone 只填 `GameDir` 即可构建 |
 
 ### 1.1 "零改动上游"的确切含义
 
@@ -50,29 +50,37 @@
 **不要做**（与 `PLAN.md` §2.2 一致）：不引用 `DT_Tools.dll`、不在上游新增 `[PatchFeature]`、不改它的
 `Plugin` / 命令注册 / WebUI 路由、不复制 `libs/`。
 
-### 1.2 集成路径 A：配置复用（稳定）
+### 1.2 集成路径 A：配置独立 + 镜像到上游页面
+
+**本模块的配置来源是自己的 `BepInEx/config/HideAndSeek.cfg`，与上游是否存在无关**（`Core/Config/HsConfigFile.cs`）。
+这样配置文件可以单独编辑，插件也可以单独安装 / 卸载。
+
+装了上游时，额外把**同一批 `ConfigEntryBase` 对象**注入上游的 `ConfigFile`（`Core/DtBridge.cs` +
+`Core/Config/ConfigEntries.cs`），于是 DT CONFIG 页照旧列出并可修改本模块的设置。
 
 | 项 | 内容 |
 |---|---|
-| 实现位置 | `Core/DtBridge.cs`；调用点在 `Plugin.Start()`（`Plugin.cs:32`） |
-| 做法 | `AccessTools.TypeByName("DT_Tools.Plugin")` → 取静态属性 `Instance` → 取实例属性 `Config`（`ConfigFile`）→ 把 `HS_*` 段 Bind 到**同一个** `ConfigFile` |
-| 依据 | 上游 Web 控制台枚举配置时遍历的是 `ConfigFile.Keys`，不区分条目来源，所以 `HS_*` 段会出现在 DT CONFIG 页 |
-| 降级 | 探测失败 → `new ConfigFile(Paths.ConfigPath + "HideAndSeek.cfg", false)`，独立配置文件 |
+| 权威来源 | `BepInEx/config/HideAndSeek.cfg`（`HsConfigFile.Open()`，`Plugin.Start` 第一句） |
+| 旧值搬迁 | `Core/Config/LegacyConfigImport.cs`：首次独立运行（自有文件尚不存在）时，把 `DT_Tools.cfg` 里**只属于本模块**的段搬进 `OrphanedEntries`。必须早于 Bind |
+| 镜像实现 | 反射取上游 `ConfigFile` 的私有条目表 `<Entries>k__BackingField`，把本模块的条目逐个放进去 |
+| 为什么不需要同步 | 两侧是**同一批对象**，值只有一份。经 DT 页面改写 `BoxedValue` ⇒ 本模块立即读到新值，并自动落到 `HideAndSeek.cfg` |
+| 降级 | 上游不在、或取不到条目表 ⇒ 只记 INFO/WARNING，配置照旧写在自有文件，功能不受影响 |
 
 **已知陷阱**
 
-1. **必须在 `Start()` 里读，不能在 `Awake()` 里读。**
-   上游 `DT_Tools.Plugin.Instance` 是在**它自己的 `Awake`** 里赋值的（`DT_Tools/Plugin.cs:12`）。
-   Unity 保证"同一次加载中所有 `Awake` 先于所有 `Start`"，因此在 `Start` 里读才稳定拿到值。
-   `Plugin.cs:30-31` 的注释就是这个理由。
-2. **`DtBridge.HasDtTools` 只说明"类型存在"，不代表上游初始化成功。**
-   它只做 `AccessTools.TypeByName(...) != null`，用于日志（`Plugin.cs:55`），不参与任何流程分支。
-3. **配置最终落在哪个文件是不确定的。** 装了上游 → `DT_Tools.cfg`；没装 → `HideAndSeek.cfg`。
-   写运维脚本、写"改配置"文档时都不能假定文件名。切换安装状态还会造成**配置分叉**：
-   旧值留在原来的文件里，读到的却是新文件的默认值。`【推测】` 这是"改完配置没生效"最可能的成因之一。
-4. `config.Save()` 只在 `Start` 里调用一次（`Plugin.cs:48`）—— 见 §7 第 20 条，运行期改值默认只改内存。
+1. **镜像必须在全部 Bind 之后做。** 早一步就会镜像进一批残缺的条目（缺 `Enabled`、缺后面的子项）。
+2. **段名不能与上游撞车。** 撞上时镜像会跳过该键（`DtBridge.TryMirror` 里显式跳过并计数）——
+   覆盖上游的条目比"少显示几项"严重得多。目前 33 个段与上游 35 个段零重叠，`verify.ps1` 也在盯。
+3. **上游 `Save()` 会把镜像条目一起写进 `DT_Tools.cfg`。** 这是镜像的固有代价：那个副本是上游页面
+   自己维护的镜像，**不是**权威。改配置请改 `HideAndSeek.cfg`（或经 DT 页面改——那也会落回自有文件）。
+4. **`SaveOnConfigSet` 的用法**：`Plugin.Start` 先置 `false`（避免 270 个配置项各写一次文件），
+   全部 Bind + 迁移完成后统一 `Save()`，再置回 `true`。此后**任何来源**的修改都会立即落盘 ——
+   不再有"改完设置退出就丢"这一类问题。
+5. `DtBridge.HasDtTools` 只说明"类型存在"，不代表上游初始化成功。它不参与任何流程分支。
+6. **反向搬迁（自有 → 上游）没有实现**：本模块从不写上游的文件。此前的定制留在
+   `DT_Tools.cfg` 里不影响运行（首次搬迁已经把它搬过来了）。
 
-### 1.3 集成路径 B：命令桥（脆弱）
+### 1.3 集成路径 B：命令桥（可选）
 
 | 项 | 内容 |
 |---|---|
@@ -81,6 +89,7 @@
 | 拦截内容 | `Prefix(object __instance, object __0)`：`__0` 是上游私有类型 `PendingRequest`。`Traverse` 读字段 `Command`，命中 `hs` / `hs_` 前缀就交给 `HsCommandRouter.Execute`，把 JSON 写回 `ResultJson` 并 `Done.Set()`，`return false` 阻断原流程（否则上游会当成"未知命令"） |
 | 附带日志 | 额外反射调用上游 `WebConsole.Log(json, LogLevel.Info)`；**不写这一条，命令确实执行了、JSON 也拿得到，但终端文本区看起来"什么都不返回"** |
 | 列表补全 | `Postfix BuildCommandsJson`（上游 `WebConsole.cs:463`，private），把 13 条 `hs_*` 条目追加进它生成的 JSON 数组 |
+| 开关语义 | 段关闭 / 上游未装 ⇒ 整类跳过且只记 INFO；上游**装了**但方法缺失 ⇒ 才记 WARNING（`Prepare` 里按 `UpstreamPresent` 分流） |
 
 **已知陷阱（最容易被咬的两条）**
 
@@ -102,12 +111,15 @@ Unity 加载所有插件
 
 所有 Awake 结束 → 开始 Start
   └─ HideAndSeek.Start
-       ① DtBridge.ResolveConfig()        ← 此刻才能探测到上游 Instance
-       ② PatchLoader.Load(...)           ← Bind 全部段 + 按 Enabled 决定 PatchAll
-       ③ ConfigMigration.Run(config)     ← 定向修正"旧默认值必然导致失效"的键
-       ④ config.Save()                   ← 首次运行生成完整 .cfg
-       ⑤ ConsoleBridge.RefreshCommandList()  ← 重建上游命令列表缓存
-       ⑥ 日志：启用 N / 跳过 M / 失败 F
+       ① HsConfigFile.Open() + SaveOnConfigSet=false   ← 自有 cfg，与上游无关
+       ② LegacyConfigImport.RunOnce(...)               ← 首次独立运行的旧值搬迁（必须早于 Bind）
+       ③ HideAndSeekSettingsContent.RegisterAll()      ← 大厅设置页声明（惰性委托）
+       ④ PatchLoader.Load(...)                         ← Bind 全部段 + 按 Enabled 决定 PatchAll
+       ⑤ ConfigMigration.Run(config)                   ← 定向修正"旧默认值必然导致失效"的键
+       ⑥ config.Save() → SaveOnConfigSet=true          ← 首次生成完整 .cfg；此后改动自动落盘
+       ⑦ DtBridge.TryMirror(config)                    ← 装了上游才做：条目注入上游 ConfigFile
+       ⑧ ConsoleBridge.RefreshCommandList()            ← 重建上游命令列表缓存（段关掉则整类跳过）
+       ⑨ 日志：配置路径 / 启用 N / 跳过 M / 失败 F
 ```
 
 ---
@@ -120,11 +132,11 @@ Unity 加载所有插件
 
 | 目录 | 命名空间 | 职责 |
 |---|---|---|
-| `Plugin.cs` | `HideAndSeek` | **只做组装**：解析配置来源 → 装载补丁 → 迁移 → 落盘 → 重建命令列表 → 日志。不含任何玩法逻辑 |
+| `Plugin.cs` | `HideAndSeek` | **只做组装**：打开自有配置 → 搬迁旧配置 → 装载补丁 → 迁移 → 落盘 → 镜像到上游页面 → 重建命令列表 → 日志。不含任何玩法逻辑 |
 | `Core/` | `HideAndSeek.Core` | 基础设施：特性、配置绑定、补丁装载、模式开关、与上游的桥、游戏状态判定、文本模板、自检 |
 | `Core/Attributes/` | `HideAndSeek.Core` | `PatchFeatureAttribute` / `ConfigFieldAttribute` / `FeatureSide` |
-| `Core/Config/` | `HideAndSeek.Core` | `ConfigBinder`：扫描 `[ConfigField]` 自动 Bind |
-| `Core/Patching/` | `HideAndSeek.Core` | `PatchLoader`：扫描 `[PatchFeature]` → Bind + PatchAll |
+| `Core/Config/` | `HideAndSeek.Core` | `ConfigBinder`（扫描 `[ConfigField]` 自动 Bind）、`HsConfigFile`（自有 cfg）、`LegacyConfigImport`（旧值搬迁）、`ConfigEntries`（读写 ConfigFile 条目表，供镜像用） |
+| `Core/Patching/` | `HideAndSeek.Core` | `PatchLoader`：扫描 `[PatchFeature]` → Bind + PatchAll；`OwnedSectionNames()` 供搬迁列段名 |
 | `Features/<领域>/` | `HideAndSeek.Features.<领域>` | 一个功能 = 一个文件，一个段名。领域现为 `Vision` / `Combat` / `Weapon` / `Rule` / `Broadcast` / `Dummy` / `Skill` / `System` / `Dev` |
 | `Console/` | `HideAndSeek.Console` | 两种 `hs_*` 的实现：`ConsoleBridge`（接入上游）与 `HsCommandRouter`（命令本体） |
 

@@ -120,6 +120,18 @@ namespace HideAndSeek.Core
             return result;
         }
 
+        /// <summary>
+        /// 本模块拥有的全部配置段名（含 <see cref="ModeRuntime.Section"/>），不触发任何 Bind。
+        /// 供配置搬迁使用 —— 只搬这些段，绝不碰上游 DT_Tools 自己的段。
+        /// </summary>
+        public static IEnumerable<string> OwnedSectionNames()
+        {
+            foreach (var desc in DiscoverFeatures(typeof(PatchLoader).Assembly))
+                yield return desc.Section;
+
+            yield return ModeRuntime.Section;
+        }
+
         private static List<FeatureDesc> DiscoverFeatures(Assembly assembly)
         {
             var list = new List<FeatureDesc>();

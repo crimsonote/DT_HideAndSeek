@@ -34,6 +34,11 @@ namespace HideAndSeek.Features.Combat
         public static ConfigEntry<int> RearmSeconds;
 
         [HarmonyPrefix]
+        // 上游 DT_Tools 的 BlackAttackFeature 也 Prefix StartWeaponCooltime 并改写同一个 seconds。
+        // 它只认入参 5 / 20，本模块先跑把 20 改成自己的值之后，它就认不出来、不再插手
+        // ⇒ 捉迷藏模式开着时冷却由本模块决定；模式关闭时下面的 Bypass 分支直接返回，
+        // 上游拿到的仍是原版入参、行为不变。若不固定顺序，则两者谁后跑谁生效。
+        [HarmonyPriority(Priority.First)]
         private static void Prefix(ref int seconds)
         {
             Diagnostics.Hit("WeaponCooldown");

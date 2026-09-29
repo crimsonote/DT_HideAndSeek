@@ -3,7 +3,8 @@
 《Deadly Trick》的**房主端**玩法模块。**只需房主安装**，其他玩家不需要任何 Mod。
 
 - 独立 BepInEx 5 插件（`YumeHatsuyuki.DeadlyTrick.HideAndSeek`）
-- **不修改 DT_Tools 的任何文件**；若已安装 DT_Tools，本模块的配置会自动并入其 Web 控制台
+- **可单独安装**：不装 DT_Tools 也完整工作；配置文件是自己的一份，与上游互不干扰
+- **不修改 DT_Tools 的任何文件**；若已安装 DT_Tools，本模块的设置会同时出现在其 Web 控制台的 **DT CONFIG** 页
 - 对照游戏版本：`0.1.14b`
 
 ---
@@ -12,12 +13,13 @@
 
 1. 构建得到 `HideAndSeek.dll`（见文末）
 2. 复制到 `Deadly Trick\BepInEx\plugins\`
-3. 启动游戏，配置自动生成：
-   - **装了 DT_Tools** → 写入其 `DT_Tools.cfg`，可在 **DT CONFIG** 页面直接改
-   - **没装** → 独立生成 `BepInEx\config\HideAndSeek.cfg`
+3. 启动游戏，配置自动生成在 **`BepInEx\config\HideAndSeek.cfg`**（无论装没装 DT_Tools）
+   - 首次从旧版本升级：会自动把 `DT_Tools.cfg` 里**属于本模块的段**搬过来，你的定制不会丢
+   - 装了 DT_Tools 时，这份配置同时出现在 **DT CONFIG** 页面，两处改的是同一份值
 4. 把 `[HS_Mode]` 的 `Enabled` 改为 `true`（或在 DT CONSOLE 里执行 `hs_mode on`）
 
 > 总开关是**热**的：改完立即生效，无需重启。
+> 配置改动**会自动落盘**（改完即持久，不需要额外保存）。
 
 ---
 
@@ -55,7 +57,7 @@
 | `WeaponGrant` | 自行跑刀（默认）或开局发刀 |
 | `Broadcast` | 三类播报的开关与文本模板 |
 | `SoloPlay` | 单人开局（测试用，默认关闭） |
-| `ConsoleBridge` | 命令桥（未装 DT_Tools 时自动失效） |
+| `ConsoleBridge` | 命令桥（**可选集成**：装了 DT_Tools 才接得上；关掉本段即完全断开与上游的连接） |
 | `ModeWatchdog` | 关闭模式时的回滚 |
 
 播报文本支持占位符：`{name}` 玩家名 / `{alive}` 剩余存活 / `{total}` 开局人数，用 `\n` 表示换行。
@@ -81,8 +83,14 @@
 
 1. **视野裁剪只是"看不见"，不是"拿不到"** —— 服务端仍全量广播位置，读内存的作弊工具依然可见。这是刻意的取舍：若在服务端掐断位置下发，会连 3D 模型一起消失，黑方将无法选中目标出刀。
 2. 密聊通道的副作用：播报会写进 `SecretLog` 并在主机迁移时被重放；**死亡玩家收不到弹泡**（客户端会跳过）；打开对讲机界面时播报的发送者显示为"未知"。
-3. `SoloPlay` 与外部插件 `DTSoloPlay` 修改的是同一个 `Define.LOBBY_MIN_PLAYER`，**不要同时启用**（两个 Prefix 的先后顺序未定义会互相覆盖）。
+3. **与上游 DT_Tools 有 4 处补丁目标重叠**（改同一个方法），已用 Harmony 优先级把顺序钉死，
+   结果不依赖插件加载顺序：**捉迷藏模式开启时本模块的模式规则优先，模式关闭时完全让给上游**。
+   重叠点是 `GameRoom.BlackKillLimit`（↔ `BlackAttack`）、`GamePlayer.StartWeaponCooltime`（↔ `BlackAttack`）、
+   `TimeManager.PushSurvivalJob`（↔ `CorpseWait`）、`Define.LOBBY_MIN_PLAYER`（↔ `LobbyMinPlayers`）。
+   `SoloPlay` 与外部插件 `DTSoloPlay` 改的也是最后那个 —— 那条通道没有优先级约定，仍建议不要同时启用。
 4. 游戏更新后若上游方法签名变动：`ConsoleBridge` 会自动失效（其余功能不受影响）；`Corpse.Interact`、`SurvivalTick` 等补丁点需按新版本重新核对。
+5. 装了 DT_Tools 时，DT 的 `/api/config/save` 会把本模块的配置**镜像副本**一并写进 `DT_Tools.cfg`。
+   那个副本不是权威 —— 以 `HideAndSeek.cfg` 为准（或在 DT CONFIG 页里改，那也会落回自有文件）。
 
 ---
 
@@ -95,6 +103,8 @@ dotnet build -c Release
 ```
 
 - 目标框架 `netstandard2.1`
-- **不需要 NuGet**：直接引用游戏目录 `BepInEx\core\` 下的 `BepInEx.dll` / `0Harmony.dll`
+- **不需要 NuGet**：直接引用游戏目录 `DeadlyTrick_Data\Managed\` 与 `BepInEx\core\` 下的程序集
+- **不依赖 DT_Tools 仓库**：本插件是独立仓库，单独 clone 下来只填对 `GameDir` 就能构建
 - 游戏不在默认路径时：`dotnet build -c Release -p:GameDir="D:\...\Deadly Trick"`
+- 需要固定到仓库内快照（可复现构建）时：`-p:GameManaged=..\libs`
 - `global.json` 只约束本目录（`rollForward: latestMajor`），不影响仓库根的配置

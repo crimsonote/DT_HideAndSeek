@@ -32,6 +32,10 @@ namespace HideAndSeek.Features.Dev
         public static ConfigEntry<int> MinPlayers;
 
         [HarmonyPrefix]
+        // 上游 DT_Tools 的 LobbyMinPlayersFeature 也 Prefix 同一个 getter，同样是"写 __result 后返回 false"。
+        // 固定本模块先跑：捉迷藏模式开着时由本模块决定最少人数；模式关闭时返回 true，
+        // 上游那条照常生效。否则两者谁先挂上谁生效，结果不可预期。
+        [HarmonyPriority(Priority.First)]
         private static bool Prefix(ref int __result)
         {
             Diagnostics.Hit("SoloPlay");

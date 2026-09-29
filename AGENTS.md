@@ -2,9 +2,11 @@
 
 《Deadly Trick》的**房主端**捉迷藏玩法模块，参照 DT_Tools 的框架实现。
 
-**核心约束：零改动上游。** 不修改 `D:\git\DT_Tools\DT_Tools\` 下任何文件；
-与该项目的交互只有两条外部路径（**配置来源** + 命令桥），
-且**两条都按「上游是否存在」自动选择** —— 有上游就借它的，没有就自己跑，详见下文第 6 条。
+**核心约束：零改动上游。** 不修改 `D:\git\DT_Tools\DT_Tools\` 下任何文件。
+
+**本模块可单独安装、单独配置。** 配置固定写在自己的 `BepInEx/config/HideAndSeek.cfg`，
+与上游是否存在无关；装了上游时额外把**同一批配置条目**镜像进它的 ConfigFile，
+使设置照旧出现在 DT CONFIG 页（见下文第 6 条）。命令桥（`hs_*`）是**可选**集成，上游不在就静默跳过。
 
 ---
 
@@ -63,14 +65,22 @@ $u8 -match '鍋'        # 应为 False
 cd D:\git\DT_Tools\HideAndSeek
 dotnet build -c Release --nologo
 
+# 游戏不在默认路径时
+dotnet build -c Release --nologo -p:GameDir="D:\...\Deadly Trick"
+# 固定到仓库内快照（可复现构建）而不是游戏安装目录
+dotnet build -c Release --nologo -p:GameManaged=..\libs
+
 # 部署（游戏需先退出，否则 DLL 被锁）
 pwsh -File deploy.ps1
 ```
 
+游戏程序集默认取 `$(GameDir)\DeadlyTrick_Data\Managed`（= 运行期实际加载的那一份），
+**不依赖 DT_Tools 仓库的 `libs/`** —— 本插件是独立仓库，单独 clone 只填 `GameDir` 就能构建。
+
 部署后**先看日志的"失败 N"**：
 
 ```text
-[HS] HideAndSeek 0.1.0 加载完成：启用 17，跳过 2，失败 0
+[HS] HideAndSeek 1.4.0 加载完成（DT_Tools 已检测到）：启用 17，跳过 2，失败 0。配置：...\BepInEx\config\HideAndSeek.cfg。捉迷藏模式当前 关闭（段 [HS_Mode].Enabled）。
 ```
 
 **`失败` 必须为 0。** 补丁挂不上不会让功能报错，只会静默失效 —— 曾因此让
@@ -87,7 +97,7 @@ pwsh -File deploy.ps1
   `ConsoleBridge` 段、`Core/ConfigMigration.cs`（迁移版本键 `ConfigVersion`，以及迁移时"取回"现有段开关）、
   `Core/ModeRuntime.cs`（捉迷藏模式总开关）、`Core/Patching/PatchLoader.cs`（段级 `Enabled` 开关）。
   这四处都是"框架自己需要"，不是"某个功能偷偷绕过 `[ConfigField]`"。
-- `Plugin.cs` 只组装：解析配置来源 → `PatchLoader.Load` → 落盘 → 报告。
+- `Plugin.cs` 只组装：打开自有配置 → 搬迁旧配置 → `PatchLoader.Load` → 迁移 → 落盘 → 镜像到上游页面 → 报告。
 - 不署他人之名；author 留空。
 
 ---
@@ -171,20 +181,28 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
 ### 6. 上游 DT_Tools 没有"插件注册表"
 
 它的 `[PatchFeature]` 与 `IConsoleCommand` 都只扫**自己**的程序集，外部无法注入。
-集成只有两条路，**且两条都按「上游是否存在」自动选择**（见 `Core/DtBridge.cs`）：
+因此集成只有两条**可选**路径（见 `Core/DtBridge.cs`）：
 
-- **配置来源（自动选择）**：上游在 ⇒ Bind 到 `DT_Tools.Plugin.Instance.Config`，段出现在 DT CONFIG 页；
-  上游不在 ⇒ 用自己的 `BepInEx/config/HideAndSeek.cfg`（`Core/Config/HsConfigFile.cs`）。
-  - ⚠️ **时机**：`ResolveConfig` **必须在 `Start()` 里调**，不能提前到 `Awake()` ——
-    上游的 `Plugin.Instance` 是在**它自己的 `Awake`** 里赋值的（BepInEx 顺序：所有 Awake → 所有 Start）。
-    提前会让探测失败、错误地落到自有配置，症状是「装了上游但设置不进 DT CONFIG 页」。
-  - ⚠️ **落盘差异**：复用上游时它的 `SaveOnConfigSet = false`（改了只进内存、**退出即丢**），
-    自有配置时是 `true`。所以**任何写配置的代码都必须显式 `Save()`** ——
-    否则症状是「装了上游的房主改完设置、退出就丢」，而没装的人一切正常，最难查。
-- **命令桥**：Prefix 拦截 `DT_Tools.Console.WebConsole.ExecuteCommand`（上游不在时自动跳过、静默降级）。
+- **配置：自己的文件为准 + 镜像到上游页面**。权威来源永远是
+  `BepInEx/config/HideAndSeek.cfg`（`Core/Config/HsConfigFile.cs`），上游在不在都一样。
+  装了上游时，额外把同一批 `ConfigEntryBase` 对象注入它的 `ConfigFile`
+  （反射私有字段 `<Entries>k__BackingField`，见 `Core/Config/ConfigEntries.cs`），
+  DT CONFIG 页因此照旧列出并可修改本模块的设置。
+  - ⚠️ **镜像必须在全部 Bind 之后做**。早一步会镜像进一批残缺条目。
+  - ⚠️ **两侧是同一批对象**，值只有一份 ⇒ 不需要任何同步代码。经 DT 页面改写会
+    立即生效，并自动落到 `HideAndSeek.cfg`。
+  - ⚠️ **上游 `Save()` 会把镜像条目一起写进 `DT_Tools.cfg`** —— 那是副本，不是权威。
+  - ⚠️ **段名绝不能与上游撞车**：撞上时 `TryMirror` 显式跳过该键（覆盖上游条目远比
+    "少显示几项"严重）。改段名/加段前先跟上游的 35 个段名对一遍。
+  - `SaveOnConfigSet` 用法：`Plugin.Start` 先置 `false`（避免 270 项各写一次文件），
+    Bind + 迁移完成后统一 `Save()`，再置回 `true` ⇒ 此后**任何来源**的改动都自动落盘。
+- **命令桥（可选）**：Prefix 拦截 `DT_Tools.Console.WebConsole.ExecuteCommand`
+  （上游不在时自动跳过、静默降级，只记 INFO；上游**装了**却找不到方法才记 WARNING）。
   ⚠️ 它的命令列表缓存 `_cachedCommandsJson` 在**它的 Awake** 里就生成好了，
   而我们的补丁在 `Start` 才挂上（BepInEx 顺序：所有 Awake → 所有 Start），
   所以必须自己重建缓存，否则命令"能执行但不在列表/补全里"。
+  段被关掉时**整类**都要跳过（`Diagnostics.IsLoaded` 判据）—— 只跳一半会让
+  `hs_*` 出现在上游列表里、点了却没反应。
 
 ### 8. 段开关会连带跳过该段的所有补丁（排查时先看这个）
 
@@ -204,6 +222,51 @@ PatchAll —— 该段里**所有**钩子都不会挂上，包括与"自动行�
 - 游戏运行时 `HideAndSeek.dll` 被锁，`Copy-Item` 会失败 —— 但**不检查返回值就会误报成功**。
 - 上游 DT_Tools 需要 `MonoMod.Backports.dll` 与 `MonoMod.ILHelpers.dll` 在
   `BepInEx\core`，缺了它 `Awake` 静默失败、WebConsole 根本不启动（19450 无监听）。
+
+### 9. 与上游改同一个方法时，必须显式钉住顺序
+
+两个插件 Prefix 同一个方法时，**Harmony 只让第一个 `return false` 的 Prefix 生效**；
+若两个都是 void、只改参数（`ref`），则**谁后跑谁的值留下**。默认优先级相同时，
+顺序取决于补丁挂载次序 ⇒ 会随插件加载先后漂移，实测不出来、也没法复现。
+
+所以**只要与上游改了同一个方法，就必须写 `[HarmonyPriority(...)]`** 并在注释里说明取向。
+本模块的统一取向是：**捉迷藏模式开启时模式规则优先，模式关闭时完全让给上游**
+（每个钩子入口的 `ModeRuntime.Bypass` 正好就是这个分界）。
+
+⚠️ 注意 `Priority` 的数值方向：`First = 800`、`Last = 0`，**值大者先跑**。
+用常量名（`Priority.First` / `Priority.Last`）而不是字面量。
+
+当前 4 处重叠，全部已钉死（加新功能前先跟上游的补丁目标对一遍）：
+
+| 目标方法 | 上游功能 | 本模块 | 优先级 | 理由 |
+|---|---|---|---|---|
+| `GameRoom.get_BlackKillLimit` | `BlackAttack.KillLimit` | `KillLimit` | `First` | 两边都写 `__result` 后 `return false`，先跑的赢 |
+| `GamePlayer.StartWeaponCooltime` | `BlackAttack.Cooltime` | `WeaponCooldown` | `First` | 上游只认入参 5/20；本模块先把 20 改掉，上游就认不出来、不再插手 |
+| `TimeManager.PushSurvivalJob` | `CorpseWait` | `CorpseReport` | **`Last`** | 本钩子是 void、只能改参数，必须**最后**赋值才能压过上游 |
+| `Define.get_LOBBY_MIN_PLAYER` | `LobbyMinPlayers` | `SoloPlay` | `First` | 同第一行 |
+
+复核方法（仓库内自带检查器，跟着代码走、不进 `.tmps/`）：
+
+```powershell
+# 列出两侧的补丁目标重叠，并对"两侧都是 Prefix 但本模块没写 [HarmonyPriority]"判 FAIL
+pwsh -File check-upstream-overlap.ps1
+pwsh -File check-upstream-overlap.ps1 -Upstream "D:\其它路径\DT_Tools"
+```
+
+```text
+# 上游 9e19234（v1.0.6.1）实测输出 —— 带 priority 的 4 条是需要钉的；后 3 条是这一版新增
+GameRoom::HandleEnterPlayer::method        HS[Postfix] DT[Prefix]           no-priority
+GameRoom::BlackKillLimit::getter           HS[Prefix]  DT[Prefix]           priority   ← 新增
+GameRoom::StartDetective::method           HS[Postfix] DT[Transpiler]       no-priority
+GamePlayer::StartWeaponCooltime::method    HS[Prefix]  DT[Prefix]           priority   ← 新增
+Define::LOBBY_MIN_PLAYER::getter           HS[Prefix]  DT[Prefix]           priority
+GameRoom::PickCharacterTick::method        HS[Postfix] DT[Postfix+Prefix]   no-priority
+TimeManager::PushSurvivalJob::method       HS[Prefix]  DT[Prefix]           priority   ← 新增
+```
+
+`HandleEnterPlayer` / `StartDetective` / `PickCharacterTick` 三条无需处理：
+上游那侧是"整段替换原方法"的 Prefix、Transpiler、与 `out __state` 配对的前后置补丁，
+与本模块的 **Postfix** 不冲突 —— **Prefix 返回 false 时 Harmony 仍会执行 Postfix**。
 
 ---
 

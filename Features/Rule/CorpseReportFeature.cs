@@ -85,6 +85,11 @@ namespace HideAndSeek.Features.Rule
         internal static class PushSurvivalJobHook
         {
             [HarmonyPrefix]
+            // 上游 DT_Tools 的 CorpseWaitFeature 也 Prefix PushSurvivalJob，并在尸体构造期内
+            // 无条件把 secondAfter 改成它自己掷出的等待秒数。本钩子是"改写后继续走原方法"（void），
+            // 不能靠返回 false 抢先，所以必须**最后**跑才能保证模式规则生效（否则上游把值盖回去，
+            // 尸体会照常在 50~70 秒后自动进审判）。模式关闭时本钩子第一句就返回，不影响上游。
+            [HarmonyPriority(Priority.Last)]
             private static void Prefix(ref int secondAfter, Action action)
             {
                 if (ModeRuntime.Bypass)
