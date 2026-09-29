@@ -531,7 +531,17 @@ namespace HideAndSeek.Features.Rule
             }
 
             int wait = TrialIntroWaitMs?.Value ?? 8000;
-            Plugin.Log.LogInfo($"[HS] EndReplay：等审判开场演出播完（{wait}ms）再推 Replay，避免开场文字被冻住。");
+
+            // ★ 照原版补上这一包：`StartFirstTalk()` 只在**进入 Discuss 状态**时被调用
+            //   （UI_TrialEvent.StartState :1658-1661）。原版流程里 Discuss 是裁判的第一站，
+            //   字幕就在那时开演、6.5 秒后由序列自己 SetActive(false) 收掉；
+            //   等轮到 Replay（几分钟后）时它早已干净。
+            //   我们从 Survive 直接跳到 Replay，从没发过 Discuss ⇒ 字幕序列根本没开始，
+            //   而它的元素仍在，StartReplay 的 ResetSlideVisual 把它设成 alpha=1 就冻住了。
+            //   ⇒ 主动发一包 Discuss 让字幕**正常开演并正常收尾**，这是原版路径。
+            room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Discuss });
+
+            Plugin.Log.LogInfo($"[HS] EndReplay：已发 Discuss 让审判开场字幕正常开演，等 {wait}ms 播完再推 Replay。");
             room.PushAfter(wait, () => BroadcastReplay(plan));
         }
 
