@@ -1,5 +1,6 @@
 ﻿using HideAndSeek.Core;
 using HideAndSeek.Features.Broadcast;
+using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Weapon;
 
 namespace HideAndSeek.Features.UI
@@ -34,6 +35,13 @@ namespace HideAndSeek.Features.UI
                 // 捉迷藏模式总开关：段 [HS_Mode].Enabled。
                 // 改后即时生效 —— 各补丁入口首行读 ModeRuntime.Bypass 短路，无需重启。
                 LobbySettingItem.Toggle("hs_mode", "启用捉迷藏", () => ModeRuntime.Enabled),
+
+                // 首刀保护：段 [FirstDeathProtect].ProtectEnabled。
+                // 上一局第一个死亡者，在本局有人死亡之前不会被杀（服务端吞刀 + 失败音效 + 提示攻击者）。
+                // 它属于"基本"级设置 —— 决定这一局怎么玩，且改动了不会破坏机制。
+                // 改后即时生效（每次出刀都读它），无需重启。
+                LobbySettingItem.Toggle("first_death_protect", "启用首刀保护",
+                    () => FirstDeathProtectFeature.ProtectEnabled),
 
                 // 开局直接发刀：段 [WeaponGrant].GiveAtStart。
                 // 与"自行跑刀"互斥；在 GameRoom.StartSurvive 之后延迟 GrantDelayMs 毫秒发刀。
