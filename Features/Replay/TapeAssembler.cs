@@ -275,11 +275,22 @@ namespace HideAndSeek.Features.Replay
             if (result.Count > 2)
             {
                 var headShot = result[0];
-                var body = result.GetRange(1, result.Count - 1);
-                body.Sort((a, b) => a.TimeStamp.CompareTo(b.TimeStamp));
+
+                // ★ 必须用**稳定排序**（`OrderBy`），不能用 `List<T>.Sort`（内省排序，不稳定）。
+                //   原版磁带里**同一时间戳的帧顺序是有意义的**，不稳定排序会把它打乱。
+                //   实测（"拿刀"幕，同一卷磁带的原始段）：
+                //       [79] t=64.370  Armory StateList=[1, 0, 90, 44, …]            ← 刀还在
+                //       [87] t=64.370  Armory StateList=[2, 0, 90, 91, 1, 465, …]    ← 刀被取走
+                //   而排序后变成了"[取走] 在前、[还在] 在后" ⇒ 客户端最后执行的是**旧状态**
+                //   ⇒ 用户看到的现象正是"拿刀幕结束时刀没被拿走"。
+                var ordered = global::System.Linq.Enumerable.ToList(
+                    global::System.Linq.Enumerable.OrderBy(
+                        global::System.Linq.Enumerable.Skip(result, 1),
+                        delegate (SnapShot s) { return s.TimeStamp; }));
+
                 result.Clear();
                 result.Add(headShot);
-                result.AddRange(body);
+                result.AddRange(ordered);
             }
 
             // ── ⑥ 时间编辑（index 1）────────────────────────────────────
