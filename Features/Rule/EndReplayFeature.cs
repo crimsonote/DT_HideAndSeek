@@ -185,6 +185,8 @@ namespace HideAndSeek.Features.Rule
         private static bool _played;
         private static bool _inReplay;
         private static Action _continueSettlement;
+        /// <summary>当前这一段的"隐藏观察者"id（客户端从 `RecordManager._blackId` 读出）；0＝原版主视角，不处理。</summary>
+        private static int _anchorId;
 
         private static long Slot(int playerId, int key) => ((long)playerId << 32) | (uint)key;
 
@@ -196,6 +198,7 @@ namespace HideAndSeek.Features.Rule
             _played = false;
             _inReplay = false;
             _continueSettlement = null;
+            _anchorId = 0;
         }
 
         private static bool AddClip(int key, int recorderId, string kind, float before, float after)
@@ -1169,52 +1172,14 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 【临时诊断】按"文本值"反查"文本键"。
+        /// 回放开始时把「黑方就是本机玩家」的那条昵称救回来（原版 `BeginSession` 会关掉它），
+        /// 并让它的替身(id=0)显示**红色** —— 观众因此一眼看出「黑刀＝黑幕」。
         ///
-        /// 用途：确定界面上的某行字到底来自哪个键。判据来自 `Managers.GetText` 的实现：
-        ///     缺键时它会 `Debug.LogError("[Text] Missing TextData key: …")` 并**直接返回键名**，
-        ///     所以"中文界面上出现韩文"只能说明**中文表里那一行的值本来就没翻译**，不是缺键。
-        ///     知道键名就能反查是哪个界面元素在显示它。
-        ///
-        /// 挂在 `DataManager.InitLanguageText` 之后：**每次启动 / 切语言都会跑一次，不需要打对局**。
-        /// 结论拿到后本类即可删除。
-        /// </summary>
-        [HarmonyPatch(typeof(DataManager), "InitLanguageText")]
-        internal static class TextKeyProbeHook
-        {
-            [HarmonyPostfix]
-            private static void Postfix()
-            {
-                try
-                {
-                    int hits = 0;
-                    foreach (var kv in Managers.Data.TextDic)
-                    {
-                        string v = kv.Value?.Text;
-                        if (string.IsNullOrEmpty(v))
-                            continue;
-                        if (v.IndexOf("投票结果", global::System.StringComparison.Ordinal) < 0
-                            && v.IndexOf("논의 시작", global::System.StringComparison.Ordinal) < 0)
-                            continue;
-                        hits++;
-                        Plugin.Log.LogWarning($"[HS][诊断] 界面文字『{v}』← 文本键 {kv.Key}（DataId={kv.Value.DataId}）");
-                    }
-                    Plugin.Log.LogInfo($"[HS][诊断] 文本表扫描完成：共 {Managers.Data.TextDic.Count} 条，命中 {hits} 条。");
-                }
-                catch (Exception ex)
-                {
-                    Plugin.Log.LogWarning($"[HS][诊断] 文本表扫描失败 — {ex.Message}");
-                }
-            }
-        }
-
-        /// <summary>
-        /// 【临时诊断】回放开始时，把审判 UI 里"文字含「投票结果」或「논의 시작」"的元素找出来，
-        /// 打印它的名字 / 层级路径 / 自身与在层级中的激活状态 —— 用来确定那两行字到底是哪个元素、
-        /// 是"某个面板的一部分"还是"独立常显的标签"（决定该关谁）。结论拿到后本类即可删除。
+        /// 注意这不影响"隐藏观察者的昵称"：那条由 <see cref="HideAnchorNameTag"/> 负责，
+        /// 两者作用的对象不同（这里是 id=0 的本机替身，那里是锚点观察者）。
         /// </summary>
         [HarmonyPatch]
-        internal static class TrialLabelProbeHook
+        internal static class ReplayNameTagHook
         {
             private static MethodBase Target()
                 => AccessTools.Method(AccessTools.TypeByName("UI_TrialEvent"), "StartReplay");
@@ -1256,39 +1221,6 @@ namespace HideAndSeek.Features.Rule
                         }
                     }
 
-                    int hits = 0;
-                    foreach (var tr in ui.gameObject.GetComponentsInChildren<UnityEngine.Transform>(true))
-                    {
-                        string text = null;
-                        foreach (var c in tr.GetComponents<UnityEngine.Component>())
-                        {
-                            if (c == null)
-                                continue;
-                            var p = c.GetType().GetProperty("text");
-                            if (p == null || p.PropertyType != typeof(string))
-                                continue;
-                            text = p.GetValue(c) as string;
-                            if (!string.IsNullOrEmpty(text))
-                                break;
-                        }
-
-                        if (string.IsNullOrEmpty(text))
-                            continue;
-                        if (text.IndexOf("投票结果", global::System.StringComparison.Ordinal) < 0
-                            && text.IndexOf("논의 시작", global::System.StringComparison.Ordinal) < 0)
-                            continue;
-
-                        var chain = new List<string>();
-                        var cur = tr;
-                        while (cur != null && cur != ui.transform)
-                        {
-                            chain.Insert(0, $"{cur.name}[self={cur.gameObject.activeSelf},hier={cur.gameObject.activeInHierarchy}]");
-                            cur = cur.parent;
-                        }
-                        Plugin.Log.LogWarning($"[HS][诊断] 审判UI文字『{text}』元素={tr.name} 路径={string.Join(" < ", chain)}");
-                        hits++;
-                    }
-                    Plugin.Log.LogInfo($"[HS][诊断] 审判UI文字扫描完成：命中 {hits} 个。");
                 }
                 catch (Exception ex)
                 {
@@ -1369,6 +1301,90 @@ namespace HideAndSeek.Features.Rule
                 catch (Exception ex)
                 {
                     Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：诊断日志失败 — {ex.Message}");
+                }
+            }
+
+            /// <summary>
+            /// 隐藏观察者的昵称必须**每段都补一刀**：`BeginTape` 末尾的 `ChangeSilhouette(true)`
+            /// 只是"顺带"把昵称关掉一次（Player.cs:1954），而每段开头都会
+            /// `Despawn(全体) → ApplySpawn(首帧)`，那次 `SetInfo → Refresh()` 又会把它打开。
+            ///
+            /// 锚点 id 就是 `_blackId`（`BeginTape` 里由首帧 id 折出来的那个）—— 我们的首帧是隐藏观察者，
+            /// 所以它＝观察者 id；等于 0 表示走的是原版主视角（本机玩家替身），那条路不碰。
+            /// </summary>
+            [HarmonyPostfix]
+            private static void HideObserverNameTag(RecordManager __instance)
+            {
+                try
+                {
+                    int anchor = Traverse.Create(__instance).Field("_blackId").GetValue<int>();
+                    HideAnchorNameTag(anchor);
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：读取锚点失败 — {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// 客户端：把"隐藏观察者"的昵称彻底关掉（实测：回放镜头正中浮着一个「假人4」的 ID）。
+        ///
+        /// 两步都要做，缺一不可（读码 + 实测）：
+        ///   · `BeginTape` 末尾对它调 `ChangeSilhouette(true)`，其中 `NameTag.SetActive(false)`（Player.cs:1954）
+        ///     —— 但那是**一次性**的，任何 `ToggleEffects(true)` 都会把它打开；
+        ///   · 更要命的是 `Player.Refresh()`（Player.cs:2299）末尾有 `_forceHideNameTag = false`
+        ///     并重新 `NameTag.SetInfo(DisplayName)` ⇒ 每段 `Despawn → ApplySpawn → SetInfo → Refresh`
+        ///     都会让昵称复活。
+        ///   ⇒ 用原版自带的**持久**开关 `SetForceHideNameTag(true)`（`ToggleEffects` 会尊重
+        ///     `!\_forceHideNameTag`，Player.cs:1713），再由 `AnchorNameTagHook` 在 `Refresh` 之后补一刀。
+        /// </summary>
+        private static void HideAnchorNameTag(int anchorId)
+        {
+            _anchorId = anchorId;
+            if (anchorId <= 0)
+                return;
+
+            try
+            {
+                var p = Managers.Player.GetPlayerCache(anchorId);
+                if (p?.NameTag == null)
+                    return;
+
+                p.SetForceHideNameTag(true);
+                p.NameTag.gameObject.SetActive(false);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：隐藏观察者昵称失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 客户端：`Player.Refresh()` 会重置 `_forceHideNameTag`（见 <see cref="HideAnchorNameTag"/>），
+        /// 所以在它之后补一刀。只在"回放正在播 + 这个玩家就是当前锚点"时才动手，
+        /// 绝不影响正常对局里的昵称显示。
+        /// </summary>
+        [HarmonyPatch(typeof(Player), nameof(Player.Refresh))]
+        internal static class AnchorNameTagHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(Player __instance)
+            {
+                try
+                {
+                    if (_anchorId <= 0 || __instance?.PublicInfo == null)
+                        return;
+                    if (__instance.PublicInfo.PlayerId != _anchorId)
+                        return;
+                    if (!Managers.Record.IsPlaying)
+                        return;
+                    if (__instance.NameTag != null)
+                        __instance.NameTag.gameObject.SetActive(false);
+                }
+                catch
+                {
+                    // 昵称没藏住不该影响回放，静默。
                 }
             }
         }
