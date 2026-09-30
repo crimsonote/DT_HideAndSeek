@@ -217,6 +217,12 @@ namespace HideAndSeek.Features.Replay
             {
                 var act = plan.Act;
 
+                // 诊断：**首帧位置到底取自哪一帧** —— 它来自房主侧采样（`HostRecorder.At`），
+                // 而那是"≤ 窗口起点的最近一帧"，可能会兜底到很早的帧。打出来才能判定
+                // "首帧位置为什么与磁带里的事实不符"（实测：拿刀幕首帧 (8149,3563)，
+                // 而磁带里那一刻他在 (8378,4925)，差 1316 单位 ⇒ 角色会猛地闪一下）。
+                DumpHeadPos(act, raw);
+
                 // 诊断：原始磁带里到底有**谁**的 SpawnShot、各多少枚、时间戳范围。
                 // 用来区分两种"画面里没人"：① 磁带里真的没有别人（录制侧就没录到）；
                 // ② 磁带里有、但被后面的某一层过滤掉了。
@@ -537,6 +543,70 @@ namespace HideAndSeek.Features.Replay
             {
                 Plugin.Log.LogWarning($"[HS-Replay] 标记黑幕昵称失败 — {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 诊断：**首帧位置取自哪一帧**。
+        ///
+        /// 首帧位置来自 `HostRecorder.At(subjectId, 窗口起点)`，即"房主侧采样里 ≤ 起点的那一帧"。
+        /// 而 `AtOrBefore` 在"起点早于所有帧"时会**兜底返回最早的一帧** ⇒ 那时位置可以差出很远。
+        /// 这条日志把"取到的帧自己的时间戳"和"磁带里同一时刻主角在哪"并列，
+        /// 一眼就能看出是**采样太旧**、**兜底触发**，还是**两侧数据本身不一致**。
+        /// </summary>
+        private static void DumpHeadPos(Act act, List<SnapShot> frames)
+        {
+            try
+            {
+                var info = HostRecorder.At(act.SubjectId, act.Window.From, out _, out float atTime);
+                if (info?.Pos == null)
+                {
+                    Plugin.Log.LogWarning($"[HS-Replay/诊断] 【{ActTable.Name(act.Kind)}#{act.Key}】"
+                        + $"主角 #{act.SubjectId} 在房主采样里取不到位置（At({act.Window.From:F2}) = null）");
+                    return;
+                }
+
+                float dx = 0f, dy = 0f;
+                string tapeSide = "；磁带里找不到该 id 的帧";
+                var nearest = NearestFrame(frames, act.SubjectId, act.Window.From);
+                if (nearest != null && nearest.Spawn != null && nearest.Spawn.Pos != null)
+                {
+                    dx = nearest.Spawn.Pos.X - info.Pos.X;
+                    dy = nearest.Spawn.Pos.Y - info.Pos.Y;
+                    tapeSide = $"；磁带里最近的 #{act.SubjectId} 帧 t={nearest.TimeStamp:F2}"
+                        + $" pos=({nearest.Spawn.Pos.X:F0},{nearest.Spawn.Pos.Y:F0})";
+                }
+
+                Plugin.Log.LogInfo($"[HS-Replay/诊断] 【{ActTable.Name(act.Kind)}#{act.Key}】"
+                    + $"首帧位置 = 房主采样 ({info.Pos.X:F0},{info.Pos.Y:F0})，取自 **t={atTime:F2}**"
+                    + $"（窗口起点 {act.Window.From:F2}，相差 {act.Window.From - atTime:F2}s）"
+                    + tapeSide
+                    + $"；两侧相距 {Math.Sqrt(dx * dx + dy * dy):F0} 单位");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay/诊断] 首帧位置诊断失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>磁带里离 `t` 最近的一枚该 id 的出场帧（诊断对照用）。</summary>
+        private static SnapShot NearestFrame(List<SnapShot> frames, int id, float t)
+        {
+            SnapShot best = null;
+            float bestD = float.MaxValue;
+            if (frames == null)
+                return null;
+            foreach (var s in frames)
+            {
+                if (s?.Type != ESnapShotType.SpawnShot || s.Spawn == null || s.Spawn.PlayerId != id)
+                    continue;
+                float d = Math.Abs(s.TimeStamp - t);
+                if (d < bestD)
+                {
+                    bestD = d;
+                    best = s;
+                }
+            }
+            return best;
         }
 
         /// <summary>

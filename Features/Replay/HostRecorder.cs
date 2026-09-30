@@ -210,8 +210,18 @@ namespace HideAndSeek.Features.Replay
         /// 因为"他早就站在那儿了"比"他不在场"更接近事实。
         /// </summary>
         public static PublicPlayerInfo At(int id, float t, out float velocity)
+            => At(id, t, out velocity, out _);
+
+        /// <summary>
+        /// 取"≤ t 的最近一帧"。
+        /// <paramref name="atTime"/> 回传**那一帧自己的时间戳** —— 排障用：
+        /// 因为 <see cref="AtOrBefore"/> 在"t 早于所有帧"时会兜底返回 `rows[0]`（最早的一帧），
+        /// 那时拿到的位置与 t 时刻的真实位置相差可以很大。
+        /// </summary>
+        public static PublicPlayerInfo At(int id, float t, out float velocity, out float atTime)
         {
             velocity = 0f;
+            atTime = -1f;
             if (!ById.TryGetValue(id, out var list) || list.Count == 0)
                 return null;
 
@@ -220,6 +230,7 @@ namespace HideAndSeek.Features.Replay
                 return null;
 
             velocity = row.Velocity;
+            atTime = row.Time;
             return row.Info.Clone();
         }
 
