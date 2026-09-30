@@ -72,8 +72,18 @@ namespace HideAndSeek.Features.Replay
                     return Fallback(subjectId, "房间不存在");
 
                 // ① 已死 + 仍在房间（分成"在本幕画面里"与"不在"两档，各自取离主角最远的）
-                // ★ 候选取舍里还有一层**比"在不在画面里"更硬**的判据：
-                //   **这个人有没有客户端**。
+                // ★ 候选取舍里还有一层：**这个人有没有客户端**。
+                //
+                //   ⚠ **但必须说清现实**：**正式对局里没有假人**（假人只是 `DummyFeature` 的测试装置），
+                //     所以下面两个"无客户端"档**通常是空的**，实战命中的几乎总是**第三档** ——
+                //     即"剪影必然是某个有客户端的真人"，而他**本人那台机器就必然走 `_blackId = 0` 分支**。
+                //     ⇒ 该分支在正式对局里**无法避免**：每台客户端的 `_myPlayerId` 都不同，
+                //       而首帧 id 必然是某个人（必须"客户端认识"，否则 `_cache[id]` 直接抛）。
+                //     保留这两档只是为了"**恰好有假人时**能更优"，**不是**为了解决问题。
+                //
+                //   而第三档的后果已经量化过，可以接受：`ChangeSilhouette` 不会执行（不涂黑）、
+                //   镜头由 `AreaShot` 决定（不受影响）、多出来的 0 号玩家 `IsGhost = true`（身体不可见）
+                //   —— 唯一残留是它显示**一个角色名标签**，而且只有**剪影本人**（已死的观战者）看得到。
                 //
                 //   首帧的 id 会成为每台客户端的 `_blackId`：
                 //       _blackId = (tape[0].Spawn.PlayerId != _myPlayerId) ? tape[0].Spawn.PlayerId : 0;
@@ -131,7 +141,13 @@ namespace HideAndSeek.Features.Replay
 
                 pick = Farthest(inScene, subjectId, windowStart);
                 if (pick > 0)
-                    return new Result { Id = pick, Why = "起点即幽灵·本幕出场（他有客户端，若正是他自己则该机走 _blackId=0 分支）" };
+                    return new Result
+                    {
+                        Id = pick,
+                        Why = "起点即幽灵·本幕出场（**他有客户端 ⇒ 正是他自己那台会走 `_blackId = 0`**："
+                            + "不涂黑、镜头不受影响、多出一个不可见的 0 号玩家只带一个角色名标签。"
+                            + "正式对局里这是**预期行为**，不是缺陷）",
+                    };
 
                 pick = Farthest(offScene, subjectId, windowStart);
                 if (pick > 0)
