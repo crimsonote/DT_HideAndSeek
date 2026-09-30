@@ -30,11 +30,20 @@ namespace HideAndSeek.Features.Replay
     /// </summary>
     internal static class HostRecorder
     {
-        /// <summary>环形缓冲时长。自爆窗口 6.5s、最后时段 3s 都远小于它；留 45s 是为了"结算类片段"也能取到历史。</summary>
-        private const float KeepSeconds = 45f;
+        /// <summary>
+        /// 环形缓冲时长 —— **必须覆盖整局**。
+        ///
+        /// 为什么从 45 秒提到 300 秒（实测）：客户端磁带是"最近约 14 秒"的缓冲，
+        /// 而结算是整局结束那一刻才发生的 ⇒ **早期事件（第一次刀杀等）的窗口根本不在磁带里**。
+        /// 实测：3 次刀杀里只有最后一次能裁出帧，前两次裁出 3 帧（= 首帧 + 1 枚出场帧 + 时间编辑，
+        /// 即窗口内一帧素材都没有）。那些幕只能由**房主侧采样**兜底，所以它得活到结算。
+        ///
+        /// 内存量级：5 人 × 10Hz × 300s ≈ 1.5 万帧 × ~120B ≈ 1.8MB ⇒ 可以接受。
+        /// </summary>
+        private const float KeepSeconds = 300f;
 
         /// <summary>超过这个帧数就强制裁剪（防住"人多 + 高刷"时的无限增长）。</summary>
-        private const int MaxRows = 40000;
+        private const int MaxRows = 60000;
 
         /// <summary>一次采样 —— 某个玩家在某个时刻的样子。</summary>
         private sealed class Row

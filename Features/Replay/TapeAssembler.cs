@@ -22,6 +22,8 @@ namespace HideAndSeek.Features.Replay
         public int SubjectId;
         public int FramesIn;
         public int FramesOut;
+        /// <summary>窗口内**来自素材的**帧数（不含首帧/出场帧/时间编辑）。为 0 ⇒ 这一段其实没有素材。</summary>
+        public int RawInWindow;
         public int RosterAdded;
         public int ToxicDropped;
         /// <summary>排序前时间戳逆序的处数（&gt;0 说明排序在救场）。</summary>
@@ -183,6 +185,7 @@ namespace HideAndSeek.Features.Replay
             }
 
             // ── ③ 窗口过滤 + ④ 剔毒帧 ───────────────────────────────────
+            int rawInWindow = 0;
             if (frames != null)
             {
                 foreach (var s in frames)
@@ -208,7 +211,20 @@ namespace HideAndSeek.Features.Replay
                     }
 
                     result.Add(s);
+                    rawInWindow++;
                 }
+            }
+            report.RawInWindow = rawInWindow;
+
+            // ★ 窗口里**一帧素材都没有** ⇒ 判失败，让调用方降级到服务端合成。
+            //   为什么必须显式判：客户端磁带是"最近约 14 秒"的环形缓冲，而结算是整局结束那一刻
+            //   才发生的 ⇒ **早期事件的窗口根本不在磁带里**。此时若照常返回"首帧 + 出场帧 + 时间编辑"
+            //   这几帧（它们本身是合规的），调用方会以为这一段有素材 ⇒ 那一幕就变成空转（实测"吞幕"）。
+            if (rawInWindow == 0)
+            {
+                report.Fail = $"窗口内没有素材帧（素材给了 {frames?.Count ?? 0} 帧，但都不在窗口内 —— "
+                    + "客户端缓冲只保留最近约 14 秒，早期事件拿不到）";
+                return null;
             }
 
             // ── ⑤ 排序（首帧固定）────────────────────────────────────────
