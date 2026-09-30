@@ -72,8 +72,26 @@ namespace HideAndSeek.Features.Replay
                     return Fallback(subjectId, "房间不存在");
 
                 // ① 已死 + 仍在房间（分成"在本幕画面里"与"不在"两档，各自取离主角最远的）
+                // ★ 候选取舍里还有一层**比"在不在画面里"更硬**的判据：
+                //   **这个人有没有客户端**。
+                //
+                //   首帧的 id 会成为每台客户端的 `_blackId`：
+                //       _blackId = (tape[0].Spawn.PlayerId != _myPlayerId) ? tape[0].Spawn.PlayerId : 0;
+                //   所以**若剪影槽位正好是某台机器的"自己"，那台机器就会拿到 `_blackId = 0`**。
+                //   那个分支不会崩（`ChangeSilhouette` 找的是 `Players[0]`，而 0 号替身只在 `_cache`
+                //   里 ⇒ 整句不执行），但会留下两个残留：
+                //     ① `ApplySpawn(首帧)` 因 `Players.ContainsKey(0)` 为假而 `Spawn(0)`
+                //        ⇒ 场上多出一个 0 号玩家；
+                //     ② 那个玩家的 `IsGhost` 虽然为 true（身体不可见），**昵称却会显示**。
+                //
+                //   ⇒ 而"没有客户端的人（假人）"**不可能**成为任何一台机器的 `_myPlayerId`
+                //     ⇒ 剪影落在他身上，**所有机器都走正常路径**。
+                //   所以把"无客户端"排在最前，它比"离主角远"重要得多。
+                var noClientInScene = new List<int>();
+                var noClientOffScene = new List<int>();
                 var inScene = new List<int>();
                 var offScene = new List<int>();
+
                 foreach (var p in room.DeadPlayers)
                 {
                     int id = p?.PublicInfo?.PlayerId ?? 0;
@@ -84,30 +102,40 @@ namespace HideAndSeek.Features.Replay
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
 
+                    bool noClient = p.Session == null;
+
                     if (rosterIds == null || !rosterIds.Contains(id))
                     {
                         // 他不会出现在画面里（没被 ApplySpawn 装配）⇒ 一定看不见
-                        offScene.Add(id);
+                        (noClient ? noClientOffScene : offScene).Add(id);
                         continue;
                     }
 
-                    // ★ 他在画面里 ⇒ 就**必须先确认"他整段都不可见"**：
-                    //   已死者之所以能当剪影，靠的是 `IsGhost = true` ⇒ 客户端 `RefreshGhostVisual`
+                    // ★ 他在画面里 ⇒ 还必须确认"他**整段**都不可见"：
+                    //   已死者能当剪影靠的是 `IsGhost = true` ⇒ 客户端 `RefreshGhostVisual`
                     //   走 case 2 把他关掉。而"起点时还活着"的人不满足这个前提
                     //   —— 典型就是**本幕的受害者**（窗口 = [T-3, T+1]，他在 T 才死）
                     //   ⇒ 他一整段本色可见，剪影落上去就是"死前没人影、死后才冒出尸体"。
                     var at = HostRecorder.At(id, windowStart);
                     if (at != null && at.IsGhost)
-                        inScene.Add(id);
+                        (noClient ? noClientInScene : inScene).Add(id);
                 }
 
-                int pick = Farthest(inScene, subjectId, windowStart);
+                int pick = Farthest(noClientInScene, subjectId, windowStart);
                 if (pick > 0)
-                    return new Result { Id = pick, Why = "起点即幽灵·本幕出场（取离主角最远）" };
+                    return new Result { Id = pick, Why = "起点即幽灵·本幕出场·**无客户端**（取离主角最远）" };
+
+                pick = Farthest(noClientOffScene, subjectId, windowStart);
+                if (pick > 0)
+                    return new Result { Id = pick, Why = "已死·不在画面·**无客户端**（取离主角最远）" };
+
+                pick = Farthest(inScene, subjectId, windowStart);
+                if (pick > 0)
+                    return new Result { Id = pick, Why = "起点即幽灵·本幕出场（他有客户端，若正是他自己则该机走 _blackId=0 分支）" };
 
                 pick = Farthest(offScene, subjectId, windowStart);
                 if (pick > 0)
-                    return new Result { Id = pick, Why = "已死·不在画面（取离主角最远）" };
+                    return new Result { Id = pick, Why = "已死·不在画面（同上，可能有客户端）" };
 
                 // ② 本幕 roster 之外的人 —— 不会被 ApplySpawn 装配到画面里
                 var outside = new List<int>();
