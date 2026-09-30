@@ -87,6 +87,7 @@ namespace HideAndSeek.Features.Replay
             _ending = "结算前";
             _reported = false;
             HostRecorder.Clear();
+            ReplayDirector.Reset();
         }
 
         // 借用现有实现的配置值（阶段 6 搬过来就独立了）
@@ -293,7 +294,70 @@ namespace HideAndSeek.Features.Replay
                 if (!Armed)
                     return;
 
-                Report();
+                // 结算时补登记"结算类"的幕（它们的事件时刻就是"结算被拦下"这一刻）。
+                RegisterSettlementActs();
+
+                Report();   // 概览：阈值 / 采样
+                // 影子：逐幕做一次完整装配并打印结果（不发包、不广播、不播放）。
+                ReplayDirector.ShadowAssemble(Acts, EndReplayFeature.BombBlackout?.Value ?? false);
+            }
+        }
+
+        /// <summary>
+        /// 结算时补登记"结算类"的幕 —— 它们的事件时刻都是**结算被拦下**这一刻。
+        ///
+        /// 规则（避免同一件事登记两遍）：
+        ///   · 已经有「自爆」幕（黑胜处决）⇒ 不再排「最后时段」：那一刻白方全死了，没有存活着可拍；
+        ///   · 已经有「巡礼」幕（白胜）⇒ 同上，`TriggerWhiteWin` 已经排过；
+        ///   · 否则 ⇒ 为**还活着的白方**各排一段「最后时段」（纯刀杀造成的黑胜局就是这种）；
+        ///   · 「黑方收尾」若还没有就补一段 —— 黑胜时与爆炸同时，没有自爆就落在结算前。
+        /// </summary>
+        private static void RegisterSettlementActs()
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                    return;
+
+                int blackId = FindBlackId(room);
+                float now = Now();
+
+                if (!HasKind(ActKind.SelfDestruct) && !HasKind(ActKind.Tour))
+                {
+                    int seq = 0;
+                    foreach (int id in AliveWhites(room))
+                    {
+                        if (Acts.Count >= MaxClips)
+                            break;
+                        var p = FindPlayer(room, id);
+                        Add(ActKind.Final, id, p?.Session != null ? id : 0,
+                            ActTable.Plain(now, EndBefore, EndAfter), $"存活者 #{id}");
+                        seq++;
+                    }
+                    if (seq > 0)
+                        Plugin.Log.LogInfo($"[HS-Shadow] 结算补登记「最后时段」{seq} 段（存活白方各一段、同一段时间）。");
+                }
+
+                if (!HasKind(ActKind.BlackTail) && blackId > 0 && Acts.Count < MaxClips)
+                {
+                    // 黑方收尾的时刻：有自爆就跟着爆炸（自爆开始 + 6s），否则落在结算前。
+                    float anchor = now;
+                    foreach (var a in Acts)
+                    {
+                        if (a.Kind == ActKind.SelfDestruct)
+                        {
+                            anchor = a.Window.From + ActTable.CollarToDeadSec;
+                            break;
+                        }
+                    }
+                    Add(ActKind.BlackTail, blackId, 0,
+                        ActTable.BlackTailOnBomb(anchor, BlackTail), "黑方收尾（结算补登记）");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Shadow] 结算补登记失败 — {ex.Message}");
             }
         }
 
