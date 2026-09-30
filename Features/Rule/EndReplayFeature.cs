@@ -515,23 +515,49 @@ namespace HideAndSeek.Features.Rule
                     float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
                     float per = Math.Max(0.5f, (before + after) / Math.Max(1, subjects.Count));
 
+                    // ★ 假人**照样登记**，只是**不向他要磁带**（没有客户端）。
+                    //   登记之后 `SendPlaceholders` 看到"这段没磁带"就会走服务端兜底合成，
+                    //   而服务端缓冲里是有他的采样的（`EndReplayHostTape.AddRows` 覆盖
+                    //   `Players` + `DeadPlayers`，假人也在里面），合成出来的镜头就是"盯着他"。
+                    //   以前在这里 `continue` 直接跳过 ⇒ 段压根不存在 ⇒ 兜底没机会跑、整幕消失
+                    //   （实测：白方全是假人时，日志里只有 4 段刀杀 + 1 段黑方，白方各段 key 一个都没有）。
                     int seq = 0;
+                    int noClient = 0;
                     foreach (int id in subjects)
                     {
                         var p = FindPlayerById(room, id);
-                        if (p?.Session == null || p.IsDummy)
+                        if (p?.PublicInfo == null)
                             continue;
-                        if (RequestRecord(p, BaseKey + KeyWhiteTour + seq, "巡礼", per, 0f))
+
+                        int key = BaseKey + KeyWhiteTour + seq;
+                        bool ok;
+                        if (p.IsDummy || p.Session == null)
+                        {
+                            ok = AddClip(key, id, "巡礼", per, 0f);      // 只登记，交给服务端兜底
+                            noClient++;
+                        }
+                        else
+                        {
+                            ok = RequestRecord(p, key, "巡礼", per, 0f); // 真人：先要客户端磁带
+                        }
+                        if (ok)
                             seq++;
                     }
 
+                    // 「黑方收尾」**固定走服务端兜底**，不向凶手要磁带：这一段的录制者就是凶手本人，
+                    // 而观众通常也是他 ⇒ 原版会丢弃"你自己 id"的移动帧（`HandleMove` 守卫
+                    // `MyPlayer.PublicInfo.PlayerId != pkt.PlayerId`）、并把相机目标改写成 id 0 的
+                    // 本机替身 ⇒ 替身没有移动帧可跟 ⇒ **相机定格、画面里也不出现他本人**（实测如此）。
+                    // 兜底合成里镜头＝凶手本人、剪影槽位＝幽灵替身，而世界帧里带着凶手真实的移动帧
+                    // ⇒ 客户端改写成 0 之后替身沿他真实路径走 ⇒ 镜头正常跟。
                     var black = FindPlayerById(room, blackId);
-                    if (black?.Session != null && !black.IsDummy)
-                        RequestRecord(black, BaseKey + KeyBlackAct, "黑方", 0f, tail, -tail);
+                    if (black?.PublicInfo != null)
+                        AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail, null, -tail);
 
-                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 幸存白方 {subjects.Count} 人各要一段"
-                        + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}，优先客户端磁带）"
-                        + $" + 黑方失败收尾 {tail:F1}s（窗口落在判定前 {tail:F1}s，断电视野）。");
+                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 登记 {seq} 段白方视角"
+                        + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}；其中 {noClient} 段"
+                        + "没有客户端 ⇒ 服务端兜底）+ 黑方失败收尾 1 段（服务端兜底，"
+                        + $"{tail:F1}s 断电视野，窗口落在判定前 {tail:F1}s）。");
                 }
                 catch (Exception ex)
                 {
@@ -633,23 +659,42 @@ namespace HideAndSeek.Features.Rule
                         float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
                         float per = Math.Max(0.5f, (before + after) / Math.Max(1, subjects.Count));
 
+                        // ★ 假人**照样登记**、只是不向他要磁带（没有客户端）⇒ 结算时由服务端兜底合成
+                        //   （服务端缓冲里有他的采样，镜头就是盯着他）。以前直接 `continue` 跳过 ⇒
+                        //   段不存在 ⇒ 兜底没机会跑 ⇒ 白方各幕整段消失（实测日志：只有 4 段刀杀 + 1 段黑方）。
                         int seq = 0;
+                        int noClient = 0;
                         foreach (int id in subjects)
                         {
                             var p = FindPlayerById(room, id);
-                            if (p?.Session == null || p.IsDummy)
+                            if (p?.PublicInfo == null)
                                 continue;
-                            if (RequestRecord(p, BaseKey + KeyWhiteTour + seq, "自爆", per, 0f))
+
+                            int key = BaseKey + KeyWhiteTour + seq;
+                            bool ok;
+                            if (p.IsDummy || p.Session == null)
+                            {
+                                ok = AddClip(key, id, "自爆", per, 0f);
+                                noClient++;
+                            }
+                            else
+                            {
+                                ok = RequestRecord(p, key, "自爆", per, 0f);
+                            }
+                            if (ok)
                                 seq++;
                         }
 
+                        // 「黑方收尾」固定走服务端兜底（理由见 `WhiteWinNoteHook` 里的同一段注释：
+                        // 观众通常就是凶手本人 ⇒ 原版丢弃"你自己"的移动帧 ⇒ 相机定格、他本人不入画）。
                         var black = FindPlayerById(room, blackId);
-                        if (black?.Session != null && !black.IsDummy)
-                            RequestRecord(black, BaseKey + KeyBlackAct, "黑方", 0f, tail, after);
+                        if (black?.PublicInfo != null)
+                            AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail, null, after);
 
-                        Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 白方 {subjects.Count} 人各要一段"
-                            + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}，优先客户端磁带，"
-                            + "拿不到才服务端兜底）+ 黑方收尾 {tail:F1}s（断电视野）。");
+                        Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记 {seq} 段白方视角"
+                            + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}；其中 {noClient} 段"
+                            + "没有客户端 ⇒ 服务端兜底）+ 黑方收尾 1 段（服务端兜底，"
+                            + $"{tail:F1}s 断电视野）。");
                     }
                 }
                 catch (Exception ex)
@@ -1287,6 +1332,44 @@ namespace HideAndSeek.Features.Rule
                 BroadcastHostTape(room, clip, ordered);
                 clip.Filled = true;
 
+                // ★ 幽灵替身撞上观众本人时，单独给他补发一份"换一个幽灵"的（同一 RecordTime ⇒ 后到覆盖）。
+                foreach (var v in Viewers(room))
+                {
+                    int vid = v?.PublicInfo?.PlayerId ?? 0;
+                    if (vid <= 0 || vid != ghostId)
+                        continue;
+
+                    int alt = 0;
+                    foreach (var p in room.DeadPlayers)
+                    {
+                        int cid = p?.PublicInfo?.PlayerId ?? 0;
+                        if (cid <= 0 || cid == recorderId || cid == vid)
+                            continue;
+                        if (EndReplayHostTape.HasRows(cid))
+                        {
+                            alt = cid;
+                            break;
+                        }
+                    }
+
+                    if (alt <= 0)
+                    {
+                        Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 幽灵替身 #{ghostId} "
+                            + $"正是观众 #{vid} 本人，但换不出第二个 ⇒ 他这一份不补发（保持原样）。");
+                        continue;
+                    }
+
+                    var variant = ComposeHostTape(clip, alt, recorderId, from, to);
+                    if (variant == null)
+                        continue;
+
+                    var vpkt = new S_TAPE { RecordTime = clip.Key };
+                    vpkt.SnapShots.AddRange(variant);
+                    v.Session.Send(vpkt);
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 幽灵替身 #{ghostId} "
+                        + $"正是观众 #{vid} 本人 ⇒ 单独补发一份（幽灵改 #{alt}，{variant.Count} 帧）。");
+                }
+
                 string look = clip.Kind == "黑方" ? "断电视野" : "非断电";
                 Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 客户端磁带没到 ⇒ "
                     + $"服务端兜底合成 {ordered.Count} 帧（窗口=[{from:F2},{to:F2}] "
@@ -1298,6 +1381,26 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] EndReplay：服务端合成磁带失败 — {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 房间里**有客户端**的观众（含死者 —— 死者也在 `room.Players` 里，`DeadPlayers` 只作去重兜底）。
+        /// </summary>
+        private static List<GamePlayer> Viewers(GameRoom room)
+        {
+            var list = new List<GamePlayer>();
+            var seen = new HashSet<int>();
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && p.Session != null && seen.Add(p.PublicInfo.PlayerId))
+                    list.Add(p);
+            }
+            foreach (var p in room.DeadPlayers)
+            {
+                if (p?.PublicInfo != null && p.Session != null && seen.Add(p.PublicInfo.PlayerId))
+                    list.Add(p);
+            }
+            return list;
         }
 
         /// <summary>
@@ -1866,10 +1969,18 @@ namespace HideAndSeek.Features.Rule
                         $"[HS] EndReplay：片段【{clip.Kind}】录制者 #{recorderId} 重裁 {c.SnapShots.Count} → {trimmed.Count} 帧" +
                         $"（{clip.Before:F1}s 前 / {clip.After:F1}s 后）。");
 
+                    var raw = c.SnapShots.ToList();
                     room.Push(delegate
                     {
                         room.Broadcast(sendPkt);
                         TrialManager.Instance?.SetTape(c.RecordTime, sendPkt.SnapShots.Count);
+
+                        // ★ 幽灵替身**撞上观众本人**时，单独给他再发一份"换一个幽灵"的磁带。
+                        //   客户端 `ApplySpawn`/`ApplyMove`/`ApplyArea` 都把 `== _myPlayerId` 改写成 0
+                        //   ⇒ 幽灵替身正好是某位观众自己的话，他那份里幽灵/镜头全落在 id 0 替身上。
+                        //   补发用**同一个 RecordTime** ⇒ 客户端 `_playTapes` 是"后到者覆盖"
+                        //   ⇒ 只有他换成好的那一份，其余人不受影响。
+                        SendGhostVariants(room, clip, raw, trimmed);
                     });
                     // 记下"这一段真的收到了" —— `BroadcastReplay` 靠它决定要不要补占位磁带。
                     clip.Filled = true;
@@ -1880,6 +1991,60 @@ namespace HideAndSeek.Features.Rule
                     Plugin.Log.LogWarning($"[HS] EndReplay：重裁磁带失败，交还原版 — {ex.Message}");
                     return true;
                 }
+            }
+        }
+
+        /// <summary>
+        /// ★ **幽灵替身撞上观众本人 ⇒ 单独给他再发一份"换一个幽灵"的磁带**（用户定的口径）。
+        ///
+        /// 为什么需要：幽灵（隐藏观察者）这一套本身是**已经解决的问题** —— 拿刀幕/作案幕一直在用
+        /// 它来让【凶手】没有黑幕（实测 `主视角=隐藏观察者#10(Ghost)`，那几幕正常）。
+        /// 但**选谁是服务端一次性决定的、所有人共用一份**；客户端 `ApplySpawn`/`ApplyMove`/`ApplyArea`
+        /// 都会把 `shot.PlayerId == _myPlayerId` **改写成 0**（id 0 是 `ForceSpawnReplayTemp` 的替身）
+        /// ⇒ 一旦那个幽灵替身正好是某位观众**自己**，他那份里幽灵与镜头落点全被改写 ⇒ 主视角被污染。
+        ///
+        /// 做法：补发用**同一个 RecordTime**，客户端 `_playTapes` 是"后到者覆盖"⇒ 只有他换掉，
+        /// 其余人不受影响。换不到第二个幽灵时**什么都不发**（宁可他保持原样，也不要给他一份坏的）。
+        /// </summary>
+        private static void SendGhostVariants(GameRoom room, Clip clip, List<SnapShot> raw, List<SnapShot> sent)
+        {
+            try
+            {
+                // 已广播那一份的幽灵替身 = 它的首帧 SpawnShot 的 PlayerId。
+                int ghostId = sent?.FirstOrDefault(s => s.Type == ESnapShotType.SpawnShot)?.Spawn?.PlayerId ?? 0;
+                if (ghostId <= 0)
+                    return;
+
+                foreach (var v in Viewers(room))
+                {
+                    int vid = v?.PublicInfo?.PlayerId ?? 0;
+                    if (vid <= 0 || vid != ghostId)
+                        continue;
+
+                    // 换一个幽灵重裁：把"他本人"整个排除在候选之外。
+                    var variant = TrimTape(raw, clip, new HashSet<int> { vid });
+                    int newGhost = variant?.FirstOrDefault(s => s.Type == ESnapShotType.SpawnShot)?.Spawn?.PlayerId ?? 0;
+                    if (variant == null || variant.Count < 2 || newGhost <= 0 || newGhost == vid)
+                    {
+                        Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 幽灵替身 #{ghostId} "
+                            + $"正好是观众 #{vid} 本人，但换不出第二个幽灵 ⇒ 他这一份不补发（保持原样）。");
+                        continue;
+                    }
+
+                    var pkt = new S_TAPE
+                    {
+                        RecordTime = clip.Key,
+                        TapeCount = TrialManager.Instance?.TapeCount ?? 1
+                    };
+                    pkt.SnapShots.AddRange(variant);
+                    v.Session.Send(pkt);
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 幽灵替身 #{ghostId} "
+                        + $"正是观众 #{vid} 本人 ⇒ 单独给他补发一份（幽灵改 #{newGhost}，{variant.Count} 帧）。");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：给观众补发换幽灵的磁带失败 — {ex.Message}");
             }
         }
 
@@ -1907,7 +2072,7 @@ namespace HideAndSeek.Features.Rule
         /// 首帧必须是 SpawnShot（客户端 `BeginTape` :31905 的硬要求），所以合成一枚：
         /// 时间戳取窗口起点，内容沿用原磁带里的 Spawn 信息。
         /// </summary>
-        private static List<SnapShot> TrimTape(List<SnapShot> tape, Clip clip)
+        private static List<SnapShot> TrimTape(List<SnapShot> tape, Clip clip, HashSet<int> avoidObs = null)
         {
             // 锚点取**最后一枚** NormalTimeEdit：磁带窗口是 [击杀−3, 击杀+5]（原版 `BuildUploadTape`），
             // 里面通常还含**更早那次击杀**的编辑三元组（Slow/Normal/Glitch），取第一枚会锚错时刻。
@@ -1994,7 +2159,7 @@ namespace HideAndSeek.Features.Rule
                 if (cfg == 0)
                     useTemp = true;                                   // 显式要求原版临时玩家（id=0）
                 else
-                    obsId = ResolveObserverId(tape, roster, recorderId, start, end);
+                    obsId = ResolveObserverId(tape, roster, recorderId, start, end, avoidObs);
             }
 
             var spawn = src;
@@ -2209,10 +2374,11 @@ namespace HideAndSeek.Features.Rule
         /// · **不能是录制者自己** —— 否则 `_blackId` 会被折成 0，等于没换。
         /// </summary>
         private static int ResolveObserverId(
-            List<SnapShot> tape, Dictionary<int, PublicPlayerInfo> roster, int recorderId, float start, float end)
+            List<SnapShot> tape, Dictionary<int, PublicPlayerInfo> roster, int recorderId, float start, float end,
+            HashSet<int> avoidObs = null)
         {
             int cfg = ObserverPlayerId?.Value ?? -1;
-            if (cfg > 0)
+            if (cfg > 0 && !(avoidObs != null && avoidObs.Contains(cfg)))
             {
                 Plugin.Log.LogInfo($"[HS] EndReplay：按配置指定用隐藏观察者 #{cfg}"
                     + (roster.ContainsKey(cfg) ? "。" : "（⚠ 磁带里没出现过这个 id，客户端可能没有他，请留意）。"));
@@ -2246,6 +2412,11 @@ namespace HideAndSeek.Features.Rule
                     if (id <= 0 || id == recorderId)
                         continue;
                     deadIds.Add(id.ToString());
+                    // ★ 被"避开"的 id（= 这次要单独出磁带的那位观众本人）：他客户端上会把这些帧
+                    //   改写成 id 0（`ApplySpawn`/`ApplyMove`/`ApplyArea` 的 `== _myPlayerId → 0`），
+                    //   于是幽灵替身/镜头落在他自己身上 ⇒ 这一份必须换一个幽灵重裁。
+                    if (avoidObs != null && avoidObs.Contains(id))
+                        continue;
                     if (busy.Contains(id))
                         continue;                       // 窗口内还有他自己的镜头 ⇒ 镜头会被他拽走
                     // ★ 交叉验证：房主同时也是一台客户端。宿主本机的 `_cache` 里还有这个对象
@@ -2278,6 +2449,8 @@ namespace HideAndSeek.Features.Rule
                 {
                     int id = kv.Key;
                     if (id <= 0 || id == recorderId || busy.Contains(id))
+                        continue;
+                    if (avoidObs != null && avoidObs.Contains(id))
                         continue;
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
