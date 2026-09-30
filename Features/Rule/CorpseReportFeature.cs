@@ -189,6 +189,37 @@ namespace HideAndSeek.Features.Rule
         //
         // MissionManager 是 internal，且 Harmony 无法把字符串类型名解析到 Assembly-CSharp，
         // 故用 HarmonyTargetMethod + AccessTools（与 MissionTimePenaltyFeature 同一写法）。
+            /// <summary>
+            /// 【只读探针】`Corpse.EndSurvival` 是通往调查/审判的**唯一出口**。
+            ///
+            /// 背景：本功能原本逐条拦"上游入口"（自动延迟 / 手动报警 / 任务顶满 / 限时归零），
+            /// 但实测**审判还是跑了**（用户看到 `ETrialState.VoteResult` 的界面）。
+            /// 逐条拦上游必然漏 —— 所以这里**不拦截**，只记下"到底是谁走到这一步"：
+            ///   · 下一局若出现这条日志 ⇒ 审判确实从 `EndSurvival` 进；
+            ///   · 若**没有**这条却仍进了审判 ⇒ 说明另有入口（不是 `EndSurvival`）。
+            /// 探针只写日志，不改变任何行为。
+            /// </summary>
+            [HarmonyPatch(typeof(GameCorpse), "EndSurvival")]
+            internal static class EndSurvivalProbeHook
+            {
+                [HarmonyPostfix]
+                private static void Postfix(GameCorpse __instance)
+                {
+                    try
+                    {
+                        var room = GameRoom.Instance;
+                        Plugin.Log.LogWarning(
+                            $"[HS/探针] Corpse.EndSurvival 被调用 —— corpseId={__instance?.ID ?? -1}，"
+                            + $"State={room?.State}（若为 Detective 即表示正进入调查阶段，也就是「会议/投票」的来源）。本功能本应阻止它。");
+                    }
+                    catch
+                    {
+                        // 探针不参与任何逻辑
+                    }
+                }
+            }
+
+
         [HarmonyPatch]
         internal static class AllClearEndHook
         {
