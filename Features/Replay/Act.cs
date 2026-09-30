@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace HideAndSeek.Features.Replay
 {
@@ -83,6 +84,17 @@ namespace HideAndSeek.Features.Replay
 
         /// <summary>这一段的自由备注（写进日志，方便排查）。</summary>
         public string Note;
+
+        /// <summary>
+        /// 本幕的**事件参与者**（不含主角）—— 例如「杀人」幕的受害者。
+        ///
+        /// ★ 为什么要单独记：`roster` 原本只来自"客户端磁带里出现过的人"，而磁带录的是
+        ///   **录制者当时看得到的人**。实测第 2 次刀杀之后 roster 掉到 1~2 人
+        ///   ⇒ 画面里只剩凶手 ⇒ 用户看到"对着空气挥刀，然后冒出一具尸体"。
+        ///   **参与者本来就该出现在画面里**，不该依赖"录制者有没有录到他"。
+        ///   （位置一律取房主侧采样，所以即使磁带里完全没有他，也能把他摆到正确位置。）
+        /// </summary>
+        public List<int> Subjects;
 
         public override string ToString()
             => $"{Kind}#{Key} 主角=#{SubjectId} 录制=#{RecorderId} 窗口={Window}";

@@ -223,7 +223,7 @@ namespace HideAndSeek.Features.Replay
                 DumpSpawnCensus(raw, act);
 
                 // "谁在画面里" —— 直接读**客户端真实磁带**里的 SpawnShot（那就是 AOI 的真实结果）。
-                var visibleIds = ActTable.VisibleIn(raw, act.Window.From, 0);
+                var visibleIds = SceneIds(act, raw);
                 // 位置取自房主侧采样：录制者自己的帧是 SurvivalTime 基准，从磁带取会拿到几秒前的位置。
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
                 var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
@@ -421,7 +421,7 @@ namespace HideAndSeek.Features.Replay
                     return false;
                 }
 
-                var visibleIds = ActTable.VisibleIn(frames, act.Window.From, 0);
+                var visibleIds = SceneIds(act, frames);
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
                 var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
@@ -588,6 +588,32 @@ namespace HideAndSeek.Features.Replay
             {
                 Plugin.Log.LogWarning($"[HS-Replay] SpawnShot 普查失败 — {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 本幕"**会出现在画面里的人**" = 磁带里出现过的人 ∪ **事件参与者**。
+        ///
+        /// ★ 为什么要并上参与者：`VisibleIn` 读的是"录制者当时看得到的人"，而实测
+        ///   第 2 次刀杀之后它掉到 1~2 人 ⇒ 画面里只剩凶手 ⇒
+        ///   用户看到"对着空气挥刀，然后冒出一具尸体"。
+        ///   **受害者本来就该出现在画面里**，不该依赖"录制者有没有录到他"；
+        ///   而位置一律取房主侧采样，所以即使磁带里完全没有他也能摆对位置。
+        ///
+        /// ⚠ 这个并集同时用于**补帧**和**剪影决策**：剪影必须落在"不会本色出场的人"身上，
+        ///   所以参与者（会出场）也要排除在剪影候选之外。
+        /// </summary>
+        private static List<int> SceneIds(Act act, List<SnapShot> frames)
+        {
+            var ids = ActTable.VisibleIn(frames, act.Window.From, 0);
+            if (act.Subjects == null)
+                return ids;
+
+            foreach (int id in act.Subjects)
+            {
+                if (id > 0 && !ids.Contains(id))
+                    ids.Add(id);
+            }
+            return ids;
         }
 
         /// <summary>把"画面里的人"的 id 换成本幕**窗口起点时的样子**（位置取自房主侧采样）。</summary>

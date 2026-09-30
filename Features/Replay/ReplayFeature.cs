@@ -144,6 +144,8 @@ namespace HideAndSeek.Features.Replay
         {
             public float Time;
             public int Key;
+            /// <summary>受害者 —— 他会作为"事件参与者"被强制放进本幕的画面名单。</summary>
+            public int Victim;
         }
 
         private static readonly Dictionary<int, Hit> PendingHit = new Dictionary<int, Hit>();
@@ -315,7 +317,7 @@ namespace HideAndSeek.Features.Replay
                     return;                       // 同一受害者只记第一次（多段伤害会重复触发）
 
                 int key = _nextKey++;
-                PendingHit[victim] = new Hit { Time = Now(), Key = key };
+                PendingHit[victim] = new Hit { Time = Now(), Key = key, Victim = victim };
 
                 // 录制者 = 凶手本人（客户端磁带录的是他自己的视角）
                 var rec = FindPlayer(GameRoom.Instance, attacker.PublicInfo.PlayerId);
@@ -360,8 +362,15 @@ namespace HideAndSeek.Features.Replay
                     at = Now();
                 }
 
-                AddWithKey(key, ActKind.Kill, id, id,
+                var act = AddWithKey(key, ActKind.Kill, id, id,
                     ActTable.Plain(at, KillBeforeSec?.Value ?? 3f, KillAfterSec?.Value ?? 1f), $"#{id} → #{victim}");
+
+                // ★ 受害者是**事件参与者**：他要被强制放进本幕的"画面名单"。
+                //   roster 只来自磁带里出现过的人，而磁带录的是"录制者当时看得到的人" ——
+                //   实测第 2 次刀杀之后 roster 掉到 1~2 人，画面里只剩凶手（对空气挥刀）。
+                //   参与者不该依赖这个，位置照样取房主侧采样。
+                if (victim > 0)
+                    act.Subjects = new List<int> { victim };
             }
         }
 
