@@ -792,7 +792,11 @@ namespace HideAndSeek.Features.Rule
             float before = EndBeforeSec?.Value ?? 3f;
             float after = EndAfterSec?.Value ?? 1f;
 
+            // ⚠ `blackId` 只在"白胜要把黑方那幕挪到最后"时才有值（黑胜时是 0）；
+            //   判断"这一份录制者是不是凶手"必须用**真正的凶手 id**，否则黑胜局永远判不出来
+            //   —— 实测就是这样漏掉的：黑胜局里仍然排了凶手本人的「最后时段」＝第二个黑方镜头。
             int blackId = blackClipLast ? FindBlackId(room) : 0;
+            int killerId = FindBlackId(room);
             Clip blackClip = null;
             int lastSeq = 0;
 
@@ -829,7 +833,7 @@ namespace HideAndSeek.Features.Rule
                 //   —— 主视角会被换成"隐藏观察者"，整段只剩一个被藏起来的凶手。
                 //   所以：**只要计划里已经有服务端「黑方」幕，就不再排录制者为黑方的「最后时段」**。
                 //   （纯刀杀致死的局没有「黑方」幕，那时凶手这一份仍是唯一的黑方收尾 ⇒ 照旧保留。）
-                if (blackId > 0 && p.PublicInfo.PlayerId == blackId && HasKind("黑方"))
+                if (killerId > 0 && p.PublicInfo.PlayerId == killerId && HasKind("黑方"))
                 {
                     Plugin.Log.LogInfo($"[HS] EndReplay：跳过「最后时段」#{p.PublicInfo.PlayerId}"
                         + "（他就是凶手，而黑方收尾已由服务端合成的【黑方】幕承担 —— 一个黑方镜头就够）。");
