@@ -17,15 +17,21 @@ namespace HideAndSeek.Features.Replay
     ///   旧实现把这个决策写在**两个地方**（`FindGhostStandIn` 与 `ResolveObserverId`），
     ///   判据还不一样 ⇒ 同一件事有两套规则。这里合并成一处。
     ///
-    /// 候选优先级（每条都必须保证"他不会被观众看见"）：
-    ///   ① **已死 + 仍在房间 + 客户端缓存里还有他** —— 最可靠：服务端 `MakeSpectatorGhost` 已把他
-    ///      标成 `IsGhost = true`，客户端回放期间 `RefreshGhostVisual()` 走 case 2 把幽灵替身与骨架
-    ///      **一起关掉** ⇒ 他不可见。
-    ///   ② **本幕 roster 之外的人** —— 不会被 `ApplySpawn` 装配到画面里。
+    /// ★ **统一的判据只有一条：他在本幕「整段」都不可见。** 具体分两类：
+    ///
+    ///   ① **不在画面名单里**（不会被 `ApplySpawn` 装配）⇒ 一定看不见 ⇒ 可直接用。
+    ///   ② **在画面名单里的已死者** ⇒ 只有当**窗口起点就已经是幽灵**（`IsGhost = true`）才算数：
+    ///      客户端回放期间 `RefreshGhostVisual()` 走 case 2 把幽灵替身与骨架一起关掉 ⇒ 看不见。
+    ///      ⚠ 反例正是**本幕的受害者**：窗口 `[T-3, T+1]` 里他在 `T` 才死 ⇒ 起点时还活着
+    ///      ⇒ 一整段本色可见 ⇒ 拿他当剪影就变成"死前没人影、死后才冒出尸体"。
+    ///      （实测：三幕里恰好只有"受害者被选中"的那一幕坏，另外两幕正常。）
     ///   ③ 都不行 ⇒ **当事人自己**（接受他被涂黑）。
     ///
+    /// ⚠ 这里**没有**"事件参与者黑名单"之类的特例 —— 受害者是被上面这条**通用规则**排除的
+    ///   （他不满足"整段不可见"）。特例会随场景繁殖，规则不会。
+    ///
     /// ⚠ **不能返回 0**：id 0 是"本机用户"的特殊值（客户端会把 `PlayerId == _myPlayerId` 的帧改写成 0，
-    ///   而 0 号替身是 `ForceNewReplayTemp` 造的半成品），每台机器含义不同、互相冲突。
+    ///   而 0 号替身是 `ForceSpawnReplayTemp` 造的半成品），每台机器含义不同、互相冲突。
     ///
     /// ⚠ **已知限制**：客户端的 `NameTag` **不受服务端控制**（`PublicPlayerInfo` 只有 8 个字段，
     ///   没有名字/显示开关）。旧实现用一个只对房主本机生效的客户端补丁把它关掉 —— 那是掩盖，
@@ -52,18 +58,12 @@ namespace HideAndSeek.Features.Replay
         /// <param name="subjectId">本幕主角（镜头要拍的人）—— 他**不能**被选中。</param>
         /// <param name="rosterIds">本幕"会出现在画面里的人"的 id（含主角）。</param>
         /// <param name="windowStart">窗口起点 —— 用来取各人当时的位置（算"离镜头多远"）。</param>
-        /// <param name="excludeIds">
-        /// **绝不能当剪影的人**。除了主角，还必须包含**本幕的事件参与者（受害者）**——
-        /// 剪影槽位会被 `ChangeSilhouette(true)` 涂黑/幽灵化，受害者一旦被选中就"死前没人影、
-        /// 死后才冒出尸体"（实测：三幕里 `Kill#3` 的受害者恰好是剪影 `#5`，另外两幕不是 ⇒ 只有它坏）。
-        /// </param>
-        public static Result Resolve(int subjectId, ICollection<int> rosterIds, float windowStart,
-            ICollection<int> excludeIds = null)
+        public static Result Resolve(int subjectId, ICollection<int> rosterIds, float windowStart)
         {
             if (subjectId <= 0)
                 return new Result { Id = 0, Why = "主角无效" };
 
-            bool Banned(int id) => id == subjectId || (excludeIds != null && excludeIds.Contains(id));
+            bool Banned(int id) => id == subjectId;
 
             try
             {
@@ -83,19 +83,31 @@ namespace HideAndSeek.Features.Replay
                     //（"加入"包发过、没发过"离开"包）⇒ `ChangeMyPlayer` 的直接索引不会抛。
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
-                    if (rosterIds != null && rosterIds.Contains(id))
-                        inScene.Add(id);
-                    else
+
+                    if (rosterIds == null || !rosterIds.Contains(id))
+                    {
+                        // 他不会出现在画面里（没被 ApplySpawn 装配）⇒ 一定看不见
                         offScene.Add(id);
+                        continue;
+                    }
+
+                    // ★ 他在画面里 ⇒ 就**必须先确认"他整段都不可见"**：
+                    //   已死者之所以能当剪影，靠的是 `IsGhost = true` ⇒ 客户端 `RefreshGhostVisual`
+                    //   走 case 2 把他关掉。而"起点时还活着"的人不满足这个前提
+                    //   —— 典型就是**本幕的受害者**（窗口 = [T-3, T+1]，他在 T 才死）
+                    //   ⇒ 他一整段本色可见，剪影落上去就是"死前没人影、死后才冒出尸体"。
+                    var at = HostRecorder.At(id, windowStart);
+                    if (at != null && at.IsGhost)
+                        inScene.Add(id);
                 }
 
                 int pick = Farthest(inScene, subjectId, windowStart);
                 if (pick > 0)
-                    return new Result { Id = pick, Why = "已死·在房间·本幕出场（取离主角最远）" };
+                    return new Result { Id = pick, Why = "起点即幽灵·本幕出场（取离主角最远）" };
 
                 pick = Farthest(offScene, subjectId, windowStart);
                 if (pick > 0)
-                    return new Result { Id = pick, Why = "已死·在房间（取离主角最远）" };
+                    return new Result { Id = pick, Why = "已死·不在画面（取离主角最远）" };
 
                 // ② 本幕 roster 之外的人 —— 不会被 ApplySpawn 装配到画面里
                 var outside = new List<int>();

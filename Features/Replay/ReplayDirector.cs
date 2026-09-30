@@ -226,7 +226,7 @@ namespace HideAndSeek.Features.Replay
                 var visibleIds = SceneIds(act, raw);
                 // 位置取自房主侧采样：录制者自己的帧是 SurvivalTime 基准，从磁带取会拿到几秒前的位置。
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
-                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From, act.Subjects);
+                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, sil.Id);
@@ -423,7 +423,7 @@ namespace HideAndSeek.Features.Replay
 
                 var visibleIds = SceneIds(act, frames);
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
-                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From, act.Subjects);
+                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, sil.Id);
@@ -681,7 +681,7 @@ namespace HideAndSeek.Features.Replay
                 return act.SilhouetteId;
             if (HostRecorder.HasRows(act.RecorderId))
                 return act.RecorderId;
-            var sil = SilhouetteResolver.Resolve(act.SubjectId, new List<int>(), act.Window.From, act.Subjects);
+            var sil = SilhouetteResolver.Resolve(act.SubjectId, new List<int>(), act.Window.From);
             act.SilhouetteId = sil.Id;
             return sil.Id;
         }
