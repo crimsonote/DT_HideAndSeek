@@ -83,15 +83,14 @@ namespace HideAndSeek.Features.Rule
             "之后场上已冻结，所以「后」实际表现为在静止画面上多留一会儿。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> EndAfterSec;
 
-        [ConfigField(7.5f, "「自爆」片段（黑方胜利时对存活露娜系白方的项圈自爆）：事件**前**秒数。" +
-            "这一段现在是**服务端录制**的（客户端录不了：白方被处决时全是死人，" +
-            "`RecordManager.Recording()` 的 `!Managers.Game.IsAlive` 守卫直接 return）⇒ 爆前素材拿得到。" +
-            "7.5s ＝ 原版结算从进入自爆流程到爆炸的时长。",
+        [ConfigField(0f, "「自爆」各段：**自爆开始之前**额外保留的秒数（0 ＝ 严格从自爆开始那一刻起裁）。" +
+            "自爆那一刻是 `OnDeadCollarBomb`（`PushAfter(6000)` 才是真正死亡），" +
+            "所以整幕窗口 = [自爆开始 − 本项, 自爆开始 + 6s + 后秒数]。",
             Min = 0f, Max = 30f)]
         public static ConfigEntry<float> SelfDestructBeforeSec;
 
-        [ConfigField(0.5f, "「自爆」片段：事件**后**秒数。这 0.5s 是镜头切到黑方之后的收尾" +
-            "（前 7.5s 为白方多机位巡礼）⇒ 整段约 8s。", Min = 0f, Max = 30f)]
+        [ConfigField(0.5f, "「自爆」各段：**爆炸之后**保留的秒数（爆炸 = 自爆开始后 6s，人消失那一刻）。" +
+            "整幕窗口 = [自爆开始 − 前秒数, 自爆开始 + 6s + 本项]。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> SelfDestructAfterSec;
 
         [ConfigField(3f, "「黑方收尾」幕：镜头落到黑方之后停留的秒数（**另起一幕**，与白方巡礼分开）。" +
@@ -697,15 +696,19 @@ namespace HideAndSeek.Features.Rule
                         int blackId = FindBlackId(room);
                         var subjects = SurvivingWhites(room, blackId);
 
-                        float before = SelfDestructBeforeSec?.Value ?? 7.5f;
+                        // ★ 窗口**从"自爆开始"那一刻起**（用户口径："从严格的自爆开始时开始裁剪"）：
+                        //   基准 `At` 取"自爆走完"= t0 + `CollarToDeadSec`（6s，`PushAfter(6000)` 的死亡时刻），
+                        //   `Before = 6 + 前秒数`（默认前秒数 0）⇒ 窗口 `[t0, t0 + 6 + after]`。
+                        //   以前 `Before = 7.5` 会让窗口从 t0 − 1.5 开始（那 1.5s 人还站着，白占时间）。
+                        float extraBefore = Math.Max(0f, SelfDestructBeforeSec?.Value ?? 0f);
+                        float before = CollarToDeadSec + extraBefore;
                         float after = SelfDestructAfterSec?.Value ?? 0.5f;
                         float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
 
                         // ★ 假人**照样登记**、只是不向他要磁带（没有客户端）⇒ 结算时由服务端兜底合成
                         //   （服务端缓冲里有他的采样，镜头就是盯着他）。以前直接 `continue` 跳过 ⇒
                         //   段不存在 ⇒ 兜底没机会跑 ⇒ 白方各幕整段消失（实测日志：只有 4 段刀杀 + 1 段黑方）。
-                        // 先筛出真正能登记的人（按白方顺序），再按**实际人数**平铺窗口，
-                        // 保证最后一段正好压在「爆炸后 after 秒」。
+                        // 先筛出真正能登记的人（按白方顺序），再切窗口（第一段独占哑期+闪烁，其余平分）。
                         var eligible = new List<GamePlayer>();
                         foreach (var sp in subjects)
                         {
@@ -748,12 +751,15 @@ namespace HideAndSeek.Features.Rule
                             AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail,
                                 null, CollarToDeadSec - tail / 2f);
 
-                        float perTotal = (before + after) / Math.Max(1, segCount);
+                        float totalSpan = before + after;
+                        float firstSeg = FirstSegLen(totalSpan, segCount);
+                        float restPer = segCount > 1 ? Math.Max(0f, totalSpan - firstSeg) / (segCount - 1) : 0f;
                         Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记 {seq} 段白方视角"
-                            + $"（以**自爆走完** t+{CollarToDeadSec:F0}s 为基准，总窗口 {before + after:F1}s "
-                            + $"平铺到 {segCount} 段、每人 {perTotal:F1}s，最后一段压到爆炸后 {after:F1}s；"
+                            + $"（总窗口 {totalSpan:F1}s，**从自爆开始 t0 起算**，基准 At = t0+{CollarToDeadSec:F0}s；"
+                            + $"第一段独占 {firstSeg:F1}s（哑期 1.0s + 保底 0.5s 闪烁），"
+                            + $"其余 {Math.Max(0, segCount - 1)} 段各 {restPer:F1}s；"
                             + $"其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
-                            + $" + 黑方收尾 1 段（服务端兜底，{tail:F1}s 断电视野）。");
+                            + $" + 黑方收尾 1 段（服务端兜底，{tail:F1}s 断电视野、与爆炸同时）。");
                     }
                 }
                 catch (Exception ex)
@@ -1024,26 +1030,54 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 把「总窗口」**平铺**成 N 段，返回第 <paramref name="index"/> 段相对事件时刻的 (前秒, 后秒)。
+        /// 把「总窗口」切成 N 段（**第一段独占**，其余平分），返回第 <paramref name="index"/> 段
+        /// 相对事件时刻的 (前秒, 后秒)。
         ///
-        /// 用户口径：总窗口（默认 7.5s + 0.5s = 8s）按人数平分，**最后一个白方录到爆炸后约 0.5 秒**，
-        /// 然后才切黑。总窗口 = `[事件 − before, 事件 + after]`；
-        /// 第 i 段（0 起）= `[右端 − (N−i)×per, 右端 − (N−i−1)×per]`，`per = 总长/N`，`右端 = 事件 + after`
-        /// ⇒ 最后一段（i=N−1）= `[事件+after−per, 事件+after]`，**正好压到爆炸后 after 秒**。
+        /// 总窗口 = `[事件 − before, 事件 + after]`（自爆幕里"事件"= 自爆开始 t0，`before = CollarToDeadSec`）。
         ///
-        /// 返回值给 `Clip.Before`/`Clip.After` 用，**允许为负**（靠前的段右端在事件之前）。
+        /// ★ **为什么第一段要独占**：`PlayDying()` 前 **1.0 秒是哑期**（只响 `NecklaceWork`、
+        ///   `intensity=0` 看不见），如果按人数平均分（5 人 × 1.3s），第一段 = 哑期 1.0s + **只看得见
+        ///   0.3s 的闪** ⇒ 用户实测"第一个人看不清自爆开始的闪烁"。
+        ///   ⇒ 让第一段独占 `firstSegMin`（默认 = 哑期 1.0 + 0.5 闪烁 = 1.5s），**剩余时间再给其他人平分**。
+        ///
+        /// 返回值给 `Clip.Before`/`Clip.After` 用，**允许为负**。
         /// </summary>
+        private const float FirstSegMinSec = 1.5f;
+
+        /// <summary>第一段的时长（独占哑期 1.0s + 保底闪烁 0.5s，但不小于平均也不超过总长）。</summary>
+        private static float FirstSegLen(float total, int count)
+        {
+            float t = Math.Max(0.5f, total);
+            int n = Math.Max(1, count);
+            return n <= 1 ? t : Math.Min(t, Math.Max(FirstSegMinSec, t / n));
+        }
+
         private static void TileWindow(int index, int count, float before, float after,
             out float segBefore, out float segAfter)
         {
             float total = Math.Max(0.5f, before + after);
             int n = Math.Max(1, count);
-            float per = total / n;
-            float segRight = after - (n - 1 - index) * per;   // 该段右端（相对事件）
-            float segLeft = segRight - per;
 
-            segBefore = -segLeft;     // 窗口起点 = At − segLeft
-            segAfter = segRight;      // 窗口终点 = At + segRight
+            // 第一段独占（单人时它就是整段）
+            float first = FirstSegLen(total, n);
+            float perOther = n > 1 ? Math.Max(0f, total - first) / (n - 1) : 0f;
+
+            // 该段在窗口内的 [左, 右]（0 = 窗口起点 = 事件 − before）
+            float left, right;
+            if (index <= 0)
+            {
+                left = 0f;
+                right = first;
+            }
+            else
+            {
+                left = first + (index - 1) * perOther;
+                right = left + perOther;
+            }
+
+            // 窗口起点 = At − before ⇒ 段左 = At + (left − before)、段右 = At + (right − before)
+            segBefore = before - left;      // 段左 = At − segBefore
+            segAfter = right - before;      // 段右 = At + segAfter
         }
 
         /// <summary>按 id 找玩家（活人表 + 死者表）—— "每人各录一段"要拿到他的 Session 才能发请求。</summary>
