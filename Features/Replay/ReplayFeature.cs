@@ -108,9 +108,15 @@ namespace HideAndSeek.Features.Replay
             Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SecondsPerClipEstimate;
 
-        [ConfigField(7000, "收掉加载页并让开场字幕开演后，等多久再推 Replay（毫秒）。" +
-            "加载页由 S_FADE_IN 立刻收掉，所以这里只需等入场演出/开场字幕自己播完；等太短会把字幕序列 Kill 掉、" +
-            "文字被冻在画面上（实测踩过）。", Min = 0f, Max = 60000f)]
+        [ConfigField(0, "收掉加载页后，等多久再把客户端切进 Replay 相位（毫秒）。默认 0 ＝ 立刻切。" +
+            "⚠ 这里**不要**再等'开场字幕'：那段字幕由 `Discuss` 相位的 `StartFirstTalk()` 启动，" +
+            "而回放从头到尾**不发 Discuss** ⇒ 它根本不会播。而客户端被拉进 Trial 后、" +
+            "收到第一个 `S_TRIAL_STATE` 之前的这段时间，`UI_TrialEvent` 是没有相位的" +
+            "（界面文字在 `Init()` 里就设好了，只有相位才驱动切换）⇒ 等得越久，" +
+            "画面上越久停留在一张'没按相位初始化'的界面（实测表现为：标题写着『投票结果』、" +
+            "中间却是另一条烘死的韩文）。默认值曾是 7000，理由是'避免 Kill 掉开场字幕'" +
+            "—— 那个理由基于对 `StartReplay()` 的错误假设（它只做 `WaitCompletePacket`，没有 ResetSlideVisual）。",
+            Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
         [ConfigField(true, "回放里把黑方的昵称显示成红色，让观众一眼看出「黑刀＝黑幕」。" +
