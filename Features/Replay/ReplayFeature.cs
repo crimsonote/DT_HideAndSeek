@@ -38,6 +38,10 @@ namespace HideAndSeek.Features.Replay
 
         // ── 状态（**一个**地方）────────────────────────────────────────
         private static readonly List<Act> Acts = new List<Act>();
+
+        /// <summary>受害者"最后一次被击中"的时刻。`OnDamaged` 记、`KillHook` 取 ——
+        /// 因为 `OnDead` 的时刻**不等于**击杀时刻（实测晚 1.4~1.8 秒）。</summary>
+        private static readonly Dictionary<int, float> LastHitAt = new Dictionary<int, float>();
         private static int _nextKey;
         private static int _murderDeaths;
         private static string _ending = "结算前";
@@ -87,6 +91,7 @@ namespace HideAndSeek.Features.Replay
             _ending = "结算前";
             _reported = false;
             HostRecorder.Clear();
+            LastHitAt.Clear();
             ReplayDirector.Reset();
         }
 
@@ -134,6 +139,32 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
+        /// <summary>
+        /// 【兜底采样】1Hz 把当前所有玩家各记一帧。
+        ///
+        /// 为什么需要它：主采样点挂在 `Player.Move`（服务端每次收到 `C_MOVE` 后调用），
+        /// 频率与客户端同源 —— 但**假人不主动发包**，站桩的玩家也不发包，
+        /// 于是"从未移动过的人"可能一帧都没有（实测单人测试时约 1.1 帧/秒/人）。
+        /// 这一路只保证"每个人至少被记到一次"，不去追高频。
+        /// </summary>
+        [HarmonyPatch(typeof(Managers), "Update")]
+        internal static class HeartbeatHook
+        {
+            private static float _last;
+
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                if (!Armed)
+                    return;
+                float now = Now();
+                if (now - _last < 1f)
+                    return;
+                _last = now;
+                HostRecorder.SampleAll();
+            }
+        }
+
         /// <summary>「拿刀」—— `DelayAcquireWeapon` 是拔刀后的入口，只在真正拿到武器的人身上跑。</summary>
         [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
         internal static class KnifeHook
@@ -156,6 +187,29 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
+        /// <summary>
+        /// 【事件时刻修正】记下"谁在什么时候被击中"。
+        ///
+        /// 为什么必须有它：`OnDead` 的时刻**不等于**击杀时刻。原版是在 `OnDamaged` 里
+        /// 设 `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的，而 `OnDead` 可能被推迟 ——
+        /// 实测某次刀杀 `OnDead` 在 `t=60.49`，而客户端为它插的 `NormalTimeEdit` 在 `t=59.12`，
+        /// 相差 **1.37 秒**。用 `OnDead` 的时刻算窗口，整幕会往后偏。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "OnDamaged")]
+        internal static class HitHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance, GamePlayer attacker)
+            {
+                if (!Armed)
+                    return;
+                int victim = __instance?.PublicInfo?.PlayerId ?? 0;
+                if (victim <= 0 || attacker?.PublicInfo == null)
+                    return;
+                LastHitAt[victim] = Now();
+            }
+        }
+
         /// <summary>「杀人」—— 原版在 `OnDamaged` 里已经请凶手录过一段，我们只是登记。</summary>
         [HarmonyPatch(typeof(GamePlayer), nameof(GamePlayer.OnDead))]
         internal static class KillHook
@@ -175,7 +229,13 @@ namespace HideAndSeek.Features.Replay
 
                 int victim = __instance?.PublicInfo?.PlayerId ?? 0;
                 int id = black.PublicInfo.PlayerId;
-                Add(ActKind.Kill, id, id, ActTable.Plain(Now(), KillBefore, KillAfter), $"#{id} → #{victim}");
+                // ★ 事件时刻必须取"被击中的那一刻"，不能取 OnDead 的时刻：
+                //   原版是在 `OnDamaged` 里设 `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的，
+                //   而 `OnDead` 可能被推迟 —— 实测某次刀杀 OnDead 在 t=60.49、客户端插的
+                //   NormalTimeEdit 在 t=59.12，差 1.37 秒 ⇒ 用 OnDead 会让整幕往后偏。
+                float at = LastHitAt.TryGetValue(victim, out var hitAt) ? hitAt : Now();
+                LastHitAt.Remove(victim);
+                Add(ActKind.Kill, id, id, ActTable.Plain(at, KillBefore, KillAfter), $"#{id} → #{victim}");
             }
         }
 
@@ -291,8 +351,13 @@ namespace HideAndSeek.Features.Replay
             {
                 if (state != EGameState.TotalResult)
                     return;
-                if (!Armed)
+                if (!Armed || _reported)
                     return;
+
+                // ★ 去重必须放在入口：现有实现拦下第一次之后，会在回放结束时**自己再调一次**
+                //   `ChangeGameState(TotalResult)`（那次它的 Prefix 放行）⇒ 这里会被调用第二次，
+                //   于是整块影子输出会重复打印一遍。
+                _reported = true;
 
                 // 结算时补登记"结算类"的幕（它们的事件时刻就是"结算被拦下"这一刻）。
                 RegisterSettlementActs();
@@ -365,10 +430,6 @@ namespace HideAndSeek.Features.Replay
 
         private static void Report()
         {
-            if (_reported)
-                return;
-            _reported = true;
-
             try
             {
                 int white = 0;
@@ -400,7 +461,8 @@ namespace HideAndSeek.Features.Replay
 
                     Plugin.Log.LogInfo($"[HS-Shadow]   {ActTable.Name(a.Kind),-4} key={a.Key,-3} "
                         + $"窗口={a.Window} 主角=#{a.SubjectId,-2} 剪影={sil} "
-                        + $"roster={rosterIds.Count} 人  来源={(a.RecorderId > 0 ? "客户端优先" : "服务端合成")}  {a.Note}");
+                        + $"roster={rosterIds.Count} 人 录制者=#{a.RecorderId} "
+                        + $"来源={(CanRecord(a.RecorderId) ? "客户端磁带" : (a.RecorderId > 0 ? "服务端合成（该录制者无客户端）" : "服务端合成"))}  {a.Note}");
                 }
 
                 if (Acts.Count == 0)
@@ -413,6 +475,19 @@ namespace HideAndSeek.Features.Replay
         }
 
         // ── 小工具 ──────────────────────────────────────────────────────
+
+        /// <summary>
+        /// 这个人能不能**真的**提供磁带 —— 只有有客户端（`Session` 非空）的玩家才能。
+        /// 假人没有客户端，`S_RECORD_REPLAY` 发过去没人接 ⇒ 只能走服务端合成。
+        /// （旧口径只看 `RecorderId &gt; 0`，会把假人也标成"客户端优先"，误导排查。）
+        /// </summary>
+        private static bool CanRecord(int id)
+        {
+            if (id <= 0)
+                return false;
+            var p = FindPlayer(GameRoom.Instance, id);
+            return p?.Session != null;
+        }
 
         private static List<int> AliveWhites(GameRoom room)
         {

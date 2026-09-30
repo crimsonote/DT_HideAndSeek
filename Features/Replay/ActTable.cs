@@ -78,10 +78,12 @@ namespace HideAndSeek.Features.Replay
         ///   而"每台机器装配好自己的 0 号替身"正是靠这一轮出场帧，缺了会让它的换道具镜头打在空引用上
         ///   ⇒ 回放永久卡死。
         ///
-        /// roster 的口径 = **主角 + 窗口内活动过的人**。
-        ///   · 不包含"整幕没动过、且不在主角附近"的人 —— 与旧实现（AOI）的语义相近；
-        ///   · ⚠ 已知取舍：同房间但整幕没动的人也会被排除（原版会录到他）。
-        ///     要收窄成"与主角同房间过的人"需要再遍历一次 `Range` 比较 `RoomId`，留待需要时再加。
+        /// roster 的口径 = **主角 + 窗口内与主角同房间过的人**。
+        ///   · "同房间"是 AOI 的服务端近似：相机只能跟着主角、并被约束在他所在房间的边界内，
+        ///     而原版客户端磁带录的本来也只是**附近的人**（`Player.Move` 只广播给 AOI 内的活人 + 死者）；
+        ///   · 收"全场所有人"会毁掉剪影决策 —— 剪影必须落在**不会出现在画面里**的人身上，
+        ///     而 roster 就是"会出现在画面里的人"。实测症状：自爆幕 roster 只有 1 人
+        ///     （自爆期间没人移动），画面里就只剩主角一个。
         /// </summary>
         public static List<PublicPlayerInfo> BuildRoster(int subjectId, ReplayWindow.Span window)
             => BuildRoster(subjectId, window, out _);
@@ -89,12 +91,38 @@ namespace HideAndSeek.Features.Replay
         /// <summary>同上，并回传 id 集合（剪影决策要用"谁在画面里"这个信息）。</summary>
         public static List<PublicPlayerInfo> BuildRoster(int subjectId, ReplayWindow.Span window, out List<int> ids)
         {
+            var samples = HostRecorder.Range(window.From, window.To);
+
+            // 主角在窗口内**到过**的房间（含窗口起点所在的那一间）。
+            var rooms = new HashSet<int>();
+            int startRoom = HostRecorder.RoomAt(subjectId, window.From);
+            if (startRoom > 0)
+                rooms.Add(startRoom);
+            foreach (var s in samples)
+            {
+                if (s.Id == subjectId && s.RoomId > 0)
+                    rooms.Add(s.RoomId);
+            }
+
             var seen = new HashSet<int>();
             if (subjectId > 0)
                 seen.Add(subjectId);
 
-            foreach (var s in HostRecorder.Range(window.From, window.To))
-                seen.Add(s.Id);
+            if (rooms.Count == 0)
+            {
+                // 拿不到房间信息（理论上不该发生）⇒ 退回"窗内活动过的人"，至少不会漏掉主角。
+                foreach (var s in samples)
+                    seen.Add(s.Id);
+            }
+            else
+            {
+                // ★ 只收"与主角同房间过"的人。收全场会毁掉剪影决策（见上面的说明）。
+                foreach (var s in samples)
+                {
+                    if (rooms.Contains(s.RoomId))
+                        seen.Add(s.Id);
+                }
+            }
 
             var list = new List<PublicPlayerInfo>(seen.Count);
             foreach (int id in seen)

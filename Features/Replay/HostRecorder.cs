@@ -131,6 +131,32 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
+        /// <summary>
+        /// 【兜底】把当前所有玩家各记一帧（不管他们有没有移动）。
+        ///
+        /// 主采样点挂在 `Player.Move` 上（服务端每次收到 `C_MOVE` 后调用）—— 那保证了
+        /// "有移动就有帧"，而且频率与客户端录制同源。但**假人不主动发包**、站桩玩家也不发包，
+        /// 所以"从未移动过的人"可能一帧都没有。这一路只负责补这个洞，不追高频。
+        /// （`NoteMove` 内部有"状态没变就只把时间往后推"的去重，所以它不会撑大缓冲。）
+        /// </summary>
+        public static void SampleAll()
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                    return;
+                foreach (var p in room.Players)
+                    NoteMove(p);
+                foreach (var p in room.DeadPlayers)
+                    NoteMove(p);
+            }
+            catch
+            {
+                // 兜底采样失败不该影响对局。
+            }
+        }
+
         /// <summary>记一枚项圈自爆（`OnDeadCollarBomb` 的补丁调用）。爆炸的"开始时刻"与位置只有服务端知道。</summary>
         public static void NoteBomb(float now, int deviceId, PosInfo pos)
         {
