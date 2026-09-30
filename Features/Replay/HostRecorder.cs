@@ -222,6 +222,55 @@ namespace HideAndSeek.Features.Replay
             return list;
         }
 
+        /// <summary>一枚采样（查询结果的只读视图）。</summary>
+        internal struct Sample
+        {
+            public float Time;
+            public int Id;
+            /// <summary>⚠ 指向缓冲内部的实例，**只读、不要改**（要改就自己 Clone）。</summary>
+            public PublicPlayerInfo Info;
+            public float Velocity;
+            public int RoomId;
+            public bool IsLight;
+        }
+
+        /// <summary>
+        /// 窗口内的**全部采样**，按时间升序 —— 合成世界帧（`HostSynth`）的数据源。
+        ///
+        /// ⚠ 它只返回"窗口内**真的发生过**的移动"，**不含**"谁站在那里"的起点信息。
+        ///   起点由调用方用 <see cref="Roster"/>(窗口起点) 铺 —— 那是 `TapeAssembler` 的"全员出场帧"。
+        ///   这个分工必须清楚，否则同一个人会被发两枚 SpawnShot。
+        /// </summary>
+        public static List<Sample> Range(float from, float to)
+        {
+            var list = new List<Sample>(256);
+            foreach (var kv in ById)
+            {
+                var rows = kv.Value;
+                int n = rows.Count;
+                for (int i = 0; i < n; i++)
+                {
+                    var r = rows[i];
+                    if (r.Time < from)
+                        continue;
+                    if (r.Time > to)
+                        break;
+
+                    list.Add(new Sample
+                    {
+                        Time = r.Time,
+                        Id = r.Id,
+                        Info = r.Info,
+                        Velocity = r.Velocity,
+                        RoomId = r.RoomId,
+                        IsLight = r.IsLight,
+                    });
+                }
+            }
+            list.Sort((a, b) => a.Time.CompareTo(b.Time));
+            return list;
+        }
+
         /// <summary>缓冲里记下的自爆（时刻 / 谁 / 在哪）——合成"自爆幕"时要用。</summary>
         public static List<(float Time, int DeviceId, PosInfo Pos)> BombList()
         {
