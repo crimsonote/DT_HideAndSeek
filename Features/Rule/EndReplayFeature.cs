@@ -138,7 +138,9 @@ namespace HideAndSeek.Features.Rule
             "做法：把合成首帧的角色换成一位**已死亡、且这段窗口里没有自己镜头**的玩家，并标成 IsGhost。" +
             "为什么这样就看不见：客户端 `Player.Update` 每帧刷 `RefreshGhostVisual()`，回放期间它走 case 2 " +
             "把**幽灵替身与正常骨架一起关掉**，于是镜头仍锁在他身上、剪影也打在他身上，但画面上什么都没有；" +
-            "真实玩家（黑方/受害者/旁观者）全部本色出场。取不到合适的人时自动退回原版主视角（#录制者）。")]
+            "真实玩家（黑方/受害者/旁观者）全部本色出场。挑不到合适的人时（例如局里没有第二个已死者、" +
+            "或房主自己是黑且只有一幕）自动退回**原版临时玩家(id=0)** 做首帧 —— 剪影落在 0 号替身上，" +
+            "录制者依旧本色出场（**不能**退回「首帧＝录制者本人」，那会把他涂成黑剪影）。")]
         public static ConfigEntry<bool> ObserverCamera;
 
         [ConfigField(-1, "隐藏观察者用哪个 id：-1 = 自动（已死亡 + 仍在房间 + 磁带里出现过 + 本段窗口内无自己镜头）；" +
@@ -2318,13 +2320,17 @@ namespace HideAndSeek.Features.Rule
 
             int obsId = 0;
             bool useTemp = false;
+            bool autoPick = false;                 // 是否"配了自动挑观察者"
             if (ObserverCamera?.Value ?? true)
             {
                 int cfg = ObserverPlayerId?.Value ?? -1;
                 if (cfg == 0)
                     useTemp = true;                                   // 显式要求原版临时玩家（id=0）
                 else
+                {
                     obsId = ResolveObserverId(tape, roster, recorderId, start, end, avoidObs);
+                    autoPick = true;
+                }
             }
 
             var spawn = src;
@@ -2347,10 +2353,21 @@ namespace HideAndSeek.Features.Rule
                 if (ObserverGhost?.Value ?? true)
                     spawn.IsGhost = true;              // ★ 回放期间 IsGhost ⇒ 幽灵替身与骨架都被关掉 ⇒ 不可见
             }
-            else if (useTemp)
+            else if (useTemp || autoPick)
             {
+                // ★ **没挑到观察者时也必须换掉首帧**（`autoPick` 且 `obsId == 0`）。
+                //
+                //   首帧 id 决定客户端把**剪影打在谁身上**：`BeginTape` 折出 `_blackId = 首帧 id`
+                //   （等于本机 id 时折成 0），末尾 `Players[_blackId].ChangeSilhouette(true)` 涂黑他。
+                //   ⇒ 若首帧就是录制者本人，**白方观众看到的黑方就是一块黑剪影** ——
+                //     实测症状：「黑方取刀的录像里，拿刀的人依旧黑黑的」；
+                //     「房主是黑、且出刀是首幕与唯一一幕时」尤其明显，因为局里没有第二个已死者，
+                //     `ResolveObserverId` 必然挑不到 ⇒ 以前就退回"原版主视角"（＝首帧录制者）⇒ 必黑。
+                //
+                //   退回**原版临时玩家（id=0）**即可：剪影落在 0 号替身上，录制者本色出场。
+                //   （0 号由 `BeginTape` 的 `ForceSpawnReplayTemp` 创建，是原版主视角的标准做法。）
                 spawn = src.Clone();
-                spawn.PlayerId = 0;                // 原版临时玩家（房主自己的替身）
+                spawn.PlayerId = 0;
             }
 
             var result = new List<SnapShot>(tape.Count + roster.Count + 1)
@@ -2626,7 +2643,8 @@ namespace HideAndSeek.Features.Rule
                 }
 
                 Plugin.Log.LogWarning(
-                    $"[HS] EndReplay：找不到合适的隐藏观察者，本段按原版主视角播（剪影会打在录制者身上）。" +
+                    $"[HS] EndReplay：找不到合适的隐藏观察者 ⇒ 这一段改用**原版临时玩家(id=0)**做首帧" +
+                    $"（剪影落在 0 号替身上，录制者本色出场，不会再被涂黑）。" +
                     $"诊断：已死者=[{string.Join(",", deadIds)}] 窗口内有镜头的=[{string.Join(",", busy)}] " +
                     $"磁带里有出场帧的=[{string.Join(",", roster.Keys)}] 录制者=#{recorderId}");
             }
