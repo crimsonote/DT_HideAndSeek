@@ -226,8 +226,16 @@ namespace HideAndSeek.Features.Replay
             [HarmonyPostfix]
             private static void Postfix(EGameState state)
             {
-                if (state == EGameState.Survive)
-                    Reset();
+                if (state != EGameState.Survive)
+                    return;
+
+                Reset();
+
+                // 每局开一个新的 dump 目录（只写文件，零行为影响）。
+                // ⚠ 这一句在阶段 6 重写本文件时漏掉过一次 —— 症状是"新一局没有 dump 文件"，
+                //   而因为没有日志，看不出是漏了调用还是没收到磁带。
+                if (DumpTapes?.Value ?? false)
+                    TapeDump.BeginRound();
             }
         }
 

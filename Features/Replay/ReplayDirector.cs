@@ -216,6 +216,12 @@ namespace HideAndSeek.Features.Replay
             try
             {
                 var act = plan.Act;
+
+                // 诊断：原始磁带里到底有**谁**的 SpawnShot、各多少枚、时间戳范围。
+                // 用来区分两种"画面里没人"：① 磁带里真的没有别人（录制侧就没录到）；
+                // ② 磁带里有、但被后面的某一层过滤掉了。
+                DumpSpawnCensus(raw, act);
+
                 // "谁在画面里" —— 直接读**客户端真实磁带**里的 SpawnShot（那就是 AOI 的真实结果）。
                 var visibleIds = ActTable.VisibleIn(raw, act.Window.From, 0);
                 // 位置取自房主侧采样：录制者自己的帧是 SurvivalTime 基准，从磁带取会拿到几秒前的位置。
@@ -530,6 +536,57 @@ namespace HideAndSeek.Features.Replay
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[HS-Replay] 标记黑幕昵称失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 诊断：原始磁带里每个人有多少枚 `SpawnShot`、时间戳范围如何。
+        ///
+        /// 为什么需要它：用户反馈"第 2 刀之后受害者不在画面里（像对空气挥刀）"，而 roster 只有 1 人。
+        /// 这条日志能区分三种原因：
+        ///   ① 磁带里**根本没有别人**的 SpawnShot ⇒ 录制侧就没录到（AOI/despawn）；
+        ///   ② 有，但**都在窗口之外**（`VisibleIn` 取"离窗口起点最近"的那一枚）；
+        ///   ③ 有且在窗口内 ⇒ 那就是下游某层把它过滤掉了。
+        /// </summary>
+        private static void DumpSpawnCensus(List<SnapShot> frames, Act act)
+        {
+            try
+            {
+                if (frames == null)
+                    return;
+                var stat = new Dictionary<int, int>();
+                var lo = new Dictionary<int, float>();
+                var hi = new Dictionary<int, float>();
+                foreach (var s in frames)
+                {
+                    if (s?.Type != ESnapShotType.SpawnShot || s.Spawn == null)
+                        continue;
+                    int id = s.Spawn.PlayerId;
+                    if (id <= 0)
+                        continue;
+                    stat[id] = stat.TryGetValue(id, out int c) ? c + 1 : 1;
+                    float t = s.TimeStamp;
+                    if (!lo.TryGetValue(id, out float a) || t < a) lo[id] = t;
+                    if (!hi.TryGetValue(id, out float b) || t > b) hi[id] = t;
+                }
+
+                var sb = new global::System.Text.StringBuilder();
+                foreach (var kv in stat)
+                {
+                    if (sb.Length > 0)
+                        sb.Append(" | ");
+                    sb.Append('#').Append(kv.Key).Append('×').Append(kv.Value)
+                      .Append('[').Append(lo[kv.Key].ToString("F1")).Append(',')
+                      .Append(hi[kv.Key].ToString("F1")).Append(']')
+                      .Append(kv.Key == act.SubjectId ? "(主角)" : "");
+                }
+                Plugin.Log.LogInfo($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】"
+                    + $"原始 {frames.Count} 帧里的 SpawnShot：{(sb.Length == 0 ? "（一枚都没有）" : sb.ToString())}"
+                    + $" ｜ 窗口={act.Window} 主角=#{act.SubjectId}");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] SpawnShot 普查失败 — {ex.Message}");
             }
         }
 
