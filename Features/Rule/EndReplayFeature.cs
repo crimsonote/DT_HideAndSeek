@@ -8,6 +8,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Replay;
 using HideAndSeek.Features.Weapon;
 using GamePlayer = Server.Game.Player;
 
@@ -190,6 +191,14 @@ namespace HideAndSeek.Features.Rule
             "客户端 `ChangeMyPlayer` 用 `_cache[id]` 直接索引，人不在缓存里会抛。")]
         public static ConfigEntry<bool> PlaceholderTape;
 
+        [ConfigField(true, "【排查用】把客户端回传的**真实磁带**落成文本文件（插件目录 tapedump/ 下，" +
+            "每局一个子目录、保留最近 8 局）。" +
+            "为什么要它：回放链路最难判断的是「房主手里到底有什么素材、客户端是怎么裁的」，" +
+            "而那两件事以前每次都要打一局才能看到。落盘之后窗口/锚点/时间基准/帧密度都能**离线**核对，" +
+            "新实现也能拿真实样本离线跑，不必实机。" +
+            "只写文件，不改游戏状态、不发包 —— 关掉它纯粹是为了不占磁盘。")]
+        public static ConfigEntry<bool> DumpTapes;
+
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
         {
@@ -350,7 +359,12 @@ namespace HideAndSeek.Features.Rule
             private static void Postfix(EGameState state)
             {
                 if (state == EGameState.Survive)
+                {
                     ResetRound();
+                    // 每局开一个新的 dump 目录（只写文件，零行为影响）。
+                    if (DumpTapes?.Value ?? false)
+                        TapeDump.BeginRound();
+                }
             }
         }
 
@@ -2152,6 +2166,14 @@ namespace HideAndSeek.Features.Rule
                         $"（{clip.Before:F1}s 前 / {clip.After:F1}s 后）。");
 
                     var raw = c.SnapShots.ToList();
+
+                    // 【排查用】把客户端回传的真实磁带落盘（只写文件，零行为影响）。
+                    // 有了它，窗口/锚点/时间基准/帧密度都能离线核对；新实现也能拿真实样本离线跑，
+                    // 不必让你反复进游戏当测试工具。
+                    if (DumpTapes?.Value ?? false)
+                        TapeDump.Save(recorderId, c.RecordTime, clip.Kind,
+                            clip.At, clip.Before, clip.After, raw, trimmed, null);
+
                     room.Push(delegate
                     {
                         room.Broadcast(sendPkt);
