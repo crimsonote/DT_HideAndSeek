@@ -87,9 +87,16 @@ namespace HideAndSeek.Features.Replay
         /// 首帧的玩家信息 —— 调用方已把它的**位置改成主角在窗口起点的位置**（镜头必须落在现场）。
         /// 本方法只负责把它标成幽灵并钉在 index 0。
         /// </param>
-        /// <param name="visibleIds">
-        /// "本幕会出现在画面里的人"的 id（见 <see cref="ActTable.VisibleIn"/>，**直接从帧里读**）。
-        /// 本方法会为其中每个人补一枚"全员出场帧"（时间戳盖成窗口起点）——
+        /// <param name="roster">
+        /// "本幕会出现在画面里的人"，每人一份**窗口起点时的样子**。
+        ///
+        /// ★ "谁在画面里"由调用方用 <see cref="ActTable.VisibleIn"/> **从帧里读**（不做 AOI/房间近似）；
+        ///   但**位置必须取自房主侧采样**，不能从磁带里那个人的 `SpawnShot` 取 ——
+        ///   实测：录制者自己的帧是 `SurvivalTime` 基准（每轮第一枚），从磁带里取会拿到
+        ///   **几秒前**的位置（某个真实样本里首帧位置 (3565,6665)、roster 帧却取到 (3368,5912)），
+        ///   而客户端会先把角色放在 roster 帧的位置、再被后续 MoveShot 拉回来 ⇒ 抖动/瞬移。
+        ///
+        /// 本方法会为其中每个人补一枚出场帧（时间戳盖成窗口起点）——
         /// 每台客户端靠**自己那一枚**把自己 id 0 的替身装配好，缺了会让回放里
         /// "本机自己的换道具/换状态镜头"打在未装配的替身上 ⇒ 空引用 ⇒ 整段卡死。
         /// </param>
@@ -99,7 +106,7 @@ namespace HideAndSeek.Features.Replay
             Act act,
             List<SnapShot> frames,
             PublicPlayerInfo head,
-            ICollection<int> visibleIds,
+            IReadOnlyList<PublicPlayerInfo> roster,
             out AssemblyReport report)
         {
             report = new AssemblyReport
@@ -135,7 +142,7 @@ namespace HideAndSeek.Features.Replay
 
             report.HeadId = headInfo.PlayerId;
 
-            var result = new List<SnapShot>(1 + (visibleIds?.Count ?? 0) + (frames?.Count ?? 0))
+            var result = new List<SnapShot>(1 + (roster?.Count ?? 0) + (frames?.Count ?? 0))
             {
                 new SnapShot
                 {
@@ -153,17 +160,14 @@ namespace HideAndSeek.Features.Replay
             //   ⚠ 时间戳一律盖成窗口起点：`BeginTape` 把 `_playIndex` 置 1、`_currentTime` 置第 2 帧时间戳，
             //     所以它们会在**第一次 Update 连着执行完** ⇒ 先装配好，再开始演动作。
             var seen = new HashSet<int> { headInfo.PlayerId };
-            if (visibleIds != null)
+            if (roster != null)
             {
-                foreach (int id in visibleIds)
+                foreach (var info in roster)
                 {
-                    if (id <= 0 || !seen.Add(id))
-                        continue;
-
-                    // 从**帧里**取这个人的出场帧信息（离窗口起点最近的那一枚）。
-                    // 不做任何"猜"：帧里出现过 SpawnShot，就说明他在画面里。
-                    var info = PickNearestSpawn(frames, id, start);
                     if (info == null)
+                        continue;
+                    int id = info.PlayerId;
+                    if (id <= 0 || !seen.Add(id))
                         continue;
 
                     var copy = info.Clone();
@@ -308,24 +312,6 @@ namespace HideAndSeek.Features.Replay
             };
         }
 
-        /// <summary>取某人在帧里"离窗口起点最近"的那枚 `SpawnShot` 信息。</summary>
-        private static PublicPlayerInfo PickNearestSpawn(List<SnapShot> frames, int id, float start)
-        {
-            PublicPlayerInfo best = null;
-            float bestD = float.MaxValue;
-            foreach (var s in frames)
-            {
-                if (s?.Type != ESnapShotType.SpawnShot || s.Spawn == null || s.Spawn.PlayerId != id)
-                    continue;
-                float d = Math.Abs(s.TimeStamp - start);
-                if (d < bestD)
-                {
-                    bestD = d;
-                    best = s.Spawn;
-                }
-            }
-            return best;
-        }
 
         /// <summary>
         /// 这枚 `AddShot` 是不是「项圈自爆尸体」。

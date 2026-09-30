@@ -94,6 +94,9 @@ namespace HideAndSeek.Features.Replay
 
             // ② "谁在画面里" —— **直接从帧里读**，不做任何 AOI / 房间的近似推断。
             var visibleIds = ActTable.VisibleIn(frames, act.Window.From, 0);
+            //    但**位置**必须取自房主侧采样：录制者自己的帧是 SurvivalTime 基准（每轮第一枚），
+            //    从磁带里取会拿到几秒前的位置，客户端会先把角色摆在那儿再被后续帧拉回来 ⇒ 抖动。
+            var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
 
             // ③ 剪影槽位（唯一决策点）：必须落在"不会出现在画面里"的人身上。
             var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
@@ -112,7 +115,7 @@ namespace HideAndSeek.Features.Replay
             }
 
             // ⑤ 装配合规磁带（唯一出口）
-            var tape = TapeAssembler.Assemble(act, frames, head, visibleIds, out var rep);
+            var tape = TapeAssembler.Assemble(act, frames, head, visibleInfos, out var rep);
 
             float density = rep.FramesOut / Math.Max(0.01f, act.Window.Length);
             if (tape == null)
@@ -201,11 +204,13 @@ namespace HideAndSeek.Features.Replay
             {
                 // "谁在画面里" —— 直接读**客户端真实磁带**里的 SpawnShot（那就是 AOI 的真实结果）。
                 var visibleIds = ActTable.VisibleIn(raw, act.Window.From, 0);
+                // 位置取自房主侧采样（理由同 AssembleOne）。
+                var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
                 var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, sil.Id);
-                var tape = TapeAssembler.Assemble(act, raw, head, visibleIds, out var rep);
+                var tape = TapeAssembler.Assemble(act, raw, head, visibleInfos, out var rep);
                 float density = rep.FramesOut / Math.Max(0.01f, act.Window.Length);
 
                 if (tape == null)
@@ -261,6 +266,19 @@ namespace HideAndSeek.Features.Replay
             }
             return null;
         }
+        /// <summary>把"画面里的人"的 id 换成本幕**窗口起点时的样子**（位置取自房主侧采样）。</summary>
+        private static List<PublicPlayerInfo> VisibleInfos(List<int> ids, float windowStart)
+        {
+            var list = new List<PublicPlayerInfo>(ids.Count);
+            foreach (int id in ids)
+            {
+                var info = HostRecorder.At(id, windowStart);
+                if (info != null)
+                    list.Add(info);
+            }
+            return list;
+        }
+
         private static PublicPlayerInfo BuildHead(Act act, int silhouetteId)
         {
             var subject = HostRecorder.At(act.SubjectId, act.Window.From);
