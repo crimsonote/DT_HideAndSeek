@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using HarmonyLib;
 using Protocol;
 using Server.Game;
 using GamePlayer = Server.Game.Player;
@@ -8,246 +9,574 @@ using GamePlayer = Server.Game.Player;
 namespace HideAndSeek.Features.Replay
 {
     /// <summary>
-    /// 【编排】—— 从"决定要播"到"放完继续结算"。
+    /// 【编排】—— 从"结算被请求"到"回放放完、继续结算"的完整流程。
     ///
-    /// 当前只实现**影子装配**：对每一幕走"服务端合成 → 统一装配 → 打印结果"，
-    /// **不发包、不广播、不播放**。它的作用是让"装配出来的磁带长什么样"在实机日志里可见，
-    /// 而不需要用户按测试步骤去撞。
+    /// 与旧实现的对应关系（逐个替换掉的东西）：
+    ///   `TrimTape` + `ComposeHostTape`          →  <see cref="TapeAssembler.Assemble"/>（唯一出口）
+    ///   `FindGhostStandIn` + `ResolveObserverId`→  <see cref="SilhouetteResolver"/>
+    ///   `EndReplayHostTape.Build`               →  <see cref="HostSynth"/>
+    ///   `SendPlaceholders` 里两套兜底           →  一套（合成不成再占位）
+    ///   散落的静态字段（`_played`/`_inReplay`/`_continueSettlement`…）→ <see cref="Phase"/>
     ///
-    /// ★★ 为什么影子期**绝不能发 `S_REQUEST_TAPE`**（这条踩过一次就会毁掉用户的回放）：
-    ///   客户端收到索取请求会回 `C_TAPE`，而**现有实现的 `TapeHook` 只认它自己登记的 key**
-    ///   ⇒ 我们的响应会被判成"不是我的片段"、**交还原版** ⇒
-    ///   原版 `HostPacketHandler.Handle_C_TAPE` 会直接 `Broadcast(S_TAPE)` ——
-    ///   **把原始磁带广播给所有客户端** ⇒ 污染它们的 `_playTapes`（而回放的播放列表就是它）
-    ///   ⇒ 用户看到的回放会多出几段莫名其妙的原始录像。
-    ///   ⇒ 所以：影子期只用**服务端采样**验证装配；真实客户端磁带的装配用 `TapeDump` 的文件**离线**验证。
-    ///     只有在"正式替换"那一步（旧实现已经不在了）才发索取。
-    ///
-    /// 与现有实现的对应关系（逐个替换掉的东西）：
-    ///   `TrimTape` + `ComposeHostTape`  →  <see cref="TapeAssembler.Assemble"/>（唯一出口）
-    ///   `FindGhostStandIn` + `ResolveObserverId`  →  <see cref="SilhouetteResolver"/>
-    ///   `EndReplayHostTape.Build`  →  <see cref="HostSynth"/>
-    ///   散落的静态字段（`_played`/`_inReplay`/`_continueSettlement`…）  →  本类的显式阶段
+    /// 流程（每一步都能在日志里看到）：
+    ///   ① 结算被请求 ⇒ 拦下（返回 true），启动
+    ///   ② 逐幕发 `S_RECORD_REPLAY`（登记时已发）+ `S_REQUEST_TAPE`
+    ///   ③ 等 TapeWaitMs；期间客户端回 `C_TAPE` ⇒ 逐段装配 + 广播
+    ///   ④ 让客户端进 Trial（**只广播，不改服务端 State**），等它过渡完
+    ///   ⑤ 发 `S_FADE_IN` 收掉加载页，等入场演出播完
+    ///   ⑥ 给没收到磁带的幕补"合成/占位"，然后推 `S_TRIAL_STATE{Replay}`
+    ///   ⑦ 等客户端回执（或超时）⇒ 继续原本的结算
     /// </summary>
     internal static class ReplayDirector
     {
-        /// <summary>当前阶段（**一处**就能看清流程走到哪了 —— 规格 P2）。</summary>
+        /// <summary>当前阶段 —— **一处**就能看清流程走到哪了。</summary>
         internal enum Phase
         {
             Idle = 0,
-            /// <summary>已经决定要播，正在准备素材。</summary>
+            /// <summary>已决定要播，正在索要素材。</summary>
             Preparing = 1,
-            /// <summary>已经进入回放画面（阶段 6 才会用到）。</summary>
-            Playing = 2,
-            /// <summary>回放结束，续结算。</summary>
-            Done = 3,
+            /// <summary>素材已发完，正在等客户端进回放画面。</summary>
+            Screen = 2,
+            /// <summary>回放正在播（等客户端回执）。</summary>
+            Playing = 3,
+            /// <summary>已收尾。</summary>
+            Done = 4,
         }
 
         internal static Phase Current { get; private set; } = Phase.Idle;
 
-        internal static void Reset() => Current = Phase.Idle;
-
-        /// <summary>
-        /// 【影子】逐幕做一次完整装配并打印结果。
-        ///
-        /// 它验证的是<b>装配正确性</b>：帧数、首帧是不是 `SpawnShot`、时间戳是否非递减、
-        /// 有没有补 `NormalTimeEdit`、剪影挑到了谁、roster 覆盖几个人。
-        /// 数据来自房主侧采样（与窗口同一时间轴），所以窗口/首帧位置这两层旧 bug 在这里不可能出现。
-        /// </summary>
-        public static void ShadowAssemble(List<Act> acts, bool bombBlackout)
+        private sealed class Planned
         {
-            if (acts == null || acts.Count == 0)
-            {
-                Plugin.Log.LogInfo("[HS-Shadow] 幕表为空，没有可装配的段。");
-                return;
-            }
-
-            int ok = 0, fail = 0;
-            foreach (var act in acts)
-            {
-                try
-                {
-                    if (AssembleOne(act, bombBlackout))
-                        ok++;
-                    else
-                        fail++;
-                }
-                catch (Exception ex)
-                {
-                    fail++;
-                    Plugin.Log.LogWarning($"[HS-Shadow] 【{ActTable.Name(act.Kind)}#{act.Key}】装配抛异常 — {ex.Message}");
-                }
-            }
-
-            Plugin.Log.LogInfo($"[HS-Shadow] 影子装配完成：成功 {ok} 幕 / 失败 {fail} 幕"
-                + $"（不发包、不广播、不播放；真实客户端磁带的装配由 tapedump 离线验证）");
+            public Act Act;
+            public List<SnapShot> Tape;
+            public bool Broadcast;
         }
 
-        private static bool AssembleOne(Act act, bool bombBlackout)
-        {
-            // ① 世界帧（服务端合成）。
-            //    它的开头就是"窗口起点的全员出场帧" —— 那一轮同时承担两个作用：
-            //    让每台客户端装配好自己的 id 0 替身，以及作为"谁在画面里"的**唯一依据**。
-            //    黑方收尾幕用断电视野，这是**刻意的艺术选择**，所以写在这里而不是让合成器猜。
-            bool dark = act.Kind == ActKind.BlackTail;
-            var frames = HostSynth.Frames(act.Window, act.SubjectId, dark, bombBlackout);
-
-            // ② "谁在画面里" —— **直接从帧里读**，不做任何 AOI / 房间的近似推断。
-            var visibleIds = ActTable.VisibleIn(frames, act.Window.From, 0);
-            //    但**位置**必须取自房主侧采样：录制者自己的帧是 SurvivalTime 基准（每轮第一枚），
-            //    从磁带里取会拿到几秒前的位置，客户端会先把角色摆在那儿再被后续帧拉回来 ⇒ 抖动。
-            var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
-
-            // ③ 剪影槽位（唯一决策点）：必须落在"不会出现在画面里"的人身上。
-            var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
-            act.SilhouetteId = sil.Id;
-
-            // ④ 首帧信息：用**剪影槽位自己的**信息，只把位置换成"主角在窗口起点的位置"。
-            //    为什么不能省事复用主角的信息：客户端 `Spawn → SetInfo` 里有一句
-            //    `RefreshSkeletonCharacter(CharacterId)`，会**把这个人的角色改成主角的角色**，
-            //    而且改动留在客户端的 PublicInfo 上 —— 录像绝不能影响结算画面（实测踩过）。
-            var head = BuildHead(act, sil.Id);
-            if (head == null)
-            {
-                Plugin.Log.LogWarning($"[HS-Shadow] 【{ActTable.Name(act.Kind)}#{act.Key}】"
-                    + $"拿不到首帧信息（剪影=#{sil.Id}，采样={HostRecorder.Stats()}）⇒ 该幕无法装配。");
-                return false;
-            }
-
-            // ⑤ 装配合规磁带（唯一出口）
-            var tape = TapeAssembler.Assemble(act, frames, head, visibleInfos, out var rep);
-
-            float density = rep.FramesOut / Math.Max(0.01f, act.Window.Length);
-            if (tape == null)
-            {
-                Plugin.Log.LogWarning($"[HS-Shadow] {rep.Line()}");
-                return false;
-            }
-
-            Plugin.Log.LogInfo($"[HS-Shadow] {rep.Line()} 密度={density:F1}帧/秒");
-            return true;
-        }
-
-        /// <summary>
-        /// 首帧的玩家信息：<b>剪影槽位本人</b> + <b>主角在窗口起点的位置</b>。
-        ///
-        /// 位置必须来自房主侧采样（与窗口同一时间轴）。现有实现是"从客户端磁带里捞最近的一枚
-        /// SpawnShot"，而录制者的那些帧全是 `SurvivalTime` 基准（数值几百）
-        /// ⇒ `TimeStamp &lt;= 窗口起点`（几十）永远不成立 ⇒ 它会退到磁带第一帧
-        /// = **十几秒前的位置** ⇒ 与窗内帧相差上千单位 ⇒ 角色朝错误方向匀速漂移
-        /// （实测"每一帧都是坏的飘的"就是这么来的）。这里从接口上就没有这个可能。
-        /// </summary>
-        // ── 真索带（验证用：真的向客户端要，但不广播、不播放）────────────────
-
-        /// <summary>待收的幕：`(录制者, key)` → Act。客户端回包时按这个找回对应的一幕。</summary>
-        private static readonly Dictionary<long, Act> Pending = new Dictionary<long, Act>();
+        private static readonly Dictionary<long, Planned> Pending = new Dictionary<long, Planned>();
+        private static readonly List<Planned> All = new List<Planned>();
+        private static Action _continueSettlement;
+        private static GameRoom _room;
+        private static int _sent, _got, _synth, _placeholder;
 
         private static long Slot(int recorderId, int key) => ((long)recorderId << 32) | (uint)key;
 
-        /// <summary>本局有几段真的向客户端索取了（用于收尾汇总）。</summary>
-        private static int _fetched, _assembled, _failed;
+        public static void Reset()
+        {
+            Current = Phase.Idle;
+            Pending.Clear();
+            All.Clear();
+            _continueSettlement = null;
+            _room = null;
+            _sent = _got = _synth = _placeholder = 0;
+        }
+
+        // ── ① 拦截结算 ──────────────────────────────────────────────────
 
         /// <summary>
-        /// 【验证用】真的向客户端索取真实磁带 —— 但**不广播、不播放**，只装配 + 落盘。
-        ///
-        /// 为什么必须先做这一步：它验证的是"**真实客户端磁带**能不能被新装配器正确处理"，
-        /// 而这是整套重写里唯一没法用合成数据覆盖的部分（影子装配用的是房主侧采样）。
-        /// 旧实现所有的窗口错误都出在"拿真实磁带 + 用锚点算窗口"这一步上，所以这一环必须真跑。
-        ///
-        /// ⚠ 收上来的 `C_TAPE` **必须由我们拦下来**（见 `ReplayFeature.TapeHook`）：
-        ///   否则现有实现的 TapeHook 会把它判成"不是我的片段"交还原版 ⇒
-        ///   原版 `Handle_C_TAPE` 直接 `Broadcast(S_TAPE)` ⇒ 污染所有客户端的 `_playTapes`
-        ///   ⇒ 用户看到的回放会多出几段莫名其妙的原始录像。
+        /// 结算被请求时调用。返回 <c>true</c> = 已拦下（结算延后，稍后由本类续上）。
+        /// 任何异常都吞掉并放行 —— 回放出事绝不能把对局卡在结算之前。
         /// </summary>
-        public static void FetchTapes(List<Act> acts)
+        public static bool OnSettlementRequested(List<Act> acts, string ending,
+            int murderDeaths, int whiteCount, Action continueSettlement)
+        {
+            try
+            {
+                // ★ 回放序列进行中：之后进来的每一次结算都必须继续拦下。
+                //   `BlackWinFeature.TryTrigger` 挂在每秒的 `SurvivalTick` 上，拦下第一次之后
+                //   它下一 tick 还会再调一次；若这里放行，真正的结算会在回放没播完时跑掉。
+                if (Current != Phase.Idle)
+                {
+                    Plugin.Log.LogInfo($"[HS-Replay]（{ending}）回放进行中（{Current}），继续拦截结算。");
+                    EnsureServerSurvive();
+                    return true;
+                }
+
+                var room = GameRoom.Instance;
+                if (room == null || room.State != EGameState.Survive)
+                    return false;
+
+                int need = ReplayFeature.DeathRatioPercent?.Value ?? 30;
+                Plugin.Log.LogInfo($"[HS-Replay]（{ending}）刀杀死亡 {murderDeaths} 人 / 白方 {whiteCount} 人，阈值 {need}%。");
+                if (murderDeaths <= 0 || whiteCount <= 0 || murderDeaths * 100 <= whiteCount * need)
+                {
+                    Plugin.Log.LogInfo("[HS-Replay] 未达阈值，正常结算。");
+                    return false;
+                }
+
+                _room = room;
+                _continueSettlement = continueSettlement;
+
+                // 结算类的幕（"最后时段"）在这里补登记 —— 它们的事件时刻就是"结算被拦下"这一刻。
+                ReplayFeature.RegisterSettlementActs();
+
+                All.Clear();
+                foreach (var a in acts)
+                    All.Add(new Planned { Act = a });
+
+                int max = ReplayFeature.MaxClips?.Value ?? 12;
+                if (All.Count > max)
+                {
+                    Plugin.Log.LogWarning($"[HS-Replay] 排片 {All.Count} 幕超过 MaxClips={max}，截断到 {max} 幕。");
+                    All.RemoveRange(max, All.Count - max);
+                }
+                if (All.Count == 0)
+                {
+                    Plugin.Log.LogInfo("[HS-Replay] 达到阈值但没有可用片段，正常结算。");
+                    return false;
+                }
+
+                Current = Phase.Preparing;
+                EnsureServerSurvive();
+                NotifyKnownBlack(room);
+
+                Plugin.Log.LogInfo($"[HS-Replay] 开始回放，共 {All.Count} 幕：{DescribePlan()}");
+
+                // ② 索要素材（每 key 单发 —— 一次塞多个 key 会让客户端按它自己的硬编码窗口裁，裁出空带）
+                FetchTapes(room);
+
+                // ③ 等一会儿再进回放画面（客户端收到请求即回包，给一点余量）
+                int wait = ReplayFeature.TapeWaitMs?.Value ?? 2500;
+                room.PushAfter(wait, BeginReplayScreen);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 准备回放失败，正常结算 — {ex.Message}");
+                Current = Phase.Idle;
+                return false;
+            }
+        }
+
+        private static string DescribePlan()
+        {
+            var parts = new List<string>(All.Count);
+            foreach (var p in All)
+                parts.Add($"{ActTable.Name(p.Act.Kind)}{p.Act.Key}");
+            return string.Join(" → ", parts);
+        }
+
+        // ── ② 索要素材 ──────────────────────────────────────────────────
+
+        private static void FetchTapes(GameRoom room)
         {
             Pending.Clear();
-            _fetched = _assembled = _failed = 0;
-
-            var room = GameRoom.Instance;
-            if (room == null || acts == null)
+            _sent = 0;
+            foreach (var p in All)
             {
-                Plugin.Log.LogInfo("[HS-Shadow/真实] 房间不存在，跳过索取。");
-                return;
+                var act = p.Act;
+                var player = FindPlayer(room, act.RecorderId);
+                if (act.RecorderId <= 0 || player?.Session == null)
+                    continue;   // 假人/已退出：没有客户端可问，稍后走服务端合成
+
+                Pending[Slot(act.RecorderId, act.Key)] = p;
+                player.Session.Send(new S_REQUEST_TAPE { RecordTime = act.Key });
+                _sent++;
             }
-
-            foreach (var act in acts)
-            {
-                // 只有**有客户端**的录制者才问得到东西；假人没有 Session，旧实现也是直接跳过。
-                var p = FindPlayer(room, act.RecorderId);
-                if (act.RecorderId <= 0 || p?.Session == null)
-                    continue;
-
-                Pending[Slot(act.RecorderId, act.Key)] = act;
-                p.Session.Send(new S_REQUEST_TAPE { RecordTime = act.Key });
-                _fetched++;
-            }
-
-            Plugin.Log.LogInfo($"[HS-Shadow/真实] 已向客户端逐个索取 {_fetched} 段真实磁带"
-                + $"（每 key 单发 ⇒ 客户端回原始缓冲，由我们裁；其余 {acts.Count - _fetched} 幕没有客户端可用）");
+            Plugin.Log.LogInfo($"[HS-Replay] 已向客户端逐个索取 {_sent} 段磁带"
+                + $"（每 key 单发 ⇒ 客户端回原始缓冲、由我们按绝对窗口裁）；"
+                + $"其余 {All.Count - _sent} 幕没有客户端可用 ⇒ 走服务端合成。");
         }
 
         /// <summary>
-        /// 收到一段真实客户端磁带（由 `ReplayFeature.TapeHook` 调用）。
-        /// 返回 true = 这段是我们登记的，已处理（调用方不要交还原版）。
+        /// 收到一段客户端磁带（由 <see cref="ReplayFeature"/> 的 `TapeHook` 调用）。
+        /// 返回 true = 这段是我们登记的、已处理（调用方不要交还原版）。
         /// </summary>
         public static bool OnTape(int recorderId, int key, List<SnapShot> raw)
         {
             long slot = Slot(recorderId, key);
-            if (!Pending.TryGetValue(slot, out var act))
+            if (!Pending.TryGetValue(slot, out var plan))
                 return false;
 
             Pending.Remove(slot);
-            Current = Phase.Preparing;
+            _got++;
 
             try
             {
+                var act = plan.Act;
                 // "谁在画面里" —— 直接读**客户端真实磁带**里的 SpawnShot（那就是 AOI 的真实结果）。
                 var visibleIds = ActTable.VisibleIn(raw, act.Window.From, 0);
-                // 位置取自房主侧采样（理由同 AssembleOne）。
+                // 位置取自房主侧采样：录制者自己的帧是 SurvivalTime 基准，从磁带取会拿到几秒前的位置。
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
                 var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, sil.Id);
                 var tape = TapeAssembler.Assemble(act, raw, head, visibleInfos, out var rep);
-                float density = rep.FramesOut / Math.Max(0.01f, act.Window.Length);
 
                 if (tape == null)
                 {
-                    _failed++;
-                    Plugin.Log.LogWarning($"[HS-Shadow/真实] {rep.Line()}");
+                    Plugin.Log.LogWarning($"[HS-Replay] {rep.Line()}");
                 }
                 else
                 {
-                    _assembled++;
-                    Plugin.Log.LogInfo($"[HS-Shadow/真实] {rep.Line()} 密度={density:F1}帧/秒"
-                        + $"，客户端给了 {raw.Count} 帧");
+                    plan.Tape = tape;
+                    Plugin.Log.LogInfo($"[HS-Replay] {rep.Line()} 密度={rep.FramesOut / Math.Max(0.01f, act.Window.Length):F1}帧/秒"
+                        + $"（客户端给了 {raw.Count} 帧）");
+                    if (ReplayFeature.DumpTapes?.Value ?? false)
+                        TapeDump.Save(recorderId, key, ActTable.Name(act.Kind),
+                            act.Window.From, 0f, act.Window.Length, raw, tape, sil.ToString());
                 }
-
-                // 落盘对照（复用 TapeDump 的目录；这里 at/before/after 传的是**新定义的绝对区间**，
-                // 所以头部那个"窗口"数值就是规范窗口 —— 与旧实现那几行并列时一眼能看出差别）。
-                TapeDump.Save(recorderId, key, "新装配-" + ActTable.Name(act.Kind),
-                    act.Window.From, 0f, act.Window.Length, raw, tape, sil.ToString());
-
                 return true;
             }
             catch (Exception ex)
             {
-                _failed++;
-                Plugin.Log.LogWarning($"[HS-Shadow/真实] 装配抛异常 — {ex.Message}");
+                Plugin.Log.LogWarning($"[HS-Replay] 装配磁带失败 — {ex.Message}");
                 return true;
             }
         }
 
-        /// <summary>收尾汇总（结算后调用）。</summary>
-        public static void ReportFetch()
+        // ── ④ 让客户端进回放画面 ────────────────────────────────────────
+
+        private static void BeginReplayScreen()
         {
-            if (_fetched == 0 && _assembled == 0 && _failed == 0)
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                {
+                    Finish("房间已不存在");
+                    return;
+                }
+                _room = room;
+
+                // ★ 刻意**只广播状态包给客户端，不动服务端 State**：
+                //   走 `room.ChangeGameState(Trial)` 会把服务端也置成 Trial，于是
+                //     (a) `GameRoom.TrialTick`（`if (State == Trial)`）开始每秒跑 `Trial.Tick()`，
+                //         原版裁判状态机接管并不断广播讨论/投票界面，把我们的 Replay 覆盖掉；
+                //     (b) `GameOver()` 末尾是 `if (State == Survive) PushAfter(7500, …TotalResult)`
+                //         ⇒ 服务端不在 Survive，结算那一步反而不执行。
+                //   只让客户端进 Trial 就同时避开这两条。
+                Plugin.Log.LogInfo($"[HS-Replay] 先让客户端建立回放 UI（{All.Count} 幕）。");
+                room.WaitCompletePacket(WaitIntroThenReplay, room.CompleteWaitCount(), 8000, 1500);
+                room.Broadcast(new S_CHANGE_GAME_STATE { State = EGameState.Trial });
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 进入回放失败 — {ex.Message}");
+                Finish("进入失败");
+            }
+        }
+
+        /// <summary>
+        /// 等审判 UI 的**开场演出**播完再推 Replay。
+        ///
+        /// ★ 不看客户端源码想不到：`StartReplay()` 第一件事是 `ResetSlideVisual()`，它是
+        ///   `_slideSequence.Kill()` + 把文字设成完全不透明；而开场 `SlidingText()` 的收尾
+        ///   `slideText.SetActive(false)` 挂在序列 OnComplete 上 ⇒ 序列被 Kill 之后永不执行
+        ///   ⇒ 开场文字被冻在画面上压在整段回放之上。
+        ///   开场时长（源码常量）：`SlidingText` 0.5+1+0.5 ≈ 2.0s，随后 `AlertMessage` 0.5+3.5+0.5 ≈ 4.5s，
+        ///   合计约 6.5s ⇒ 默认等 7 秒。
+        ///
+        /// 另外必须发 `S_FADE_IN`：客户端进 Trial 会先显示 `UI_Loading`，而它**自己不关自己**，
+        /// 关闭它的都是外部调用点，其中一条就是这个包；不发就要等 18 秒的兜底 watchdog，
+        /// 而那时回放早被盖住了。
+        /// </summary>
+        private static void WaitIntroThenReplay()
+        {
+            var room = GameRoom.Instance;
+            if (room == null)
+            {
+                Finish("房间已不存在");
                 return;
-            Plugin.Log.LogInfo($"[HS-Shadow/真实] 真实磁带汇总：索取 {_fetched} 段，"
-                + $"装配成功 {_assembled} 段，失败 {_failed} 段"
-                + $"（落盘在插件目录 tapedump/ 下，与旧实现的 dump 并列可比）");
+            }
+            _room = room;
+
+            room.Broadcast(new S_FADE_IN());
+
+            int wait = ReplayFeature.TrialIntroWaitMs?.Value ?? 7000;
+            Plugin.Log.LogInfo($"[HS-Replay] 已发 S_FADE_IN 收掉加载页，等 {wait}ms 让入场演出播完再推 Replay。");
+            room.PushAfter(wait, BroadcastReplay);
+        }
+
+        // ── ⑥⑦ 推 Replay 并等它放完 ────────────────────────────────────
+
+        private static void BroadcastReplay()
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                {
+                    Finish("房间已不存在");
+                    return;
+                }
+                _room = room;
+                Current = Phase.Playing;
+
+                FillMissing(room);
+
+                int budget = EstimateBudgetMs();
+                Plugin.Log.LogInfo($"[HS-Replay] 广播 Replay 状态：已有磁带 {_got} 段 / 服务端合成 {_synth} 段 / "
+                    + $"占位 {_placeholder} 段，预算 {budget}ms。");
+
+                // 客户端放完会在 `RecordManager.Stop()` 里 `CompleteAndSend()`；第一个回执到达后再宽限一会儿。
+                room.WaitCompletePacket(() => Finish("客户端回执/超时"), room.CompleteWaitCount(), budget, 4000);
+                room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Replay });
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 推送回放失败 — {ex.Message}");
+                Finish("推送失败");
+            }
+        }
+
+        /// <summary>
+        /// 给"没等到客户端磁带"的幕补素材。
+        ///
+        /// ⚠ 必须赶在 `Replay` 状态包**之前** —— 客户端 `StartReplay → RecordManager.Play()`
+        ///   会把 `_playTapes` **快照**进 `_session`，之后再补就进不了这一轮的播放列表。
+        ///
+        /// 顺序：**优先服务端合成**（有真实采样 ⇒ 画面是真的），合不上再补 2 帧占位磁带
+        /// （让客户端走一次"这段没录到"的转场，而不是让这一幕凭空消失）。
+        /// </summary>
+        private static void FillMissing(GameRoom room)
+        {
+            foreach (var plan in All)
+            {
+                if (plan.Tape != null)
+                    continue;
+
+                var act = plan.Act;
+                if (TrySynth(act, out var tape))
+                {
+                    plan.Tape = tape;
+                    _synth++;
+                    Broadcast(room, act.Key, tape);
+                    continue;
+                }
+
+                if (!(ReplayFeature.PlaceholderTape?.Value ?? true))
+                    continue;
+
+                var head = BuildHead(act, PickPlaceholderId(act));
+                var ph = TapeAssembler.Placeholder(act.Key, head);
+                if (ph == null)
+                {
+                    Plugin.Log.LogWarning($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】没素材、又找不到占位主视角 ⇒ "
+                        + "这一段整段跳过（观众看到的是「少了一段」）。");
+                    continue;
+                }
+                plan.Tape = ph;
+                _placeholder++;
+                Broadcast(room, act.Key, ph);
+                Plugin.Log.LogInfo($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】合不上 ⇒ 补 2 帧占位磁带"
+                    + $"（主视角=#{head.PlayerId}），客户端会走一次转场后跳过这一段。");
+            }
+        }
+
+        private static bool TrySynth(Act act, out List<SnapShot> tape)
+        {
+            tape = null;
+            try
+            {
+                // 服务端这条路上没有 AOI 信息 ⇒ "谁在画面里"由我们自己铺的帧决定
+                // （`HostSynth` 会在窗口起点给每个有采样的人各发一枚）。
+                bool dark = act.Kind == ActKind.BlackTail;
+                var frames = HostSynth.Frames(act.Window, act.SubjectId, dark, ReplayFeature.BombBlackout?.Value ?? false);
+                if (frames.Count == 0)
+                {
+                    Plugin.Log.LogInfo($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】"
+                        + $"缓冲里没有可用帧（窗口={act.Window}）⇒ 不合成。");
+                    return false;
+                }
+
+                var visibleIds = ActTable.VisibleIn(frames, act.Window.From, 0);
+                var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
+                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
+                act.SilhouetteId = sil.Id;
+
+                var head = BuildHead(act, sil.Id);
+                if (head == null)
+                {
+                    Plugin.Log.LogInfo($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】拿不到首帧信息 ⇒ 不合成。");
+                    return false;
+                }
+
+                tape = TapeAssembler.Assemble(act, frames, head, visibleInfos, out var rep);
+                if (tape == null)
+                {
+                    Plugin.Log.LogInfo($"[HS-Replay] {rep.Line()}");
+                    return false;
+                }
+                Plugin.Log.LogInfo($"[HS-Replay] {rep.Line()}"
+                    + $" 密度={rep.FramesOut / Math.Max(0.01f, act.Window.Length):F1}帧/秒（服务端合成）");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 服务端合成失败 — {ex.Message}");
+                return false;
+            }
+        }
+
+        private static void Broadcast(GameRoom room, int key, List<SnapShot> tape)
+        {
+            var pkt = new S_TAPE { RecordTime = key, TapeCount = TrialManager.Instance?.TapeCount ?? 1 };
+            pkt.SnapShots.AddRange(tape);
+            room.Push(delegate
+            {
+                room.Broadcast(pkt);
+                TrialManager.Instance?.SetTape(key, tape.Count);
+            });
+        }
+
+        // ── ⑦ 收尾 ──────────────────────────────────────────────────────
+
+        private static void Finish(string why)
+        {
+            if (Current == Phase.Done)
+                return;
+            Current = Phase.Done;
+
+            var cont = _continueSettlement;
+            _continueSettlement = null;
+
+            Plugin.Log.LogInfo($"[HS-Replay] 回放结束（{why}）：客户端磁带 {_got}/{_sent} 段，"
+                + $"服务端合成 {_synth} 段，占位 {_placeholder} 段，继续结算。");
+
+            try
+            {
+                cont?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 继续结算失败 — {ex.Message}");
+            }
+        }
+
+        // ── 工具 ────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// 回放期间**必须**让服务端留在 `Survive`（只写字段 `_state`，**不发包**）。
+        /// 两条理由：`TrialTick` 会接管状态机并广播讨论/投票界面；而 `GameOver` 末尾的
+        /// `if (State == Survive) PushAfter(7500, …TotalResult)` 要求它在 Survive。
+        /// 客户端的 Trial 视图必须留着（回放宿主 `UI_TrialEvent` 挂在它上面）⇒ 所以只改字段。
+        /// </summary>
+        private static void EnsureServerSurvive()
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null || room.State == EGameState.Survive)
+                    return;
+
+                var field = AccessTools.Field(typeof(GameRoom), "_state");
+                if (field == null)
+                {
+                    Plugin.Log.LogWarning("[HS-Replay] 找不到 GameRoom._state，无法把服务端按回 Survive。");
+                    return;
+                }
+                Plugin.Log.LogWarning($"[HS-Replay] 服务端状态是 {room.State}（回放期间必须是 Survive）——"
+                    + "原版裁判状态机会接管并广播讨论/投票界面，已按回 Survive（只改字段，不发包）。");
+                field.SetValue(room, EGameState.Survive);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 把服务端按回 Survive 失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>广播 `S_NOTIFY_BLACK` 把黑方标成客户端的"已知黑幕" ⇒ 昵称显示为红色。</summary>
+        private static void NotifyKnownBlack(GameRoom room)
+        {
+            if (!(ReplayFeature.RevealBlackName?.Value ?? true))
+                return;
+            try
+            {
+                int blackId = FindBlackId(room);
+                if (blackId <= 0)
+                {
+                    Plugin.Log.LogWarning("[HS-Replay] 没找到黑方 id，回放里不会有红名。");
+                    return;
+                }
+                room.Broadcast(new S_NOTIFY_BLACK { PlayerId = blackId });
+                Plugin.Log.LogInfo($"[HS-Replay] 已广播 S_NOTIFY_BLACK #{blackId}（回放里黑方昵称显示为红色）。");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 标记黑幕昵称失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>把"画面里的人"的 id 换成本幕**窗口起点时的样子**（位置取自房主侧采样）。</summary>
+        private static List<PublicPlayerInfo> VisibleInfos(List<int> ids, float windowStart)
+        {
+            var list = new List<PublicPlayerInfo>(ids.Count);
+            foreach (int id in ids)
+            {
+                var info = HostRecorder.At(id, windowStart);
+                if (info != null)
+                    list.Add(info);
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 首帧的玩家信息：**剪影槽位本人** + **主角在窗口起点的位置**。
+        ///
+        /// 用剪影槽位自己的信息、而不是复用主角的：客户端 `Spawn → SetInfo` 里有
+        /// `RefreshSkeletonCharacter(CharacterId)`，会把**这个人的角色改成主角的角色**，
+        /// 而改动留在客户端的 `PublicInfo` 上 —— 录像绝不能影响结算画面（实测踩过）。
+        ///
+        /// 位置必须来自房主侧采样（与窗口同一时间轴）。旧实现是"从客户端磁带里捞最近一枚
+        /// SpawnShot"，而录制者那些帧全是 `SurvivalTime` 基准 ⇒ `TimeStamp <= 窗口起点` 不成立
+        /// ⇒ 退到磁带第一帧 = 十几秒前的位置 ⇒ 角色朝错误方向匀速漂移（实测"每一帧都是坏的飘的"）。
+        /// </summary>
+        private static PublicPlayerInfo BuildHead(Act act, int silhouetteId)
+        {
+            var subject = HostRecorder.At(act.SubjectId, act.Window.From);
+            var own = HostRecorder.At(silhouetteId, act.Window.From) ?? subject;
+            if (own == null)
+                return null;
+
+            var head = own.Clone();
+            head.PlayerId = silhouetteId;
+            head.State = EPlayerState.Idle;
+            head.IsGhost = true;
+
+            if (subject?.Pos != null)
+                head.Pos = subject.Pos.Clone();
+            return head;
+        }
+
+        /// <summary>占位磁带的主视角：优先录制者本人，其次任意一个还能用的已死者。</summary>
+        private static int PickPlaceholderId(Act act)
+        {
+            if (act.SilhouetteId > 0)
+                return act.SilhouetteId;
+            if (HostRecorder.HasRows(act.RecorderId))
+                return act.RecorderId;
+            var sil = SilhouetteResolver.Resolve(act.SubjectId, new List<int>());
+            act.SilhouetteId = sil.Id;
+            return sil.Id;
+        }
+
+        /// <summary>回放预算：客户端 `StartReplay` 先播标题，再逐段放；慢镜期间推进更慢，按 1.6 倍留量。</summary>
+        private static int EstimateBudgetMs()
+        {
+            float per = ReplayFeature.SecondsPerClipEstimate?.Value ?? 5f;
+            double total = 5000;
+            foreach (var p in All)
+                total += Math.Max(p.Act.Window.Length, per) * 1000.0 * 1.6 + 600;
+            total += 8000;
+            return (int)Math.Max(15000, Math.Min(120000, total));
+        }
+
+        private static int FindBlackId(GameRoom room)
+        {
+            if (room == null)
+                return 0;
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark))
+                    return p.PublicInfo.PlayerId;
+            }
+            foreach (var p in room.DeadPlayers)
+            {
+                if (p?.PublicInfo != null && (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark))
+                    return p.PublicInfo.PlayerId;
+            }
+            return 0;
         }
 
         private static GamePlayer FindPlayer(GameRoom room, int id)
@@ -265,38 +594,6 @@ namespace HideAndSeek.Features.Replay
                     return p;
             }
             return null;
-        }
-        /// <summary>把"画面里的人"的 id 换成本幕**窗口起点时的样子**（位置取自房主侧采样）。</summary>
-        private static List<PublicPlayerInfo> VisibleInfos(List<int> ids, float windowStart)
-        {
-            var list = new List<PublicPlayerInfo>(ids.Count);
-            foreach (int id in ids)
-            {
-                var info = HostRecorder.At(id, windowStart);
-                if (info != null)
-                    list.Add(info);
-            }
-            return list;
-        }
-
-        private static PublicPlayerInfo BuildHead(Act act, int silhouetteId)
-        {
-            var subject = HostRecorder.At(act.SubjectId, act.Window.From);
-            var own = HostRecorder.At(silhouetteId, act.Window.From) ?? subject;
-            if (own == null)
-                return null;
-
-            var head = own.Clone();
-            head.PlayerId = silhouetteId;
-            head.State = EPlayerState.Idle;   // 别让"躲柜 / 死亡幽灵"这类状态驱动这个看不见的角色
-            head.IsGhost = true;              // 幽灵 ⇒ 客户端 RefreshGhostVisual 走 case 2 把他关掉
-
-            // 镜头必须落在主角所在的现场：把位置换成主角在窗口起点的位置。
-            // ⚠ 必须 Clone —— 直接用会让首帧和采样缓冲共享同一个 PosInfo 对象。
-            if (subject?.Pos != null)
-                head.Pos = subject.Pos.Clone();
-
-            return head;
         }
     }
 }

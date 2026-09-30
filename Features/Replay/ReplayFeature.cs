@@ -14,50 +14,131 @@ using GamePlayer = Server.Game.Player;
 namespace HideAndSeek.Features.Replay
 {
     /// <summary>
-    /// 回放重写版 —— 当前处于**影子模式**：只计算并打印"如果换我，这一幕会怎么排"，
-    /// **不发包、不改游戏状态、不播回放**。同一局里现有实现（<c>[EndReplay]</c>）照常工作，
-    /// 于是日志里会并列出现两套决策，可以直接对照。
+    /// 对局结束时播放「真相公开」回放（重写版）。
     ///
-    /// 为什么先做影子模式：验证一次改动需要打一局，而"打一局"的成本不该反复花在用户身上。
-    /// 影子模式让**你照常玩**，决策差异在日志里自己显形。
+    /// 这一版与旧实现的关系：**功能等价、结构重做**。旧实现（`Features/Rule/EndReplayFeature.cs`）
+    /// 里那些"同一个概念实现多份"的地方，在这里各自只剩一处：
     ///
-    /// 接入约定（重要）：
-    ///   · 全部钩子用 **Postfix** —— 现有实现的 `TotalResultHook` 是 Prefix 且会 `return false`，
-    ///     而 Harmony 里"某个 Prefix 返回 false"会让**后面的 Prefix 不再执行**（Postfix 仍会执行）。
-    ///     用 Postfix 才能保证影子逻辑一定跑得到。
-    ///   · 配置项**暂时借用**现有实现的 <c>[EndReplay]</c> 那些值（阶段 6 会把它们搬过来），
-    ///     所以现在不需要新增任何配置键。
+    ///   窗口        <see cref="ReplayWindow"/>       —— 传**绝对时间区间**，不再传"相对事件的前后秒数"
+    ///   幕表        <see cref="ActTable"/>           —— 每幕的事件时刻与窗口规则集中在此
+    ///   出带        <see cref="TapeAssembler"/>      —— 三条素材路径共用同一个出口
+    ///   剪影        <see cref="SilhouetteResolver"/> —— 合并旧实现的两套判据
+    ///   采样/合成   <see cref="HostRecorder"/> / <see cref="HostSynth"/>
+    ///   编排        <see cref="ReplayDirector"/>     —— 显式阶段状态机
+    ///
+    /// ★【纯服务端】本模块**只 patch 服务端类型**。旧实现里有 8 处补丁打在客户端类型上
+    ///   （`RecordManager` / `UI_TrialEvent` / `PacketHandler` / 客户端 `Player` / `UI_GameScene`），
+    ///   而它们**只在房主自己的进程里生效** ⇒ 房主看到的画面 ≠ 别人看到的画面，
+    ///   而且会掩盖服务端方案的不完善。这一版全部去掉；服务端确实做不到的写进已知限制。
+    ///
+    /// 配置键名与旧实现**逐一相同**，所以升级用户的 `.cfg` 定制照旧生效（段名也仍是 `EndReplay`）。
     /// </summary>
     [PatchFeature(
-        section: "ReplayDraft",
-        description: "回放重写版（当前：影子模式）。只计算并打印幕表，不发包、不播回放 —— 用于与现有实现【EndReplay】对照。",
+        section: "EndReplay",
+        description: "对局结束时（刀杀死亡人数超过白方一定比例）在结算前为所有人播放回放：黑方拿刀、每次刀杀、最后时段、以及自爆/白胜巡礼。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class ReplayFeature
     {
-        [ConfigField(true, "影子模式：只计算与记录，不发包、不播回放。用于与现有实现对照。")]
-        public static ConfigEntry<bool> ShadowOnly;
+        // ── 配置（键名与旧实现一致，不要在阶段 6 之后改名）────────────────
 
-        [ConfigField(false, "【验证用·默认关】真的向客户端索取真实磁带并装配 —— 但**不广播、不播放**，"
-            + "只把装配结果打进日志并落盘到 tapedump/。"
-            + "它验证的是整套重写里唯一没法用合成数据覆盖的一环：**真实客户端磁带**能不能被新装配器正确处理"
-            + "（旧实现所有窗口错误都出在「拿真实磁带 + 用锚点算窗口」这一步）。"
-            + "⚠ 开着它会让每个有客户端的录制者多回一轮磁带；装完后关掉。")]
-        public static ConfigEntry<bool> FetchRealTapes;
+        [ConfigField(true, "对局结束且达到阈值时播放回放。关掉即完全不播（结算照常）。" +
+            "本项是热开关：出刀瞬间就会读它来决定要不要请客户端录「拿刀」片段，所以对局中途才打开可能缺这一片段。")]
+        public static ConfigEntry<bool> PlayOnEnd;
 
-        // ── 状态（**一个**地方）────────────────────────────────────────
+        [ConfigField(30, "触发阈值：本局因刀杀死亡的人数超过白方人数的百分之几才播放回放。" +
+            "白方口径 = 非观战且非黑方的玩家（含已死者）；不计项圈自爆与审判处决。0 = 只要有 1 人被杀就播。",
+            Min = 0f, Max = 200f)]
+        public static ConfigEntry<int> DeathRatioPercent;
+
+        [ConfigField(1f, "「黑方拿刀」片段：事件前秒数。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> KnifeBeforeSec;
+
+        [ConfigField(1f, "「黑方拿刀」片段：事件后秒数。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> KnifeAfterSec;
+
+        [ConfigField(3f, "「黑方杀人」片段：事件前秒数。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> KillBeforeSec;
+
+        [ConfigField(1f, "「黑方杀人」片段：事件后秒数。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> KillAfterSec;
+
+        [ConfigField(3f, "「最后时段」片段（每个存活者各录一段自己的视角）：事件前秒数。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> EndBeforeSec;
+
+        [ConfigField(1f, "「最后时段」片段：事件后秒数。录制发生在结算被拦下的那一刻，之后场上已冻结。",
+            Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> EndAfterSec;
+
+        [ConfigField(0f, "「自爆」各段：**自爆开始之前**额外保留的秒数（0 ＝ 严格从自爆开始那一刻起裁）。" +
+            "整幕窗口 = [自爆开始 − 本项, 自爆开始 + 6s + 后秒数]。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> SelfDestructBeforeSec;
+
+        [ConfigField(0.5f, "「自爆」各段：**爆炸之后**保留的秒数（爆炸 = 自爆开始后 6s，人消失那一刻）。",
+            Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> SelfDestructAfterSec;
+
+        [ConfigField(3f, "「黑方收尾」幕：镜头落到黑方之后停留的秒数（**另起一幕**）。" +
+            "黑胜时窗口以爆炸为中心；白胜时窗口结束于胜负判定那一刻。上限约 7s —— " +
+            "原版 `GameOver` 末尾是 `PushAfter(7500, ChangeGameState(TotalResult))`，爆炸后只有这么多素材。",
+            Min = 0f, Max = 7f)]
+        public static ConfigEntry<float> BlackTailSec;
+
+        [ConfigField(false, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`）。" +
+            "⚠ **默认关**：原版的压暗是「开 → DoActionAfter(2f) → 关」，服务端没有「立刻取消」的接口，" +
+            "而下一幕「黑方收尾」是断电视野 ⇒ 两者叠加会完全看不清。", Min = 0f, Max = 0f)]
+        public static ConfigEntry<bool> BombBlackout;
+
+        [ConfigField(2f, "「白方各段」：白胜结局里幸存者那段的**判定前**秒数。" +
+            "每段都取**同一段时间**（判定前本项 ~ 判定后后项），只是视角不同、依次播放。" +
+            "⚠ 总时长 = 幸存者人数 × (本项 + 后项)。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> TourBeforeSec;
+
+        [ConfigField(0.5f, "「白方各段」：判定后秒数（与上一项一起构成每段的时间段）。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> TourAfterSec;
+
+        [ConfigField(12, "最多播放几段。段数越多回放越长。", Min = 1f, Max = 40f)]
+        public static ConfigEntry<int> MaxClips;
+
+        [ConfigField(2500, "向客户端索取磁带后等多久开始播放（毫秒）。客户端收到请求即回包，给一点余量即可。",
+            Min = 200f, Max = 20000f)]
+        public static ConfigEntry<int> TapeWaitMs;
+
+        [ConfigField(5f, "超时兜底用的单段估算秒数（秒/段）。正常情况下客户端的完成回执会提前结束等待。",
+            Min = 1f, Max = 60f)]
+        public static ConfigEntry<float> SecondsPerClipEstimate;
+
+        [ConfigField(7000, "收掉加载页并让开场字幕开演后，等多久再推 Replay（毫秒）。" +
+            "加载页由 S_FADE_IN 立刻收掉，所以这里只需等入场演出/开场字幕自己播完；等太短会把字幕序列 Kill 掉、" +
+            "文字被冻在画面上（实测踩过）。", Min = 0f, Max = 60000f)]
+        public static ConfigEntry<int> TrialIntroWaitMs;
+
+        [ConfigField(true, "回放里把黑方的昵称显示成红色，让观众一眼看出「黑刀＝黑幕」。" +
+            "做法：推回放前广播一包 `S_NOTIFY_BLACK{ PlayerId = 黑方 }` —— 这是**服务端广播**，对所有人生效。" +
+            "返回大厅时客户端自己会清空，不会带到下一局。")]
+        public static ConfigEntry<bool> RevealBlackName;
+
+        [ConfigField(true, "【没收到磁带时】补一段「占位磁带」，让客户端走一遍「这段没录到」的转场，" +
+            "而不是让这一幕从回放里凭空消失。（服务端合成的那几幕例外，见代码注释。）")]
+        public static ConfigEntry<bool> PlaceholderTape;
+
+        [ConfigField(true, "【排查用】把客户端回传的**真实磁带**落成文本文件（插件目录 tapedump/ 下，" +
+            "每局一个子目录、保留最近 8 局）。只写文件，不改游戏状态、不发包 —— 关掉纯粹为了不占磁盘。")]
+        public static ConfigEntry<bool> DumpTapes;
+
+        // ── 状态（**一处**便能看清走到哪了）────────────────────────────
+
         private static readonly List<Act> Acts = new List<Act>();
 
-        /// <summary>受害者"最后一次被击中"的时刻。`OnDamaged` 记、`KillHook` 取 ——
-        /// 因为 `OnDead` 的时刻**不等于**击杀时刻（实测晚 1.4~1.8 秒）。</summary>
+        /// <summary>受害者"最后一次被击中"的时刻 —— `OnDamaged` 记、`KillHook` 取。</summary>
         private static readonly Dictionary<int, float> LastHitAt = new Dictionary<int, float>();
+
         private static int _nextKey;
         private static int _murderDeaths;
         private static string _ending = "结算前";
-        private static bool _reported;
 
         private static bool Armed
-            => !ModeRuntime.Bypass && (ShadowOnly?.Value ?? true) && Diagnostics.IsLoaded("ReplayDraft");
+            => !ModeRuntime.Bypass && (PlayOnEnd?.Value ?? true) && Diagnostics.IsLoaded("EndReplay");
 
         private static float Now()
         {
@@ -65,14 +146,23 @@ namespace HideAndSeek.Features.Replay
             catch { return 0f; }
         }
 
-        private static int NextKey() => _nextKey++;
+        private static void Reset()
+        {
+            Acts.Clear();
+            LastHitAt.Clear();
+            _nextKey = 0;
+            _murderDeaths = 0;
+            _ending = "结算前";
+            HostRecorder.Clear();
+            ReplayDirector.Reset();
+        }
 
         private static Act Add(ActKind kind, int subjectId, int recorderId, ReplayWindow.Span window, string note)
         {
             var act = new Act
             {
                 Kind = kind,
-                Key = NextKey(),
+                Key = _nextKey++,
                 SubjectId = subjectId,
                 RecorderId = recorderId,
                 Window = window,
@@ -80,15 +170,12 @@ namespace HideAndSeek.Features.Replay
             };
             Acts.Add(act);
 
-            // 【真索带模式】请录制者在**此刻**把当前时刻登记成一个可裁事件：
-            //  客户端 `ReserveSaveTape` 会把它记进 `_killLocalTime[key]` 并插一枚 `NormalTimeEdit`。
-            // 没有这一步，客户端 `BuildUploadTape` 查不到这个 key 会回**空磁带**（实测踩过）。
-            if (FetchRealTapes?.Value ?? false)
-            {
-                var p = FindPlayer(GameRoom.Instance, act.RecorderId);
-                if (p?.Session != null)
-                    p.Session.Send(new S_RECORD_REPLAY { RecordTime = act.Key });
-            }
+            // 请录制者在**此刻**把当前时刻登记成一个可裁事件：客户端 `ReserveSaveTape` 会把它记进
+            // `_killLocalTime[key]` 并插一枚 `NormalTimeEdit`。没有这一步，客户端 `BuildUploadTape`
+            // 查不到这个 key 会回**空磁带**（实测踩过）。
+            var p = FindPlayer(GameRoom.Instance, recorderId);
+            if (p?.Session != null)
+                p.Session.Send(new S_RECORD_REPLAY { RecordTime = act.Key });
 
             return act;
         }
@@ -103,36 +190,8 @@ namespace HideAndSeek.Features.Replay
             return false;
         }
 
-        private static void Reset()
-        {
-            Acts.Clear();
-            _nextKey = 0;
-            _murderDeaths = 0;
-            _ending = "结算前";
-            _reported = false;
-            HostRecorder.Clear();
-            ReplayDirector.ReportFetch();   // 上一局的真实磁带汇总（如果有）
-            LastHitAt.Clear();
-            ReplayDirector.Reset();
-        }
+        // ── 钩子（全部 Postfix / 只读，避免与别的补丁抢控制流）──────────
 
-        // 借用现有实现的配置值（阶段 6 搬过来就独立了）
-        private static float KnifeBefore => EndReplayFeature.KnifeBeforeSec?.Value ?? 1f;
-        private static float KnifeAfter => EndReplayFeature.KnifeAfterSec?.Value ?? 1f;
-        private static float KillBefore => EndReplayFeature.KillBeforeSec?.Value ?? 3f;
-        private static float KillAfter => EndReplayFeature.KillAfterSec?.Value ?? 1f;
-        private static float EndBefore => EndReplayFeature.EndBeforeSec?.Value ?? 3f;
-        private static float EndAfter => EndReplayFeature.EndAfterSec?.Value ?? 1f;
-        private static float TourBefore => EndReplayFeature.TourBeforeSec?.Value ?? 2f;
-        private static float TourAfter => EndReplayFeature.TourAfterSec?.Value ?? 0.5f;
-        private static float SelfBefore => EndReplayFeature.SelfDestructBeforeSec?.Value ?? 0f;
-        private static float SelfAfter => EndReplayFeature.SelfDestructAfterSec?.Value ?? 0.5f;
-        private static float BlackTail => Math.Max(0f, EndReplayFeature.BlackTailSec?.Value ?? 3f);
-        private static int MaxClips => EndReplayFeature.MaxClips?.Value ?? 12;
-
-        // ── 钩子 ────────────────────────────────────────────────────────
-
-        /// <summary>一局开始：清状态、开采样。</summary>
         [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
         internal static class RoundStartHook
         {
@@ -144,10 +203,7 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
-        /// <summary>
-        /// 【采样点】`Player.Move` —— 服务端每次收到 `C_MOVE` 后调用它。
-        /// 用它而不是定时 5Hz，是为了让服务端合成的密度与客户端录制**同源**。
-        /// </summary>
+        /// <summary>【采样点】`Player.Move` —— 服务端每次收到 `C_MOVE` 后调用它，频率与客户端录制同源。</summary>
         [HarmonyPatch(typeof(GamePlayer), "Move", new[] { typeof(PosInfo), typeof(bool) })]
         internal static class SampleHook
         {
@@ -160,14 +216,7 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
-        /// <summary>
-        /// 【兜底采样】1Hz 把当前所有玩家各记一帧。
-        ///
-        /// 为什么需要它：主采样点挂在 `Player.Move`（服务端每次收到 `C_MOVE` 后调用），
-        /// 频率与客户端同源 —— 但**假人不主动发包**，站桩的玩家也不发包，
-        /// 于是"从未移动过的人"可能一帧都没有（实测单人测试时约 1.1 帧/秒/人）。
-        /// 这一路只保证"每个人至少被记到一次"，不去追高频。
-        /// </summary>
+        /// <summary>1Hz 兜底采样：假人不主动发包，站桩玩家也不发包，这一路保证"每个人至少被记到一次"。</summary>
         [HarmonyPatch(typeof(Managers), "Update")]
         internal static class HeartbeatHook
         {
@@ -186,7 +235,6 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
-        /// <summary>「拿刀」—— `DelayAcquireWeapon` 是拔刀后的入口，只在真正拿到武器的人身上跑。</summary>
         [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
         internal static class KnifeHook
         {
@@ -195,26 +243,23 @@ namespace HideAndSeek.Features.Replay
             {
                 if (!Armed)
                     return;
-                // 只在自提模式登记：开局发刀没有"跑刀"过程，录出来只是站着不动。
                 if (WeaponGrantFeature.GiveAtStart?.Value ?? false)
                     return;
-                if (__instance?.PublicInfo == null || __instance.Session == null)
+                if (__instance?.PublicInfo == null)
                     return;
                 if (__instance.Color != EPlayerColor.Black && __instance.Color != EPlayerColor.Dark)
                     return;
 
                 int id = __instance.PublicInfo.PlayerId;
-                Add(ActKind.Knife, id, id, ActTable.Plain(Now(), KnifeBefore, KnifeAfter), "拿刀");
+                Add(ActKind.Knife, id, id,
+                    ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 1f), "拿刀");
             }
         }
 
         /// <summary>
         /// 【事件时刻修正】记下"谁在什么时候被击中"。
-        ///
-        /// 为什么必须有它：`OnDead` 的时刻**不等于**击杀时刻。原版是在 `OnDamaged` 里
-        /// 设 `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的，而 `OnDead` 可能被推迟 ——
-        /// 实测某次刀杀 `OnDead` 在 `t=60.49`，而客户端为它插的 `NormalTimeEdit` 在 `t=59.12`，
-        /// 相差 **1.37 秒**。用 `OnDead` 的时刻算窗口，整幕会往后偏。
+        /// `OnDead` 的时刻**不等于**击杀时刻（实测差 1.37 秒），而原版是在 `OnDamaged` 里
+        /// 设 `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的。
         /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "OnDamaged")]
         internal static class HitHook
@@ -231,7 +276,6 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
-        /// <summary>「杀人」—— 原版在 `OnDamaged` 里已经请凶手录过一段，我们只是登记。</summary>
         [HarmonyPatch(typeof(GamePlayer), nameof(GamePlayer.OnDead))]
         internal static class KillHook
         {
@@ -250,20 +294,16 @@ namespace HideAndSeek.Features.Replay
 
                 int victim = __instance?.PublicInfo?.PlayerId ?? 0;
                 int id = black.PublicInfo.PlayerId;
-                // ★ 事件时刻必须取"被击中的那一刻"，不能取 OnDead 的时刻：
-                //   原版是在 `OnDamaged` 里设 `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的，
-                //   而 `OnDead` 可能被推迟 —— 实测某次刀杀 OnDead 在 t=60.49、客户端插的
-                //   NormalTimeEdit 在 t=59.12，差 1.37 秒 ⇒ 用 OnDead 会让整幕往后偏。
                 float at = LastHitAt.TryGetValue(victim, out var hitAt) ? hitAt : Now();
                 LastHitAt.Remove(victim);
-                Add(ActKind.Kill, id, id, ActTable.Plain(at, KillBefore, KillAfter), $"#{id} → #{victim}");
+                Add(ActKind.Kill, id, id,
+                    ActTable.Plain(at, KillBeforeSec?.Value ?? 3f, KillAfterSec?.Value ?? 1f), $"#{id} → #{victim}");
             }
         }
 
         /// <summary>
         /// 「自爆」—— `OnDeadCollarBomb` 只是**开始**自爆（真正死亡在 6 秒后）。
-        /// 窗口取 <c>[t0 − 额外前秒, t0 + 6 + 后秒]</c>，即从"自爆开始"那一刻起算。
-        /// ⚠ 它对每个存活白方各调一次 ⇒ 必须用 <see cref="HasKind"/> 保证只登记一次。
+        /// 它对每个存活白方各调一次 ⇒ 用 <see cref="HasKind"/> 保证只登记一次。
         /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "OnDeadCollarBomb")]
         internal static class CollarBombHook
@@ -287,13 +327,13 @@ namespace HideAndSeek.Features.Replay
                     return;
 
                 var subjects = AliveWhites(room);
-                var window = ActTable.SelfDestruct(t0, SelfBefore, SelfAfter);
+                var window = ActTable.SelfDestruct(t0,
+                    SelfDestructBeforeSec?.Value ?? 0f, SelfDestructAfterSec?.Value ?? 0.5f);
                 int seq = 0;
                 foreach (int id in subjects)
                 {
-                    if (Acts.Count >= MaxClips)
+                    if (Acts.Count >= (MaxClips?.Value ?? 12))
                         break;
-                    // 平铺：第一段独占哑期（见 ReplayWindow.Tile 的说明）
                     var seg = ReplayWindow.Tile(seq, subjects.Count, window, 1.5f);
                     var p = FindPlayer(room, id);
                     Add(ActKind.SelfDestruct, id, p?.Session != null ? id : 0, seg, $"被处决者 #{id}");
@@ -301,11 +341,11 @@ namespace HideAndSeek.Features.Replay
                 }
 
                 int blackId = FindBlackId(room);
-                if (blackId > 0 && Acts.Count < MaxClips)
+                if (blackId > 0 && Acts.Count < (MaxClips?.Value ?? 12))
                 {
-                    // 黑方收尾：与爆炸同时
+                    float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
                     Add(ActKind.BlackTail, blackId, 0,
-                        ActTable.BlackTailOnBomb(t0 + ActTable.CollarToDeadSec, BlackTail), "黑方收尾");
+                        ActTable.BlackTailOnBomb(t0 + ActTable.CollarToDeadSec, tail), "黑方收尾（与爆炸同时）");
                 }
             }
         }
@@ -319,8 +359,8 @@ namespace HideAndSeek.Features.Replay
             {
                 if (!Armed)
                     return;
-                _ending = "白方胜利";
 
+                _ending = "白方胜利";
                 if (HasKind(ActKind.Tour))
                     return;
 
@@ -329,25 +369,24 @@ namespace HideAndSeek.Features.Replay
                     return;
 
                 int blackId = FindBlackId(room);
-                var subjects = AliveWhites(room);
-                var window = ActTable.Plain(Now(), TourBefore, TourAfter);
-                foreach (int id in subjects)
+                float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
+                var window = ActTable.Plain(Now(),
+                    TourBeforeSec?.Value ?? 2f, TourAfterSec?.Value ?? 0.5f);
+
+                foreach (int id in AliveWhites(room))
                 {
-                    if (Acts.Count >= MaxClips)
+                    if (Acts.Count >= (MaxClips?.Value ?? 12))
                         break;
                     var p = FindPlayer(room, id);
                     Add(ActKind.Tour, id, p?.Session != null ? id : 0, window, $"幸存者 #{id}");
                 }
 
-                if (blackId > 0 && Acts.Count < MaxClips)
-                {
+                if (blackId > 0 && Acts.Count < (MaxClips?.Value ?? 12))
                     Add(ActKind.BlackTail, blackId, 0,
-                        ActTable.BlackTailBeforeDecision(Now(), BlackTail), "黑方收尾（白胜）");
-                }
+                        ActTable.BlackTailBeforeDecision(Now(), tail), "黑方收尾（白胜）");
             }
         }
 
-        /// <summary>只做记录：黑方胜利的收尾演出跑过了。</summary>
         [HarmonyPatch(typeof(GameRoom), "GameOver")]
         internal static class BlackWinHook
         {
@@ -359,204 +398,97 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
-        /// 【结算】用 **Postfix**：现有实现的 `TotalResultHook` 是 Prefix 且会拦下这一次调用
-        /// （`return false`），而 Harmony 在 Prefix 返回 false 时**仍会执行 Postfix** ⇒ 影子逻辑一定跑得到。
-        /// 现有实现稍后会自己再调一次 `ChangeGameState(TotalResult)`，那次它的 Prefix 放行，
-        /// 于是这里会被调用第二次 —— 用 <see cref="_reported"/> 去重。
+        /// 【结算的唯一入口】拦下 `TotalResult`，先播回放，播完再放行。
+        ///
+        /// 为什么拦这里（而不是 `GameOver`）：原版收尾演出（含对存活白方的项圈自爆）都在
+        /// `GameOver` 内部跑完，然后才 `PushAfter(7500, ChangeGameState(TotalResult))`
+        /// ⇒ 要在回放里播"自爆"，就必须等它演完；而结算状态切换只有三个调用点，
+        /// **全都走公开的 `ChangeGameState(EGameState)`** ⇒ 一个钩子全覆盖。
         /// </summary>
         [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
         internal static class SettleHook
         {
-            [HarmonyPostfix]
-            private static void Postfix(EGameState state)
+            [HarmonyPrefix]
+            private static bool Prefix(EGameState state)
             {
                 if (state != EGameState.TotalResult)
-                    return;
-                if (!Armed || _reported)
-                    return;
+                    return true;
 
-                // ★ 去重必须放在入口：现有实现拦下第一次之后，会在回放结束时**自己再调一次**
-                //   `ChangeGameState(TotalResult)`（那次它的 Prefix 放行）⇒ 这里会被调用第二次，
-                //   于是整块影子输出会重复打印一遍。
-                _reported = true;
-
-                // 结算时补登记"结算类"的幕（它们的事件时刻就是"结算被拦下"这一刻）。
-                RegisterSettlementActs();
-
-                Report();   // 概览：阈值 / 采样
-                // 影子：逐幕做一次完整装配并打印结果（不发包、不广播、不播放）。
-                ReplayDirector.ShadowAssemble(Acts, EndReplayFeature.BombBlackout?.Value ?? false);
-
-                // 【真索带】真的向客户端要一遍 —— 验证"真实客户端磁带 → 装配"这一环。
-                // 收上来的包由下面的 TapeHook 拦住，绝不会被广播出去污染别人的回放。
-                if (FetchRealTapes?.Value ?? false)
-                    ReplayDirector.FetchTapes(Acts);
+                return !ReplayDirector.OnSettlementRequested(Acts, _ending, _murderDeaths,
+                    CountWhite(GameRoom.Instance), () => ContinueSettlement());
             }
         }
 
-        /// <summary>
-        /// 结算时补登记"结算类"的幕 —— 它们的事件时刻都是**结算被拦下**这一刻。
-        ///
-        /// 规则（避免同一件事登记两遍）：
-        ///   · 已经有「自爆」幕（黑胜处决）⇒ 不再排「最后时段」：那一刻白方全死了，没有存活着可拍；
-        ///   · 已经有「巡礼」幕（白胜）⇒ 同上，`TriggerWhiteWin` 已经排过；
-        ///   · 否则 ⇒ 为**还活着的白方**各排一段「最后时段」（纯刀杀造成的黑胜局就是这种）；
-        ///   · 「黑方收尾」若还没有就补一段 —— 黑胜时与爆炸同时，没有自爆就落在结算前。
-        /// </summary>
-        private static void RegisterSettlementActs()
+        /// <summary>回放结束后继续结算：调用原版 `ChangeGameState(EGameState.TotalResult)`。</summary>
+        private static void ContinueSettlement()
         {
             try
             {
                 var room = GameRoom.Instance;
-                if (room == null)
+                var m = AccessTools.Method(typeof(GameRoom), "ChangeGameState", new[] { typeof(EGameState) });
+                if (room == null || m == null)
+                {
+                    Plugin.Log.LogWarning("[HS-Replay] 找不到 GameRoom.ChangeGameState(EGameState)，回放后无法继续结算。");
                     return;
+                }
+                Plugin.Log.LogInfo("[HS-Replay] 回放结束，继续结算。");
+                m.Invoke(room, new object[] { EGameState.TotalResult });
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 回放后进入结算失败：{ex.Message}");
+            }
+        }
 
-                int blackId = FindBlackId(room);
+        // ── 结算类幕（事件时刻 = "结算被拦下"这一刻）────────────────────
+
+        internal static void RegisterSettlementActs()
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null || HasKind(ActKind.Tour) || HasKind(ActKind.SelfDestruct))
+                    return;   // 白胜/自爆那两路已经在各自钩子里排过片
+
                 float now = Now();
-
-                if (!HasKind(ActKind.SelfDestruct) && !HasKind(ActKind.Tour))
+                int max = MaxClips?.Value ?? 12;
+                int seq = 0;
+                foreach (int id in AliveWhites(room))
                 {
-                    int seq = 0;
-                    foreach (int id in AliveWhites(room))
-                    {
-                        if (Acts.Count >= MaxClips)
-                            break;
-                        var p = FindPlayer(room, id);
-                        Add(ActKind.Final, id, p?.Session != null ? id : 0,
-                            ActTable.Plain(now, EndBefore, EndAfter), $"存活者 #{id}");
-                        seq++;
-                    }
-                    if (seq > 0)
-                        Plugin.Log.LogInfo($"[HS-Shadow] 结算补登记「最后时段」{seq} 段（存活白方各一段、同一段时间）。");
+                    if (Acts.Count >= max)
+                        break;
+                    var p = FindPlayer(room, id);
+                    Add(ActKind.Final, id, p?.Session != null ? id : 0,
+                        ActTable.Plain(now, EndBeforeSec?.Value ?? 3f, EndAfterSec?.Value ?? 1f), $"存活者 #{id}");
+                    seq++;
                 }
-
-                if (!HasKind(ActKind.BlackTail) && blackId > 0 && Acts.Count < MaxClips)
-                {
-                    // 黑方收尾的时刻：有自爆就跟着爆炸（自爆开始 + 6s），否则落在结算前。
-                    float anchor = now;
-                    foreach (var a in Acts)
-                    {
-                        if (a.Kind == ActKind.SelfDestruct)
-                        {
-                            anchor = a.Window.From + ActTable.CollarToDeadSec;
-                            break;
-                        }
-                    }
-                    Add(ActKind.BlackTail, blackId, 0,
-                        ActTable.BlackTailOnBomb(anchor, BlackTail), "黑方收尾（结算补登记）");
-                }
+                if (seq > 0)
+                    Plugin.Log.LogInfo($"[HS-Replay] 结算补登记「最后时段」{seq} 段（存活白方各一段、同一段时间）。");
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[HS-Shadow] 结算补登记失败 — {ex.Message}");
+                Plugin.Log.LogWarning($"[HS-Replay] 结算补登记失败 — {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// 收客户端回传的真实磁带 —— **只接我们自己的 key**。
-        ///
-        /// ⚠ 为什么必须拦在这里，而不是放着不管：
-        ///   现有实现的 `TapeHook` 对"不是它登记的 key"一律 `return true` **交还原版**，
-        ///   而原版 `HostPacketHandler.Handle_C_TAPE` 会直接 `Broadcast(S_TAPE)` ——
-        ///   于是我们索取回来的原始磁带会**广播给所有客户端**、进入它们的 `_playTapes`
-        ///   （那就是回放的播放列表）⇒ 用户看到的回放里会凭空多出几段原始录像。
-        ///
-        /// 两个 Prefix 并存不会打架：Harmony 只在"某个 Prefix 返回 false"时跳过其余 Prefix，
-        /// 而本类只在**自己的 key** 上 return false，其余一律 return true 放行给旧实现。
-        /// `Priority.First` 是为了先判"是不是我们的 key"。
-        /// </summary>
-        [HarmonyPatch(typeof(HostPacketHandler), nameof(HostPacketHandler.Handle_C_TAPE))]
-        internal static class TapeHook
-        {
-            [HarmonyPrefix]
-            [HarmonyPriority(Priority.First)]
-            private static bool Prefix(IPacketSink session, Packet packet)
-            {
-                if (!(FetchRealTapes?.Value ?? false))
-                    return true;
-                if (!Armed)
-                    return true;
-
-                var c = packet?.Pkt as C_TAPE;
-                if (c == null)
-                    return true;
-
-                int recorderId = ResolveRecorder(session);
-                if (recorderId <= 0)
-                    return true;
-
-                return !ReplayDirector.OnTape(recorderId, c.RecordTime, c.SnapShots.ToList());
-            }
-
-            /// <summary>包处理器只给到 session，用"哪个玩家的 Session 就是它"反查 id。</summary>
-            private static int ResolveRecorder(IPacketSink session)
-            {
-                var room = GameRoom.Instance;
-                if (room == null || session == null)
-                    return 0;
-                foreach (var p in room.Players)
-                {
-                    if (p?.PublicInfo != null && ReferenceEquals(p.Session, session))
-                        return p.PublicInfo.PlayerId;
-                }
-                return 0;
-            }
-        }
-
-        // ── 输出 ────────────────────────────────────────────────────────
-
-        private static void Report()
-        {
-            try
-            {
-                int white = 0;
-                var room = GameRoom.Instance;
-                if (room != null)
-                {
-                    foreach (var p in room.Players)
-                    {
-                        if (p?.PublicInfo == null || p.IsSpectator)
-                            continue;
-                        if (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark)
-                            continue;
-                        white++;
-                    }
-                }
-                int need = EndReplayFeature.DeathRatioPercent?.Value ?? 30;
-                bool armed = _murderDeaths > 0 && white > 0 && _murderDeaths * 100 > white * need;
-
-                Plugin.Log.LogInfo($"[HS-Shadow] ════ 影子幕表（{_ending}）：{Acts.Count} 幕，"
-                    + $"刀杀 {_murderDeaths}/{white} 人（阈值 {need}% ⇒ {(armed ? "会播" : "不会播")}）════");
-                Plugin.Log.LogInfo($"[HS-Shadow] 采样：{HostRecorder.Stats()}");
-
-                // 单幕详情（含剪影与帧数）由 ReplayDirector 的装配报告给出，这里只列幕序。
-                foreach (var a in Acts)
-                    Plugin.Log.LogInfo($"[HS-Shadow]   幕 {a.Key,-3} {ActTable.Name(a.Kind),-4} 窗口={a.Window} "
-                        + $"主角=#{a.SubjectId,-2} 录制者=#{a.RecorderId} "
-                        + $"来源={(CanRecord(a.RecorderId) ? "客户端磁带" : (a.RecorderId > 0 ? "服务端合成（该录制者无客户端）" : "服务端合成"))}  {a.Note}");
-
-                if (Acts.Count == 0)
-                    Plugin.Log.LogInfo("[HS-Shadow]   （这一幕是空的）");
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS-Shadow] 打印幕表失败 — {ex.Message}");
-            }
-        }
+        internal static string Ending => _ending;
 
         // ── 小工具 ──────────────────────────────────────────────────────
 
-        /// <summary>
-        /// 这个人能不能**真的**提供磁带 —— 只有有客户端（`Session` 非空）的玩家才能。
-        /// 假人没有客户端，`S_RECORD_REPLAY` 发过去没人接 ⇒ 只能走服务端合成。
-        /// （旧口径只看 `RecorderId &gt; 0`，会把假人也标成"客户端优先"，误导排查。）
-        /// </summary>
-        private static bool CanRecord(int id)
+        private static int CountWhite(GameRoom room)
         {
-            if (id <= 0)
-                return false;
-            var p = FindPlayer(GameRoom.Instance, id);
-            return p?.Session != null;
+            int n = 0;
+            if (room == null)
+                return 0;
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo == null || p.IsSpectator)
+                    continue;
+                if (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark)
+                    continue;
+                n++;
+            }
+            return n;
         }
 
         private static List<int> AliveWhites(GameRoom room)
@@ -575,13 +507,15 @@ namespace HideAndSeek.Features.Replay
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[HS-Shadow] 统计存活白方失败 — {ex.Message}");
+                Plugin.Log.LogWarning($"[HS-Replay] 统计存活白方失败 — {ex.Message}");
             }
             return list;
         }
 
         private static int FindBlackId(GameRoom room)
         {
+            if (room == null)
+                return 0;
             foreach (var p in room.Players)
             {
                 if (p?.PublicInfo != null && (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark))
@@ -597,6 +531,8 @@ namespace HideAndSeek.Features.Replay
 
         private static GamePlayer FindPlayer(GameRoom room, int id)
         {
+            if (room == null || id <= 0)
+                return null;
             foreach (var p in room.Players)
             {
                 if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)

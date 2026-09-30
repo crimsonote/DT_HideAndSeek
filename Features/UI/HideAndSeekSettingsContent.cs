@@ -1,5 +1,6 @@
 ﻿using HideAndSeek.Core;
 using HideAndSeek.Features.Broadcast;
+using HideAndSeek.Features.Replay;
 using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Weapon;
 
@@ -56,7 +57,7 @@ namespace HideAndSeek.Features.UI
                 // 对局结束时（因刀杀死亡的人数超过白方阈值）在结算前为所有人播一段回放：
                 // 黑方拿刀 → 每次刀杀 → 最后时段各存活者的行动。窗口长度由 [EndReplay] 的
                 // *BeforeSec/*AfterSec 配置。热开关，改后即时生效。
-                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => EndReplayFeature.PlayOnEnd));
+                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => ReplayFeature.PlayOnEnd));
         }
     }
 }
