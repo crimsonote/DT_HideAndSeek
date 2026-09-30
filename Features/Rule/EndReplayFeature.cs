@@ -99,8 +99,10 @@ namespace HideAndSeek.Features.Rule
             "爆炸后只有这么多素材。", Min = 0f, Max = 7f)]
         public static ConfigEntry<float> BlackTailSec;
 
-        [ConfigField(true, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`，原版自带 3 秒后自动还原）。" +
-            "让「人凭空消失」变成一个有节拍的收尾；关掉就只剩人消失本身。" +
+        [ConfigField(false, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`）。" +
+            "⚠ **默认关**：原版的压暗是「开 → `DoActionAfter(2f)` → 关」（`DeviceManager.PlayEffect` :26962-26968），" +
+            "服务端**没有**任何「立刻取消」的接口 ⇒ 它会持续满 2 秒，" +
+            "而下一幕「黑方收尾」是断电视野 ⇒ 两者叠加会**完全看不清**（实测）。" +
             "（另一个「全屏面板 + 心跳声」效果不参与回放，改由命令 `hs_panel` 单独放一次。）")]
         public static ConfigEntry<bool> BombBlackout;
 
