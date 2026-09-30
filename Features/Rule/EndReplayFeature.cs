@@ -1166,10 +1166,25 @@ namespace HideAndSeek.Features.Rule
                     continue;
                 }
 
-                var pkt = new S_REQUEST_TAPE { RecordTime = pair.Value[0] };
-                pkt.RecordTimes.AddRange(pair.Value);
-                player.Session.Send(pkt);
-                Plugin.Log.LogInfo($"[HS] EndReplay：向 #{recorderId} 索取 {pair.Value.Count} 段磁带（{string.Join(",", pair.Value)}）。");
+                // ★ **每个 key 必须单独发一个包** —— 这是"客户端磁带没到 ⇒ 降级服务端"的真正原因。
+                //
+                //   客户端 `Handle_S_REQUEST_TAPE`（:42985）：
+                //       bool trim = list.Count >= 2;                       // 请求里**多个** key ⇒ 让它自己裁
+                //       Managers.Record.BuildUploadTape(item, trim);       // trim=true ⇒ 按它的规则裁
+                //   而它的裁剪基准是**真实时间量纲**（`killTime - 3f` ~ `_killLocalTime[killTime] + 5f`）。
+                //   原版击杀段的 key 恰好就是击杀时刻 ⇒ 量纲一致 ⇒ 裁得对；
+                //   但**我们自己造的 key**（`BaseKey + KeyWhiteTour/KeyBlackAct` = `SurviveTime + 100/200`，
+                //   即日志里的 6xx/7xx）与磁带帧的 `TimeStamp` **不是一个量纲** ⇒ 客户端裁出**空区间**
+                //   ⇒ 回空磁带 ⇒ 服务端判"没到" ⇒ 静默降级到服务端兜底。
+                //   实测症状：4xx 的段（拿刀/杀人/最后）全部成功，6xx/7xx 的段（自爆/巡礼/黑方收尾）全部降级
+                //   —— 而只有客户端磁带才带**设备帧**（传送门等），降级后就只剩"人在穿墙"。
+                //
+                //   单个 key ⇒ `list.Count == 1` ⇒ `trim = false` ⇒ 客户端回**原始缓冲**，由我们自己裁 ✓
+                foreach (int key in pair.Value)
+                {
+                    player.Session.Send(new S_REQUEST_TAPE { RecordTime = key });
+                }
+                Plugin.Log.LogInfo($"[HS] EndReplay：向 #{recorderId} 逐个索取 {pair.Value.Count} 段磁带（{string.Join(",", pair.Value)}，单发 ⇒ 客户端回原始磁带、由我们裁）。");
             }
 
             int wait = TapeWaitMs?.Value ?? 2500;
