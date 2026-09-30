@@ -926,11 +926,22 @@ namespace HideAndSeek.Features.Rule
             var spawn = src;
             if (obsId > 0)
             {
-                spawn = src.Clone();
+                // ★ 必须用**观察者自己的**信息（房主同时也是一台客户端，他的对象就在本机缓存里），
+                //   只把位置换成"录制者在窗口起点的位置"（镜头必须落在现场）。
+                //
+                //   为什么不能图省事复用录制者的信息（第一版就是这么写的，实测出事）：
+                //   客户端 `Spawn(info) → SetInfo(info)` 里有一句 `RefreshSkeletonCharacter(info.CharacterId)`，
+                //   于是**这个人的角色会被改成录制者的角色**，而且改动留在客户端的 PublicInfo 上 ——
+                //   实测表现：结算画面里那个被当观察者的假人，变成了黑幕（录制者）的角色。
+                //   录像绝不能影响结算，所以改成"把他自己的信息重设一遍"（几乎是无操作）。
+                var own = Managers.Player.GetPlayerCache(obsId)?.PublicInfo;
+                spawn = own != null ? own.Clone() : src.Clone();
                 spawn.PlayerId = obsId;
-                spawn.State = EPlayerState.Idle;   // 别让录制者的状态（拿刀/跑动/躲柜）驱动这个看不见的角色
+                if (src.Pos != null)
+                    spawn.Pos = src.Pos;               // 镜头落在录制者窗口起点的位置
+                spawn.State = EPlayerState.Idle;       // 别让他的状态（躲柜/死亡幽灵）驱动这个看不见的角色
                 if (ObserverGhost?.Value ?? true)
-                    spawn.IsGhost = true;          // ★ 关键：回放期间 IsGhost ⇒ 幽灵替身与骨架都被关掉 ⇒ 不可见
+                    spawn.IsGhost = true;              // ★ 回放期间 IsGhost ⇒ 幽灵替身与骨架都被关掉 ⇒ 不可见
             }
             else if (useTemp)
             {
