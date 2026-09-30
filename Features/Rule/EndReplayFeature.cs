@@ -823,6 +823,19 @@ namespace HideAndSeek.Features.Rule
                 int clipKey = key + 1 + lastSeq;
                 lastSeq++;
 
+                // ★ **一个黑方镜头就够**（用户定的口径）：这几幕本来就已经排了一幕服务端合成的
+                //   「黑方」（自爆配 3s / 白胜配 3s，断电视野、跟着凶手走）。若再让凶手本人录一份
+                //   「最后时段」，就成了**两个黑方镜头**；而且那一份在白方全灭的局里必然是空的
+                //   —— 主视角会被换成"隐藏观察者"，整段只剩一个被藏起来的凶手。
+                //   所以：**只要计划里已经有服务端「黑方」幕，就不再排录制者为黑方的「最后时段」**。
+                //   （纯刀杀致死的局没有「黑方」幕，那时凶手这一份仍是唯一的黑方收尾 ⇒ 照旧保留。）
+                if (blackId > 0 && p.PublicInfo.PlayerId == blackId && HasKind("黑方"))
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay：跳过「最后时段」#{p.PublicInfo.PlayerId}"
+                        + "（他就是凶手，而黑方收尾已由服务端合成的【黑方】幕承担 —— 一个黑方镜头就够）。");
+                    continue;
+                }
+
                 if (!RequestRecord(p, clipKey, "最后", before, after))
                     continue;
 
@@ -1328,6 +1341,32 @@ namespace HideAndSeek.Features.Rule
             if (ordered[0].Type != ESnapShotType.SpawnShot)
                 Plugin.Log.LogWarning($"[HS] EndReplay：合成磁带首帧不是 SpawnShot（{ordered[0].Type}），"
                     + "客户端会整段跳过。");
+
+            // ★ 诊断：把这一幕的"出场名单"打出来（谁、可见还是幽灵、在哪儿）。
+            //   下一局据此一次分清哑剧的两种可能：**演员压根没进磁带**（名单里没有他）还是
+            //   **进了但客户端把他当幽灵**（名单里是"(幽灵)"）。
+            try
+            {
+                var sb = new global::System.Text.StringBuilder();
+                foreach (var s in ordered)
+                {
+                    if (s.Type != ESnapShotType.SpawnShot || s.Spawn == null)
+                        continue;
+                    if (sb.Length > 0)
+                        sb.Append(" | ");
+                    sb.Append('#').Append(s.Spawn.PlayerId)
+                      .Append(s.Spawn.IsGhost ? "(幽灵)" : "(可见)")
+                      .Append('(').Append((int)(s.Spawn.Pos?.X ?? 0f))
+                      .Append(',').Append((int)(s.Spawn.Pos?.Y ?? 0f)).Append(')');
+                }
+
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 机位=#{anchorId} "
+                    + $"出场名单：{sb}");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：打印出场名单失败 — {ex.Message}");
+            }
 
             return ordered;
         }
