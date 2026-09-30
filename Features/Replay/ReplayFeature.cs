@@ -273,6 +273,28 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
+
+        /// <summary>刀的物品 id（`ItemInfo.DataId`，客户端到处用它判断"手里是不是刀"）。</summary>
+        private const int KnifeItemId = 4001;
+
+        /// <summary>
+        /// 「拿刀」幕 —— 事件时刻取自 `DelayAcquireWeapon`。
+        ///
+        /// ⚠ **这个挂点正在被怀疑**（2026-10）：用户实测"拿刀幕里人根本没走到刀架前、刀架都不在画面中"。
+        ///   已知事实（读码确认）：
+        ///     · `DelayAcquireWeapon()` 的实现只是 `StartWeaponCooltime(5)`（武器冷却 5 秒）；
+        ///     · 它唯一的**字面**调用点在 `Player.Color` 的 setter 里 `value == EPlayerColor.Black` 分支
+        ///       ⇒ 也就是"玩家被分配为黑方"那一刻，那时他通常**还在起点**。
+        ///   ⇒ 所以它很可能**不是**"走到刀架把刀拿走"的时刻。
+        ///
+        ///   但**尚未证实**：自提模式下"真正拿刀"对应哪个服务端事件（候选：`HandItemObjectId` 的 setter，
+        ///   其内部有 `value == 4001` 的专门分支并 `BroadcastModifyPlayer(ChangeHandItem)`）。
+        ///   ⇒ 所以**先不改行为**，用下面的探针把两个时刻都打出来，下一局对比后再决定。
+        ///
+        /// 旧实现（已删除的 `EndReplayFeature.cs`）用的也是这个挂点，注释里写
+        /// "`DelayAcquireWeapon` 是拔刀后的入口…只在真正拿到武器的人身上跑" —— 那句话**是推测**，
+        /// 没有任何实测支撑，别再把它当证据。
+        /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
         internal static class KnifeHook
         {
@@ -282,15 +304,53 @@ namespace HideAndSeek.Features.Replay
                 if (!Armed)
                     return;
                 if (WeaponGrantFeature.GiveAtStart?.Value ?? false)
-                    return;
+                    return;                       // 开局直接给刀 ⇒ 没有"跑刀"过程 ⇒ 这一幕没内容
                 if (__instance?.PublicInfo == null)
                     return;
                 if (__instance.Color != EPlayerColor.Black && __instance.Color != EPlayerColor.Dark)
                     return;
 
                 int id = __instance.PublicInfo.PlayerId;
+                Probe("DelayAcquireWeapon", id, 0);
                 Add(ActKind.Knife, id, id,
                     ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 1f), "拿刀");
+            }
+        }
+
+        /// <summary>
+        /// 【探针】只打日志、不改行为 —— 用来判定"真正拿刀"是哪个服务端事件。
+        ///
+        /// 挂 `HandItemObjectId` 的 setter：它内部有 `value == 4001`（刀）的专门分支，
+        /// 并会 `BroadcastModifyPlayer(ChangeHandItem)` 同步给所有客户端。
+        /// 下一局对比 `DelayAcquireWeapon` 与它两行日志的时间戳，就能一眼看出哪个才是"走到刀架拿刀"。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "set_HandItemObjectId")]
+        internal static class KnifeProbeHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance, int value)
+            {
+                if (value != KnifeItemId)
+                    return;
+                if (__instance?.PublicInfo == null)
+                    return;
+                Probe("set_HandItemObjectId", __instance.PublicInfo.PlayerId, value);
+            }
+        }
+
+        /// <summary>探针日志：把两个候选挂点的时间戳并列打印，便于对比。</summary>
+        private static void Probe(string where, int playerId, int value)
+        {
+            try
+            {
+                float t = Now();
+                Plugin.Log.LogInfo($"[HS-Replay/探针] 拿刀候选 {where} → t={t:F2} 玩家=#{playerId}"
+                    + (value != 0 ? $" value={value}" : "")
+                    + "（本局生存时间；两行对比即知哪个是真正走到刀架那一刻）");
+            }
+            catch
+            {
+                // 探针不该影响任何东西
             }
         }
 
