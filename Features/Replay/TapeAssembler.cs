@@ -210,6 +210,18 @@ namespace HideAndSeek.Features.Replay
                         continue;
                     }
 
+                    // ⚠ **不要在这里过滤"幽灵"的出场帧**。曾经试过：想让幽灵不显示昵称，
+                    //   就把 `IsGhost` 的 `SpawnShot` 丢掉 ⇒ 他不被 spawn ⇒ 昵称确实没了。
+                    //   但**代价是卡死风险**：磁带里可能带着指向他的
+                    //   `EffectShot{FlashVfx/ScopeVfx/ArmbandVfx}`，而
+                    //   `PlayFlashEffect` / `PlayScopeEffect` / `PlayArmbandEffect`
+                    //   **无条件解引用** `GetPlayerCache(effect.DeviceId)`
+                    //   （`GetPlayerCache` 找不到就返回 null，这三个都不做检查）⇒ NRE
+                    //   ⇒ 而 `_playIndex++` 在 `Update` 的 switch **之后** ⇒ 同一帧每帧重试
+                    //   ⇒ **整段回放永久卡住**。
+                    //   ⇒ "全员出场帧"真正的用途就是保证 `EffectShot` 引用的 id 一定在 `_cache` 里。
+                    //   昵称是观感问题、卡死是能不能玩的问题 —— 不值得换。（2026-10 核实）
+
                     result.Add(s);
                     rawInWindow++;
                 }

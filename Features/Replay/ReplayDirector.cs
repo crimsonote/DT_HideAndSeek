@@ -604,21 +604,21 @@ namespace HideAndSeek.Features.Replay
         /// </summary>
         private static List<int> SceneIds(Act act, List<SnapShot> frames)
         {
-            var ids = ActTable.VisibleIn(frames, act.Window.From, 0);
+            var ids = new List<int>(ActTable.VisibleIn(frames, act.Window.From, 0));
 
             // ★ **自我报告**：如果这一幕需要"另补"参与者，就说明**录制侧没录到他们** ——
             //   那是另一个 bug，必须显式喊出来，不能让这层兜底悄悄掩盖它。
             //   （`VisibleIn` 是扫描**全部**帧的，所以它漏人只可能是"磁带里真的没有"。）
-            if (act.Subjects == null || act.Subjects.Count == 0)
-                return ids;
-
             var added = new List<int>();
-            foreach (int id in act.Subjects)
+            if (act.Subjects != null)
             {
-                if (id > 0 && !ids.Contains(id))
+                foreach (int id in act.Subjects)
                 {
-                    ids.Add(id);
-                    added.Add(id);
+                    if (id > 0 && !ids.Contains(id))
+                    {
+                        ids.Add(id);
+                        added.Add(id);
+                    }
                 }
             }
 
@@ -630,6 +630,7 @@ namespace HideAndSeek.Features.Replay
                     + $"参与者 {string.Join(",", added.Select(i => "#" + i))} **不在磁带里** ⇒ 由服务端补进画面。"
                     + "这属于「录制侧漏录」，需要单独查（见 tapedump 的原始磁带 + SpawnShot 普查）。");
             }
+
             return ids;
         }
 
