@@ -1234,8 +1234,42 @@ namespace HideAndSeek.Features.Rule
                     return false;
                 }
 
+                // ★★ 广播前必须按时间戳**稳定排序** —— 这是实测踩出来的硬约束，不看客户端源码想不到：
+                //
+                //   客户端 `RecordManager.Update()` 是这样放的：
+                //       if (_playIndex >= Count) { FinishTape(); return; }
+                //       _currentTime += DeltaTime;
+                //       while (_playIndex < Count) {
+                //           var shot = currentTape[_playIndex];
+                //           if (shot.TimeStamp > _currentTime) break;   // ← 假设时间戳**非递减**
+                //           ...执行...
+                //           _playIndex++;
+                //       }
+                //
+                //   而我们的合成器是"先把世界按 5Hz 铺完、再把机位路径追加在后面" ⇒ 两段 timestamp **交错**：
+                //   追加在后、时间戳却更早的那些帧，一走到就被判定"早就该放了" ⇒ **在同一帧里被一次性执行完**
+                //   ⇒ 整幕塌成一瞬、镜头像坏掉的快切（实测：「自爆」459 帧、「黑方」212 帧都出现这个现象）。
+                //
+                //   稳定排序（`OrderBy`，不是 `List.Sort`）保证时间戳相同的帧保持插入顺序
+                //   ⇒ 首帧仍是最先插入的 `SpawnShot`（客户端 `BeginTape` 的硬要求）。
+                var ordered = shots.OrderBy(s => s.TimeStamp).ToList();
+
+                for (int i = 1; i < ordered.Count; i++)
+                {
+                    if (ordered[i].TimeStamp < ordered[i - 1].TimeStamp)
+                    {
+                        Plugin.Log.LogWarning("[HS] EndReplay：合成磁带排序后时间戳仍非递减失败（不该发生），"
+                            + $"第 {i} 帧 {ordered[i].TimeStamp:F3} < 前帧 {ordered[i - 1].TimeStamp:F3}。");
+                        break;
+                    }
+                }
+
+                if (ordered[0].Type != ESnapShotType.SpawnShot)
+                    Plugin.Log.LogWarning($"[HS] EndReplay：合成磁带首帧不是 SpawnShot（{ordered[0].Type}），"
+                        + "客户端会整段跳过。");
+
                 var pkt = new S_TAPE { RecordTime = clip.Key };
-                pkt.SnapShots.AddRange(shots);
+                pkt.SnapShots.AddRange(ordered);
                 room.Broadcast(pkt);
                 clip.Filled = true;
 
@@ -1244,8 +1278,8 @@ namespace HideAndSeek.Features.Rule
                     ? "跟着黑方（移动插值 20Hz）"
                     : (NeedsHostTape(clip) ? "白方巡礼（贪心最近未拍摄 + 直线高速平移）" : "镜头钉在目标上");
 
-                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 由**服务端录制**合成 {n} 帧"
-                    + $"（窗口=[{from:F2},{to:F2}] 锚点=#{anchorId} 镜头=#{camId} {look} / {how}）"
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 由**服务端录制**合成 "
+                    + $"{ordered.Count} 帧（窗口=[{from:F2},{to:F2}] 锚点=#{anchorId} 镜头=#{camId} {look} / {how}）"
                     + "⇒ 假人/已死者也能进回放。");
                 return true;
             }
