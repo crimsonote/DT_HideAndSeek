@@ -33,8 +33,12 @@ namespace HideAndSeek.Features.Rule
         /// <summary>环形缓冲时长（自爆窗口是 8s，留 45s 是为了"最后时段"等多种请求）。</summary>
         private const float KeepSeconds = 45f;
 
-        /// <summary>爆炸后多久把被处决者从场上拿掉（他们死后是幽灵，留在场上会"站着不动"）。</summary>
-        private const float BombDespawnDelay = 0.05f;
+        /// <summary>
+        /// ⚠ 已**移除**"爆炸后把被处决者移出场上"的那枚 `DespawnShot`（原 `BombDespawnDelay = 0.05f`）：
+        /// 它会在爆炸后 0.05s 就把对象 `SetActive(false)`，掐断仍在跑的项圈闪烁 DOTween
+        /// ⇒ 既不闪、也没有音效（实测：旧版能闪、新版全无，而爆炸帧的生成代码两版一模一样）。
+        /// 详见 <see cref="Build"/> 里爆炸循环处的完整说明。
+        /// </summary>
 
         /// <summary>移动帧的插值频率：采样只有 5Hz，镜头要跟人走就必须插值到更密，否则一顿一顿。</summary>
         private const float MoveHz = 20f;
@@ -205,6 +209,8 @@ namespace HideAndSeek.Features.Rule
                 }
             }
 
+            int bombAdded = 0;
+            var bombIds = new List<int>();
             foreach (var b in Bombs)
             {
                 if (b.Time < from || b.Time > to)
@@ -222,13 +228,32 @@ namespace HideAndSeek.Features.Rule
                     }
                 });
 
-                into.Add(new SnapShot
-                {
-                    Type = ESnapShotType.DespawnShot,
-                    TimeStamp = b.Time + BombDespawnDelay,
-                    Despawn = b.DeviceId
-                });
+                // ★ **不发 `DespawnShot`** —— 这就是"项圈闪烁不见了"的真凶（diff 实测）。
+                //
+                //   爆炸帧（`EffectShot{DyingVfx}`）只是**启动**一段客户端动画：`ApplyEffect`
+                //   → `PlayDying()` → DOTween 序列（`NecklaceWork` 音效 → 1s 停顿 → 4 轮**越来越快**的
+                //   项圈闪烁 → `StopDying()`，整段约 2.5s）。它全程持有玩家身上的 `_collar` 子物体。
+                //
+                //   而 `DespawnShot` → `ApplyDespawn` → `PlayerManager.Despawn(id)` → 对象
+                //   `SetActive(false)`。原本这枚帧排在爆炸后 0.05s，于是**动画刚启动就把项圈关掉** ⇒
+                //   既不闪、也没有音效（用户实测：旧版能闪、新版全无，而爆炸帧生成代码两版一模一样）。
+                //   旧版之所以没事：那一版的 `cameraTargetId` 是一具"幽灵机位"，被处决者压根没被 spawn，
+                //   `Despawn` 找不到人 ⇒ no-op ⇒ 项圈对象全程在场。
+                //
+                //   代价：被处决者会一直站在画面里（不会被自动移走）。这是**可接受的** ——
+                //   回放结束本来就会整体清场，而"能看到他被处决前站着的样子"正是这段的意义。
+
+                bombAdded++;
+                bombIds.Add(b.DeviceId);
             }
+
+            // 诊断：这一段窗口里到底有几枚爆炸帧、分别属于谁。爆炸帧靠 `DeviceId` 找**活着的
+            // 玩家对象**播放 `PlayDying()`（项圈闪烁 + NecklaceWork 音效），对象不在场就静默不出。
+            // 下一局日志据此一次分清"没生成"与"生成了但播不出来"，不再靠猜。
+            Plugin.Log.LogInfo($"[HS] EndReplayHostTape：兜底段 镜头=#{cameraTargetId} 剪影=#{ghost.Id}"
+                + $" 窗口=[{from:F2},{to:F2}] ⇒ 爆炸帧 {bombAdded} 枚"
+                + (bombAdded > 0 ? $"（DeviceId=[{string.Join(",", bombIds)}]）" : "（本段不含爆炸时刻）")
+                + $"，缓冲内爆炸记录共 {Bombs.Count} 条。");
 
             return into.Count;
         }
