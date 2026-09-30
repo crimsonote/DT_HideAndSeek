@@ -278,68 +278,44 @@ namespace HideAndSeek.Features.Replay
         private const int KnifeItemId = 4001;
 
         /// <summary>
-        /// 「拿刀」幕 —— 事件时刻取自 **`HandItemObjectId` 的 setter**（`value == 4001` = 刀）。
+        /// 「拿刀」幕 —— 事件时刻取自 `DelayAcquireWeapon`。
         ///
-        /// 为什么是这个挂点（读码确认）：
-        ///   · `Player.HandItemObjectId` 的 setter 里有一条**专门为刀写的**分支
-        ///       `if (value == 4001) { _handItemObjectId = 4001; }`
-        ///     ⇒ 拿到刀的那一刻才会走到它；
-        ///   · 它随后 `BroadcastModifyPlayer(ChangeHandItem, …)` 把结果同步给所有客户端。
-        ///   ⇒ 也就是"黑方走到刀架把刀拿走"这一刻。
+        /// ★ **挂点是正确的，之前换掉它是错的**（2026-10 实测推翻）：
+        ///   从那一局的 dump 算出"主角与刀架的实际距离"：
+        ///       刀架（Armory，deviceId=10082）= (8366, 4964)
+        ///       窗口起点 t=70.113 时主角 = (8471, 4839) ⇒ 距刀架 **163**
+        ///       t=70.328 = (8378, 4898) ⇒ 距 **67**；t=70.405 起 = (8378, 4925) ⇒ 距 **41**（停在刀架旁）
+        ///   ⇒ 窗口**确实**覆盖了"走到刀架拿刀"的全过程 ⇒ 事件时刻没问题。
         ///
-        /// ⚠ **不能用 `DelayAcquireWeapon`**：它的实现只是 `StartWeaponCooltime(5)`（武器冷却 5 秒），
-        ///   而唯一的字面调用点在 `Player.Color` 的 setter 里 `value == Black` 分支
-        ///   ⇒ 那是"**玩家被分配为黑方**"那一刻，人还在起点、刀架都不在画面里。
-        ///   旧实现（已删除的 `EndReplayFeature.cs`）挂的就是它，注释里那句
-        ///   "是拔刀后的入口…只在真正拿到武器的人身上跑"**是推测，没有任何实测支撑**。
-        ///   实测症状：拿刀幕里"人根本没走到刀架前"。`KnifeProbeHook` 保留下来做交叉验证。
+        ///   而当时真正坏掉的是**首帧位置**：房主采样给的是 (8149, 3563)，**距刀架 1418**
+        ///   ⇒ 角色被放在 1418 单位外，再由 `MoveShot` 直线匀速拽到刀架旁 ⇒ 用户看到的"很飘"。
+        ///   ⇒ 修的是位置来源（见 `TapeAnchorPos`），**不是这个挂点**。
+        ///
+        /// `DelayAcquireWeapon` 在 `Player.Color` 的 setter 里 `value == Black` 分支被调
+        /// （实现只是 `StartWeaponCooltime(5)`），时机是"黑方身份公开"前后 ——
+        /// 而实测它落在"主角已经站在刀架旁"之后约 0.7 秒 ⇒ 作为"拿刀"事件时刻足够近。
         /// </summary>
-        [HarmonyPatch(typeof(GamePlayer), "set_HandItemObjectId")]
+        [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
         internal static class KnifeHook
         {
             [HarmonyPostfix]
-            private static void Postfix(GamePlayer __instance, int value)
+            private static void Postfix(GamePlayer __instance)
             {
                 if (!Armed)
                     return;
-                if (value != KnifeItemId)
-                    return;                       // 只有刀算"拿刀"，别的物品不算
+                if (WeaponGrantFeature.GiveAtStart?.Value ?? false)
+                    return;                       // 开局直接给刀 ⇒ 没有"跑刀"过程 ⇒ 这一幕没内容
                 if (__instance?.PublicInfo == null)
                     return;
-
-                // 本模块自己开了"开局直接给刀"时，黑方在**起点**就拿到刀
-                // ⇒ 没有"走到刀架前"这个过程 ⇒ 这一幕没有可看的内容，不登记。
-                if (WeaponGrantFeature.GiveAtStart?.Value ?? false)
-                    return;
-
-                // setter 会被多次调用（拿刀/换物品/放下）⇒ 一局只登记第一幕。
-                if (HasKind(ActKind.Knife))
+                if (__instance.Color != EPlayerColor.Black && __instance.Color != EPlayerColor.Dark)
                     return;
 
                 int id = __instance.PublicInfo.PlayerId;
-                Probe("set_HandItemObjectId（真正拿刀）", id, value);
                 Add(ActKind.Knife, id, id,
                     ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 1f), "拿刀");
             }
         }
 
-        /// <summary>
-        /// 【探针，只打日志不改行为】保留旧的挂点做**交叉验证**：
-        /// 下一局 `DelayAcquireWeapon`（预期＝开局）与 `set_HandItemObjectId`（预期＝走到刀架）
-        /// 两行时间戳一对比，就能确认这次换挂点是对的。
-        /// </summary>
-        [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
-        internal static class KnifeProbeHook
-        {
-            [HarmonyPostfix]
-            private static void Postfix(GamePlayer __instance)
-            {
-                if (__instance?.PublicInfo == null)
-                    return;
-                Probe("DelayAcquireWeapon（旧挂点，预期＝开局分配黑方）",
-                    __instance.PublicInfo.PlayerId, 0);
-            }
-        }
 
         /// <summary>探针日志：把两个候选挂点的时间戳并列打印，便于对比。</summary>
         private static void Probe(string where, int playerId, int value)

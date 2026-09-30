@@ -231,11 +231,11 @@ namespace HideAndSeek.Features.Replay
                 // "谁在画面里" —— 直接读**客户端真实磁带**里的 SpawnShot（那就是 AOI 的真实结果）。
                 var visibleIds = SceneIds(act, raw);
                 // 位置取自房主侧采样：录制者自己的帧是 SurvivalTime 基准，从磁带取会拿到几秒前的位置。
-                var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
+                var visibleInfos = VisibleInfos(visibleIds, raw, act.Window.From);
                 var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
 
-                var head = BuildHead(act, sil.Id);
+                var head = BuildHead(act, raw, sil.Id);
                 var tape = TapeAssembler.Assemble(act, raw, head, visibleInfos, out var rep);
 
                 if (tape == null)
@@ -382,7 +382,7 @@ namespace HideAndSeek.Features.Replay
                 if (!(ReplayFeature.PlaceholderTape?.Value ?? true))
                     continue;
 
-                var head = BuildHead(act, PickPlaceholderId(act));
+                var head = BuildHead(act, null, PickPlaceholderId(act));
                 var ph = TapeAssembler.Placeholder(act.Key, head);
                 if (ph == null)
                 {
@@ -428,11 +428,11 @@ namespace HideAndSeek.Features.Replay
                 }
 
                 var visibleIds = SceneIds(act, frames);
-                var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
+                var visibleInfos = VisibleInfos(visibleIds, frames, act.Window.From);
                 var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
 
-                var head = BuildHead(act, sil.Id);
+                var head = BuildHead(act, frames, sil.Id);
                 if (head == null)
                 {
                     Plugin.Log.LogInfo($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】拿不到首帧信息 ⇒ 不合成。");
@@ -704,15 +704,61 @@ namespace HideAndSeek.Features.Replay
             return ids;
         }
 
-        /// <summary>把"画面里的人"的 id 换成本幕**窗口起点时的样子**（位置取自房主侧采样）。</summary>
-        private static List<PublicPlayerInfo> VisibleInfos(List<int> ids, float windowStart)
+        /// <summary>
+        /// **位置锚点**：从**客户端磁带**里取"离 `t` 最近的该 id 的 `MoveShot` 位置"。
+        ///
+        /// ★ 为什么必须优先用它（2026-10 实测）：
+        ///   首帧/出场帧的位置原本取自房主侧采样，而它可能与磁带里的事实**差出上千单位**。
+        ///   那一局"拿刀"幕：首帧拿到 `(8149,3563)`，**距刀架 1418**；而磁带里同一时刻主角在
+        ///   `(8471,4839)`，**距刀架只有 163**。⇒ 角色被放在 1418 单位外，再由 `MoveShot`
+        ///   直线匀速拽到刀架旁 ⇒ 用户看到的"轨迹很诡异、很飘"；因为镜头跟着他，
+        ///   画面开头连刀架都没有。
+        ///
+        /// ★ 为什么能用 `MoveShot` 而不该用 `SpawnShot`：
+        ///   录制者自己的 `SpawnShot` 是 `SurvivalTime` 基准（每秒一枚、完全不连续），
+        ///   而 **`MoveShot` 是客户端时间基准** —— 连续、密度高，就是观众当时看到的位置。
+        ///   我当初因为"`SpawnShot` 不可用"就把整条位置来源换成了房主采样，那是**过度修正**。
+        /// </summary>
+        private static PosInfo TapeAnchorPos(List<SnapShot> frames, int id, float t)
+        {
+            PosInfo best = null;
+            float bestD = float.MaxValue;
+            if (frames == null || id <= 0)
+                return null;
+
+            foreach (var s in frames)
+            {
+                var mv = s?.Move;
+                if (mv == null || mv.PlayerId != id || mv.Pos == null)
+                    continue;
+                float d = Math.Abs(s.TimeStamp - t);
+                if (d < bestD)
+                {
+                    bestD = d;
+                    best = mv.Pos;
+                }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// 把"画面里的人"的 id 换成本幕**窗口起点时的样子**。
+        /// **位置优先取自磁带**（见 <see cref="TapeAnchorPos"/>），取不到才退回房主侧采样。
+        /// </summary>
+        private static List<PublicPlayerInfo> VisibleInfos(List<int> ids, List<SnapShot> frames, float windowStart)
         {
             var list = new List<PublicPlayerInfo>(ids.Count);
             foreach (int id in ids)
             {
                 var info = HostRecorder.At(id, windowStart);
-                if (info != null)
-                    list.Add(info);
+                if (info == null)
+                    continue;
+
+                var anchor = TapeAnchorPos(frames, id, windowStart);
+                if (anchor != null)
+                    info.Pos = anchor.Clone();
+
+                list.Add(info);
             }
             return list;
         }
@@ -728,7 +774,7 @@ namespace HideAndSeek.Features.Replay
         /// SpawnShot"，而录制者那些帧全是 `SurvivalTime` 基准 ⇒ `TimeStamp <= 窗口起点` 不成立
         /// ⇒ 退到磁带第一帧 = 十几秒前的位置 ⇒ 角色朝错误方向匀速漂移（实测"每一帧都是坏的飘的"）。
         /// </summary>
-        private static PublicPlayerInfo BuildHead(Act act, int silhouetteId)
+        private static PublicPlayerInfo BuildHead(Act act, List<SnapShot> frames, int silhouetteId)
         {
             var subject = HostRecorder.At(act.SubjectId, act.Window.From);
             var own = HostRecorder.At(silhouetteId, act.Window.From) ?? subject;
@@ -742,6 +788,13 @@ namespace HideAndSeek.Features.Replay
 
             if (subject?.Pos != null)
                 head.Pos = subject.Pos.Clone();
+
+            // ★ 首帧位置决定"角色被摆在哪"（也是镜头起点），**优先取磁带里的真实位置**。
+            //   房主采样可能差出上千单位（实测 1418），会把角色放到很远的地方再让他"飘"回来。
+            var anchor = TapeAnchorPos(frames, act.SubjectId, act.Window.From);
+            if (anchor != null)
+                head.Pos = anchor.Clone();
+
             return head;
         }
 
