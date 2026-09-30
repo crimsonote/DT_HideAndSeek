@@ -121,16 +121,16 @@ namespace HideAndSeek.Features.Replay
                     All.Add(new Planned { Act = a });
 
                 // ★ 排片顺序**就是**播放顺序（客户端 `_playTapes` 是字典，按 key 排序播）。
-                //   而 key 原本按**登记顺序**分配，可 `OnDead` 比击杀晚 1.4 秒 ⇒ 局内事件的登记顺序
-                //   可能与事件顺序不一致（实测：第 4 次刀杀被排到了自爆之后）。
-                //   ⇒ 按 (幕类型, 事件时刻) 重排，再重新分配 key；`S_RECORD_REPLAY` 用新 key 在索取前统一发。
-                All.Sort(delegate (Planned x, Planned y)
-                {
-                    int k = ((int)x.Act.Kind).CompareTo((int)y.Act.Kind);
-                    return k != 0 ? k : x.Act.Window.From.CompareTo(y.Act.Window.From);
-                });
-                for (int i = 0; i < All.Count; i++)
-                    All[i].Act.Key = i;
+                //
+                // ★★ 这里**只按 key 排序，绝不重分配 key** ——
+                //   key 是在**事件发生那一刻**分配并发给客户端的（见 `ReplayFeature.HitHook` / `Add`），
+                //   客户端靠它在 9 秒后把"事件周围的录制缓冲"拍成**持久快照**。
+                //   一旦在这里改 key，客户端手里那把就失效了，索取只会拿回"当前 14 秒缓冲"
+                //   —— 早期事件早已滚出缓冲区。实测症状："3 次刀杀只播了 1 次"。
+                //
+                //   而 key 既然按事件时刻单调递增，播放顺序**自然**就是事件顺序，
+                //   所以不再需要按 (幕类型, 事件时刻) 重排。
+                All.Sort(delegate (Planned x, Planned y) { return x.Act.Key.CompareTo(y.Act.Key); });
 
                 int max = ReplayFeature.MaxClips?.Value ?? 12;
                 if (All.Count > max)
@@ -187,11 +187,10 @@ namespace HideAndSeek.Features.Replay
                 if (act.RecorderId <= 0 || player?.Session == null)
                     continue;   // 假人/已退出：没有客户端可问，稍后走服务端合成
 
-                // ★ 必须先请它把当前时刻登记成这个 key 的可裁事件（客户端 `ReserveSaveTape`）。
-                //   没有这一步，客户端 `BuildUploadTape` 查不到这个 key 会回**空磁带** ——
-                //   实测症状：索取 5 段、一段都没回来（`客户端磁带 0/5`），然后全部降级到服务端合成。
-                //   （登记时刻与事件时刻无关：我们的窗口是房主侧算的**绝对区间**，客户端只负责"这个 key 有效"。）
-                player.Session.Send(new S_RECORD_REPLAY { RecordTime = act.Key });
+                // ⚠ **不要在这里补发 `S_RECORD_REPLAY`**。
+                //   它必须在**事件发生时就发出去**，客户端才会在 9 秒后把"事件周围的缓冲"拍成
+                //   持久快照（见 `ReplayFeature.Add` / `HitHook`）。拖到索取前发，客户端只会回
+                //   "当前 14 秒缓冲" ⇒ 早期事件（几十秒前的那次刀杀）根本不在里面。
                 Pending[Slot(act.RecorderId, act.Key)] = p;
                 player.Session.Send(new S_REQUEST_TAPE { RecordTime = act.Key });
                 _sent++;

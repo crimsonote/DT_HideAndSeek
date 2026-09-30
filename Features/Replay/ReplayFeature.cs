@@ -130,8 +130,23 @@ namespace HideAndSeek.Features.Replay
 
         private static readonly List<Act> Acts = new List<Act>();
 
-        /// <summary>受害者"最后一次被击中"的时刻 —— `OnDamaged` 记、`KillHook` 取。</summary>
-        private static readonly Dictionary<int, float> LastHitAt = new Dictionary<int, float>();
+        /// <summary>
+        /// 受害者的"被击记录"：**事件时刻** + 那一刻就分配给它的 **key**。
+        ///
+        /// ★ 为什么 key 必须在这里分配（而不是等结算时排片）：
+        ///   客户端收到 `S_RECORD_REPLAY{key}` 后会在 **9 秒后**把"当时的录制缓冲"拍成快照存进
+        ///   `RecordingTape[key]`，而那份快照覆盖 `[T+9-14, T+9]` ⇒ 事件的窗口 `[T-3, T+1]` 完整落在里面。
+        ///   ⇒ 之后无论多久（结算是几分钟后）再索取，都能拿回**事件周围的素材**。
+        ///   ⚠ 反过来做（结算时才发 `S_RECORD_REPLAY`）只会拿到"当前 14 秒缓冲"
+        ///     ⇒ 早期事件早就滚出去了 —— 实测症状："3 次刀杀只播了 1 次"。
+        /// </summary>
+        private sealed class Hit
+        {
+            public float Time;
+            public int Key;
+        }
+
+        private static readonly Dictionary<int, Hit> PendingHit = new Dictionary<int, Hit>();
 
         private static int _nextKey;
         private static int _murderDeaths;
@@ -149,7 +164,7 @@ namespace HideAndSeek.Features.Replay
         private static void Reset()
         {
             Acts.Clear();
-            LastHitAt.Clear();
+            PendingHit.Clear();
             _nextKey = 0;
             _murderDeaths = 0;
             _ending = "结算前";
@@ -157,22 +172,39 @@ namespace HideAndSeek.Features.Replay
             ReplayDirector.Reset();
         }
 
-        private static Act Add(ActKind kind, int subjectId, int recorderId, ReplayWindow.Span window, string note)
+        /// <summary>用**指定的 key** 登记一幕（key 已在事件发生时分配并告知客户端）。</summary>
+        private static Act AddWithKey(int key, ActKind kind, int subjectId, int recorderId,
+            ReplayWindow.Span window, string note)
         {
             var act = new Act
             {
                 Kind = kind,
-                Key = _nextKey++,
+                Key = key,
                 SubjectId = subjectId,
                 RecorderId = recorderId,
                 Window = window,
                 Note = note,
             };
             Acts.Add(act);
+            return act;
+        }
 
-            // ⚠ 这里**不**发 `S_RECORD_REPLAY`：key 会在排片时按事件顺序重新分配，
-            //   所以统一在"索取之前"发一次即可（见 `ReplayDirector.FetchTapes`）。
-            //   客户端只关心"这个 key 有没有被登记过"，与登记的时刻无关。
+        /// <summary>
+        /// 登记一幕，并在**此刻**（= 事件时刻）把新 key 告知录制者客户端。
+        ///
+        /// ★ 时机是这套机制的关键：客户端 `ReserveSaveTape` 会在 9 秒后把"当时的录制缓冲"
+        ///   拍成快照并**长期保存**，所以结算时（可能已是几分钟后）索取仍能拿回事件周围的素材。
+        ///   如果拖到索取前才发，只会拿到"当前 14 秒缓冲" ⇒ 早期事件已经滚出缓冲。
+        /// </summary>
+        private static Act Add(ActKind kind, int subjectId, int recorderId, ReplayWindow.Span window, string note)
+        {
+            int key = _nextKey++;
+            var act = AddWithKey(key, kind, subjectId, recorderId, window, note);
+
+            var p = FindPlayer(GameRoom.Instance, recorderId);
+            if (p?.Session != null)
+                p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+
             return act;
         }
 
@@ -253,9 +285,12 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
-        /// 【事件时刻修正】记下"谁在什么时候被击中"。
-        /// `OnDead` 的时刻**不等于**击杀时刻（实测差 1.37 秒），而原版是在 `OnDamaged` 里
-        /// 设 `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的。
+        /// 【事件时刻 + key 分配】`OnDamaged` 就是击杀发生的那一刻（原版也是在这里设
+        /// `attacker.RecordTime` 并请客户端 `ReserveSaveTape` 的；而 `OnDead` 实测晚 1.37 秒）。
+        ///
+        /// ⇒ 在这里做三件事：记时刻、分配 key、**立刻把 key 告知凶手客户端**。
+        ///   第三件是关键：客户端 9 秒后会把当时的缓冲拍成**持久快照**，
+        ///   结算时（几分钟后）索取仍能拿回事件周围的素材。
         /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "OnDamaged")]
         internal static class HitHook
@@ -268,7 +303,16 @@ namespace HideAndSeek.Features.Replay
                 int victim = __instance?.PublicInfo?.PlayerId ?? 0;
                 if (victim <= 0 || attacker?.PublicInfo == null)
                     return;
-                LastHitAt[victim] = Now();
+                if (PendingHit.ContainsKey(victim))
+                    return;                       // 同一受害者只记第一次（多段伤害会重复触发）
+
+                int key = _nextKey++;
+                PendingHit[victim] = new Hit { Time = Now(), Key = key };
+
+                // 录制者 = 凶手本人（客户端磁带录的是他自己的视角）
+                var rec = FindPlayer(GameRoom.Instance, attacker.PublicInfo.PlayerId);
+                if (rec?.Session != null)
+                    rec.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
             }
         }
 
@@ -290,9 +334,25 @@ namespace HideAndSeek.Features.Replay
 
                 int victim = __instance?.PublicInfo?.PlayerId ?? 0;
                 int id = black.PublicInfo.PlayerId;
-                float at = LastHitAt.TryGetValue(victim, out var hitAt) ? hitAt : Now();
-                LastHitAt.Remove(victim);
-                Add(ActKind.Kill, id, id,
+
+                // ★ 复用 `HitHook` 在**事件时刻**分配并发给客户端的那个 key ——
+                //   既保证播放顺序反映事件顺序（不再依赖"登记顺序"，`OnDead` 有延迟），
+                //   也保证客户端手里那把 key 与我这里一致（9 秒快照才会落地）。
+                int key;
+                float at;
+                if (PendingHit.TryGetValue(victim, out var hit))
+                {
+                    key = hit.Key;
+                    at = hit.Time;
+                    PendingHit.Remove(victim);
+                }
+                else
+                {
+                    key = _nextKey++;
+                    at = Now();
+                }
+
+                AddWithKey(key, ActKind.Kill, id, id,
                     ActTable.Plain(at, KillBeforeSec?.Value ?? 3f, KillAfterSec?.Value ?? 1f), $"#{id} → #{victim}");
             }
         }
