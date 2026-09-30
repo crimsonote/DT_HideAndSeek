@@ -513,7 +513,6 @@ namespace HideAndSeek.Features.Rule
                     float before = TourBeforeSec?.Value ?? 7.5f;
                     float after = TourAfterSec?.Value ?? 0.5f;
                     float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
-                    float per = Math.Max(0.5f, (before + after) / Math.Max(1, subjects.Count));
 
                     // ★ 假人**照样登记**，只是**不向他要磁带**（没有客户端）。
                     //   登记之后 `SendPlaceholders` 看到"这段没磁带"就会走服务端兜底合成，
@@ -521,24 +520,34 @@ namespace HideAndSeek.Features.Rule
                     //   `Players` + `DeadPlayers`，假人也在里面），合成出来的镜头就是"盯着他"。
                     //   以前在这里 `continue` 直接跳过 ⇒ 段压根不存在 ⇒ 兜底没机会跑、整幕消失
                     //   （实测：白方全是假人时，日志里只有 4 段刀杀 + 1 段黑方，白方各段 key 一个都没有）。
+                    //
+                    // 先筛出真正能登记的**幸存者**，再按实际人数平铺总窗口（最后一段压到判定后 after 秒）。
+                    var eligible = new List<GamePlayer>();
+                    foreach (var sid in subjects)
+                    {
+                        var p = FindPlayerById(room, sid);
+                        if (p?.PublicInfo != null)
+                            eligible.Add(p);
+                    }
+
+                    int segCount = eligible.Count;
                     int seq = 0;
                     int noClient = 0;
-                    foreach (int id in subjects)
+                    foreach (var p in eligible)
                     {
-                        var p = FindPlayerById(room, id);
-                        if (p?.PublicInfo == null)
-                            continue;
+                        int id = p.PublicInfo.PlayerId;
+                        TileWindow(seq, segCount, before, after, out float segBefore, out float segAfter);
 
                         int key = BaseKey + KeyWhiteTour + seq;
                         bool ok;
                         if (p.IsDummy || p.Session == null)
                         {
-                            ok = AddClip(key, id, "巡礼", per, 0f);      // 只登记，交给服务端兜底
+                            ok = AddClip(key, id, "巡礼", segBefore, segAfter);   // 只登记，交给服务端兜底
                             noClient++;
                         }
                         else
                         {
-                            ok = RequestRecord(p, key, "巡礼", per, 0f); // 真人：先要客户端磁带
+                            ok = RequestRecord(p, key, "巡礼", segBefore, segAfter); // 真人：先要客户端磁带
                         }
                         if (ok)
                             seq++;
@@ -554,10 +563,11 @@ namespace HideAndSeek.Features.Rule
                     if (black?.PublicInfo != null)
                         AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail, null, -tail);
 
-                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 登记 {seq} 段白方视角"
-                        + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}；其中 {noClient} 段"
-                        + "没有客户端 ⇒ 服务端兜底）+ 黑方失败收尾 1 段（服务端兜底，"
-                        + $"{tail:F1}s 断电视野，窗口落在判定前 {tail:F1}s）。");
+                    float perTotal = (before + after) / Math.Max(1, segCount);
+                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 登记 {seq} 段幸存白方视角"
+                        + $"（总窗口 {before + after:F1}s 平铺到 {segCount} 段、每人 {perTotal:F1}s，"
+                        + $"最后一段压到判定后 {after:F1}s；其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
+                        + $" + 黑方失败收尾 1 段（服务端兜底，{tail:F1}s 断电视野，窗口落在判定前 {tail:F1}s）。");
                 }
                 catch (Exception ex)
                 {
@@ -657,29 +667,38 @@ namespace HideAndSeek.Features.Rule
                         float before = SelfDestructBeforeSec?.Value ?? 7.5f;
                         float after = SelfDestructAfterSec?.Value ?? 0.5f;
                         float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
-                        float per = Math.Max(0.5f, (before + after) / Math.Max(1, subjects.Count));
 
                         // ★ 假人**照样登记**、只是不向他要磁带（没有客户端）⇒ 结算时由服务端兜底合成
                         //   （服务端缓冲里有他的采样，镜头就是盯着他）。以前直接 `continue` 跳过 ⇒
                         //   段不存在 ⇒ 兜底没机会跑 ⇒ 白方各幕整段消失（实测日志：只有 4 段刀杀 + 1 段黑方）。
+                        // 先筛出真正能登记的人（按白方顺序），再按**实际人数**平铺窗口，
+                        // 保证最后一段正好压在「爆炸后 after 秒」。
+                        var eligible = new List<GamePlayer>();
+                        foreach (var sp in subjects)
+                        {
+                            var p = FindPlayerById(room, sp);
+                            if (p?.PublicInfo != null)
+                                eligible.Add(p);
+                        }
+
+                        int segCount = eligible.Count;
                         int seq = 0;
                         int noClient = 0;
-                        foreach (int id in subjects)
+                        foreach (var p in eligible)
                         {
-                            var p = FindPlayerById(room, id);
-                            if (p?.PublicInfo == null)
-                                continue;
+                            int id = p.PublicInfo.PlayerId;
+                            TileWindow(seq, segCount, before, after, out float segBefore, out float segAfter);
 
                             int key = BaseKey + KeyWhiteTour + seq;
                             bool ok;
                             if (p.IsDummy || p.Session == null)
                             {
-                                ok = AddClip(key, id, "自爆", per, 0f);
+                                ok = AddClip(key, id, "自爆", segBefore, segAfter);
                                 noClient++;
                             }
                             else
                             {
-                                ok = RequestRecord(p, key, "自爆", per, 0f);
+                                ok = RequestRecord(p, key, "自爆", segBefore, segAfter);
                             }
                             if (ok)
                                 seq++;
@@ -691,10 +710,11 @@ namespace HideAndSeek.Features.Rule
                         if (black?.PublicInfo != null)
                             AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail, null, after);
 
+                        float perTotal = (before + after) / Math.Max(1, segCount);
                         Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记 {seq} 段白方视角"
-                            + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}；其中 {noClient} 段"
-                            + "没有客户端 ⇒ 服务端兜底）+ 黑方收尾 1 段（服务端兜底，"
-                            + $"{tail:F1}s 断电视野）。");
+                            + $"（总窗口 {before + after:F1}s 平铺到 {segCount} 段、每人 {perTotal:F1}s，"
+                            + $"最后一段压到爆炸后 {after:F1}s；其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
+                            + $" + 黑方收尾 1 段（服务端兜底，{tail:F1}s 断电视野）。");
                     }
                 }
                 catch (Exception ex)
@@ -962,6 +982,29 @@ namespace HideAndSeek.Features.Rule
                     return p.PublicInfo.PlayerId;
             }
             return 0;
+        }
+
+        /// <summary>
+        /// 把「总窗口」**平铺**成 N 段，返回第 <paramref name="index"/> 段相对事件时刻的 (前秒, 后秒)。
+        ///
+        /// 用户口径：总窗口（默认 7.5s + 0.5s = 8s）按人数平分，**最后一个白方录到爆炸后约 0.5 秒**，
+        /// 然后才切黑。总窗口 = `[事件 − before, 事件 + after]`；
+        /// 第 i 段（0 起）= `[右端 − (N−i)×per, 右端 − (N−i−1)×per]`，`per = 总长/N`，`右端 = 事件 + after`
+        /// ⇒ 最后一段（i=N−1）= `[事件+after−per, 事件+after]`，**正好压到爆炸后 after 秒**。
+        ///
+        /// 返回值给 `Clip.Before`/`Clip.After` 用，**允许为负**（靠前的段右端在事件之前）。
+        /// </summary>
+        private static void TileWindow(int index, int count, float before, float after,
+            out float segBefore, out float segAfter)
+        {
+            float total = Math.Max(0.5f, before + after);
+            int n = Math.Max(1, count);
+            float per = total / n;
+            float segRight = after - (n - 1 - index) * per;   // 该段右端（相对事件）
+            float segLeft = segRight - per;
+
+            segBefore = -segLeft;     // 窗口起点 = At − segLeft
+            segAfter = segRight;      // 窗口终点 = At + segRight
         }
 
         /// <summary>按 id 找玩家（活人表 + 死者表）—— "每人各录一段"要拿到他的 Session 才能发请求。</summary>
@@ -1301,8 +1344,17 @@ namespace HideAndSeek.Features.Rule
         {
             try
             {
-                float from = clip.At - Math.Max(0f, clip.Before);
-                float to = clip.At + Math.Max(0f, clip.After);
+                // ⚠ `Before`/`After` 允许为**负**：白方各段是"把总窗口平铺"，
+                //   靠前的段其右端落在事件时刻**之前**（`After < 0`），靠后甚至 `Before < 0`。
+                //   这里不能 `Math.Max(0, …)`，否则平铺会被削回"都以事件时刻为右端"，又变成重叠。
+                float from = clip.At - clip.Before;
+                float to = clip.At + clip.After;
+                if (to <= from)
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 窗口非法"
+                        + $"（[{from:F2},{to:F2}]）⇒ 不合成。");
+                    return false;
+                }
 
                 int recorderId = clip.RecorderId;
                 if (recorderId <= 0 || !EndReplayHostTape.HasRows(recorderId))
@@ -1499,6 +1551,38 @@ namespace HideAndSeek.Features.Rule
                 TimeStamp = ordered[0].TimeStamp,
                 Edit = new EditSnapShot { Type = EEditShotType.NormalTimeEdit }
             });
+
+            // ★★ 毒帧自检：**只逐帧剔除 `AddShot`（尸体帧），绝不整段丢**。
+            //
+            //   为什么是毒：客户端 `RecordManager.ApplyAdd` 会给尸体调 `SetInfo`，而 `Corpse.SetInfo`
+            //   在**第二次**调用时，项圈分支已经把骨架关掉了，`GetComponentInChildren<SkeletonAnimation>()`
+            //   于是返回 null、紧接着 `SkeletonAnim.gameObject` 空引用 ⇒ 异常；异常让同一枚帧每帧重试
+            //   （`_playIndex++` 在 switch 之后）⇒ **整段回放卡死**（实测卡在 wedge 上）。
+            //
+            //   为什么不能"整段丢"：自爆那一段**每局都有**，每局丢一段明显不正常；
+            //   而毒帧往往只有几枚（爆炸附近的尸体 Add）⇒ 只剔这几枚，其余画面完好。
+            //
+            //   两道防线：`EndReplayHostTape` 本身**从不产 `AddShot`**（只产 Spawn/Move/Area/Effect/Despawn），
+            //   这里是对未来改动的兜底；客户端磁带那条路由 `TrimTape` 的 `StripBombCorpseAdds` 处理。
+            int toxic = 0;
+            for (int i = ordered.Count - 1; i >= 0; i--)
+            {
+                if (ordered[i]?.Type != ESnapShotType.AddShot)
+                    continue;
+                ordered.RemoveAt(i);
+                toxic++;
+            }
+            if (toxic > 0)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 剔除了 {toxic} 枚"
+                    + $"尸体（AddShot）帧 —— 这是会让客户端回放卡死的毒帧（Corpse.SetInfo 二次空引用），"
+                    + "只剔这几枚、其余画面保留。");
+            }
+            if (ordered.Count < 2)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 剔毒后不足 2 帧，不合成。");
+                return null;
+            }
 
             // ★ 诊断：把这一幕的"出场名单"打出来（谁、可见还是幽灵、在哪儿）。
             //   下一局据此一次分清哑剧的两种可能：**演员压根没进磁带**（名单里没有他）还是
