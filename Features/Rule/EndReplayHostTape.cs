@@ -45,6 +45,10 @@ namespace HideAndSeek.Features.Rule
             public int Id;
             public PublicPlayerInfo Info;
             public float Velocity;
+            /// <summary>这一帧时该玩家所在房间（服务端 `Player.CurrentArea`）—— 相机只能在自己的房间边界内活动，
+            /// 所以每换一个机位对象就必须把房间一起换掉，否则镜头会被夹住（实测"移动一点点就光速变回来"）。</summary>
+            public int RoomId;
+            public bool IsLight;
         }
 
         private sealed class Bomb
@@ -107,12 +111,16 @@ namespace HideAndSeek.Features.Rule
         /// 用房主缓冲合成一段磁带，写进 <paramref name="into"/>，返回帧数（0＝缓冲里没有可用样本，
         /// 调用方应退回占位磁带）。
         ///
-        /// <paramref name="anchorId"/>：首帧的"主视角/锚点" —— 负责**装配与剪影**（必须是 `SpawnShot`，
-        /// 这是客户端 `BeginTape` 的硬要求），**不控制镜头**；
-        /// <paramref name="cameraTargetId"/>：真正决定镜头的 `AreaShot.CameraTargetId`
-        /// （`MapManager.ChangeArea` 里 `Managers.Game.CameraTarget = GetDevice(area.CameraTargetId)` 那一行）；
+        /// <paramref name="anchorId"/>：**隐形机位**的玩家 id —— 它同时充当首帧的 `SpawnShot`
+        /// （客户端 `BeginTape` 的硬要求）与 `AreaShot.CameraTargetId`（镜头跟它走）；
+        /// <paramref name="cameraTargetId"/>：机位挑不到时的**兜底锚点**（正常不生效）；
         /// <paramref name="lit"/>：`AreaShot.IsLight` ⇒ `Managers.Game.Darkness = !IsLight`
         /// （白方主视角要"非断电视野"，切到黑方时改 false）。
+        ///
+        /// ⚠ 镜头目标**绝不能指真人**：客户端 `ApplyArea`(:731) 会把 `CameraTargetId == _myPlayerId`
+        /// 改写成 0，而 id 0 的替身是 `ForceSpawnReplayTemp` 造出来的半成品、停在 (-10,616)
+        /// ⇒ 观众看到的是定格空白（实测踩过）。机位 id 由调用方按"无客户端实体优先、
+        /// 不在画面里的死者次之"挑（见 `EndReplayFeature.FindHostTapeAnchors`）。
         ///
         /// 锚点会被标成 `IsGhost = true`：回放期间 `Player.Update` 每帧 `RefreshGhostVisual()` 会走
         /// "幽灵与骨架一起关掉"的分支 ⇒ 这个机位在画面上是**不可见**的（与隐藏观察者同一套做法）。
@@ -128,8 +136,6 @@ namespace HideAndSeek.Features.Rule
             if (anchor == null)
                 return 0;
 
-            int cam = cameraTargetId > 0 ? cameraTargetId : anchor.Id;
-
             var head = anchor.Info.Clone();
             head.State = EPlayerState.Idle;
             head.IsGhost = true;
@@ -141,7 +147,7 @@ namespace HideAndSeek.Features.Rule
                 Spawn = head
             });
 
-            var camShot = MakeArea(from, cam, lit);
+            var camShot = MakeArea(from, anchor.Id, lit, anchor.RoomId);
             if (camShot != null)
                 into.Add(camShot);
 
@@ -208,30 +214,93 @@ namespace HideAndSeek.Features.Rule
             return into.Count;
         }
 
-        /// <summary>镜头/光照帧：`AreaInfo` 必须来自真实区域（`ChangeArea` 会查 `RoomDic[RoomId]`，非法就抛）。</summary>
-        private static SnapShot MakeArea(float t, int cameraTargetId, bool lit)
+        /// <summary>
+        /// 镜头/光照帧。**房间号来自服务端**（`Server.Game.Player.CurrentArea`），不再克隆房主客户端的
+        /// `Managers.Map.CurrentArea` —— 后者是"房主自己所在的那个房间"，会把每一幕都摆到房主那边去
+        /// （实测：白方巡礼整段停在房主所在的那个房间不动）。
+        ///
+        /// `AreaInfo.RoomId` 必须真实存在于 `RoomDic`，否则 `ChangeArea` 查 `RoomDic[RoomId]` 会抛。
+        /// </summary>
+        private static SnapShot MakeArea(float t, int cameraTargetId, bool lit, int roomId)
         {
             try
             {
-                var cur = Managers.Map.CurrentArea;
-                if (cur == null)
+                int room = roomId;
+                if (room <= 0)
+                    room = FirstRoom();
+                if (room <= 0)
+                    room = Managers.Map.CurrentArea?.AreaInfo?.RoomId ?? 0;
+                if (room <= 0)
                     return null;
-
-                var area = cur.Clone();
-                area.CameraTargetId = cameraTargetId;
-                area.IsLight = lit;
 
                 return new SnapShot
                 {
                     Type = ESnapShotType.AreaShot,
                     TimeStamp = t,
-                    Area = area
+                    Area = new AreaSnapShot
+                    {
+                        AreaInfo = new AreaInfo { RoomId = room },
+                        CameraTargetId = cameraTargetId,
+                        IsLight = lit
+                    }
                 };
             }
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[HS] EndReplay：合成镜头帧失败 — {ex.Message}");
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// 缓冲里第一个**合法**房间号 —— 只在调用方给不出房间时兜底。
+        /// 以前这里的兜底是"问房主客户端你在哪"（`Managers.Map.CurrentArea`），而那正是
+        /// "白方巡礼整段停在房主所在那间"的旧 bug 来源 ⇒ 现在先问服务端自己的采样。
+        /// </summary>
+        private static int FirstRoom()
+        {
+            foreach (var r in Rows)
+            {
+                if (r.RoomId > 0)
+                    return r.RoomId;
+            }
+            return 0;
+        }
+
+        /// <summary>这个玩家在缓冲里有没有采样 —— 没有说明他不在房间里，不能当机位。</summary>
+        public static bool HasRows(int id)
+        {
+            if (id <= 0)
+                return false;
+            foreach (var r in Rows)
+            {
+                if (r.Id == id)
+                    return true;
+            }
+            return false;
+        }
+
+        private static int RoomOf(GamePlayer p)
+        {
+            try
+            {
+                return p?.CurrentArea?.Info?.RoomId ?? 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static bool IsLightOf(GamePlayer p)
+        {
+            try
+            {
+                return p?.CurrentArea?.IsLight ?? true;
+            }
+            catch
+            {
+                return true;
             }
         }
 
@@ -286,12 +355,12 @@ namespace HideAndSeek.Features.Rule
 
             into.Add(new SnapShot { Type = ESnapShotType.SpawnShot, TimeStamp = from, Spawn = head });
 
-            var area = MakeArea(from, anchor.Id, true);
+            var area = MakeArea(from, anchor.Id, true, Pick(stops[0], from)?.RoomId ?? anchor.RoomId);
             if (area != null)
                 into.Add(area);
 
-            EmitWorld(into, from, to, anchor.Id, null);
-            EmitTour(into, from, to, anchor.Id, stops, panSec);
+            EmitWorld(into, from, to, anchor.Id, null, new HashSet<int>(subjects));
+            EmitTour(into, from, to, anchor.Id, stops, panSec, anchor.RoomId);
             return into.Count;
         }
 
@@ -309,20 +378,29 @@ namespace HideAndSeek.Features.Rule
             if (anchor == null)
                 return 0;
 
-            int cam = (blackId > 0 && Pick(blackId, from) != null) ? blackId : anchor.Id;
-
+            // ★ 镜头目标永远是**机位幽灵自己**，绝不指任何真实玩家：
+            //   客户端 `ApplyArea` 会把"本机玩家"改写成 id=0，而 id=0 的替身是
+            //   `ForceSpawnReplayTemp` 造出来的半成品、从来没被摆过位 —— 实测它的 transform 停在
+            //   (-10, 616)，镜头跟过去就是一片空白（正是"损坏镜头"）。
+            //   机位的 id 取自"已死的人"，真人客户端不可能等于它 ⇒ 不会被改写。
+            var blackRow = Pick(blackId, from);
             var head = anchor.Info.Clone();
             head.State = EPlayerState.Idle;
             head.IsGhost = true;
 
             into.Add(new SnapShot { Type = ESnapShotType.SpawnShot, TimeStamp = from, Spawn = head });
 
-            var area = MakeArea(from, cam, false);
+            var area = MakeArea(from, anchor.Id, false, blackRow?.RoomId ?? anchor.RoomId);
             if (area != null)
                 into.Add(area);
 
-            EmitWorld(into, from, to, anchor.Id, new HashSet<int> { cam });
-            EmitInterpolated(into, from, to, cam);
+            var visible = new HashSet<int>();
+            if (blackId > 0)
+                visible.Add(blackId);
+
+            EmitWorld(into, from, to, anchor.Id, null, visible);
+            // 机位沿"黑方走过的那条路"移动 ⇒ 镜头跟着黑方，而不是跟着被藏起来的本机对象
+            EmitInterpolated(into, from, to, anchor.Id, blackId);
             return into.Count;
         }
 
@@ -331,7 +409,8 @@ namespace HideAndSeek.Features.Rule
         /// <paramref name="omitAnchor"/> 是首帧锚点（已由 head 帧装配好）；
         /// <paramref name="omit"/> 里的玩家整个跳过（例如由我们自己的机位路径/插值驱动的那个）。
         /// </summary>
-        private static void EmitWorld(List<SnapShot> into, float from, float to, int omitAnchor, HashSet<int> omit)
+        private static void EmitWorld(List<SnapShot> into, float from, float to, int omitAnchor,
+            HashSet<int> omit, HashSet<int> forceVisible)
         {
             var seen = new HashSet<int> { omitAnchor };
             if (omit != null)
@@ -351,11 +430,22 @@ namespace HideAndSeek.Features.Rule
 
                 if (seen.Add(r.Id))
                 {
+                    var info = r.Info.Clone();
+                    if (forceVisible != null && forceVisible.Contains(r.Id))
+                    {
+                        // ★ 服务端在项圈自爆那一刻就把白方标成 `IsGhost`，而客户端在回放期间
+                        //   `RefreshGhostVisual()` 会把幽灵的骨架与幽灵替身**一起关掉** ⇒
+                        //   整幕"和哑剧似的没有任何人"。回放里要看的是他们**被处决前站着的样子**，
+                        //   所以这里显式改回可见 + Idle。
+                        info.IsGhost = false;
+                        info.State = EPlayerState.Idle;
+                    }
+
                     into.Add(new SnapShot
                     {
                         Type = ESnapShotType.SpawnShot,
                         TimeStamp = r.Time,
-                        Spawn = r.Info.Clone()
+                        Spawn = info
                     });
                 }
                 else
@@ -418,7 +508,8 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>巡礼机位的时间表：每站停留 + 站间直线平移；窗口不够时压缩平移，保证每站都有停留。</summary>
-        private static void EmitTour(List<SnapShot> into, float from, float to, int dollyId, List<int> stops, float panSec)
+        private static void EmitTour(List<SnapShot> into, float from, float to, int dollyId, List<int> stops,
+            float panSec, int fallbackRoom)
         {
             float span = to - from;
             int n = stops.Count;
@@ -440,6 +531,12 @@ namespace HideAndSeek.Features.Rule
             {
                 if (pos != null)
                 {
+                    // ★ 每到一站就换一次房间：相机的活动范围是**当前房间的边界**，
+                    //   不换房间的话镜头刚出边界就被夹回来（实测"往其他位置移动，但移动一点点就光速变回来"）。
+                    var stopArea = MakeArea(t, dollyId, true, Pick(stops[i], from)?.RoomId ?? fallbackRoom);
+                    if (stopArea != null)
+                        into.Add(stopArea);
+
                     EmitPath(into, dollyId, t, t + dwell, pos, null);  // 停留（原地）
                     t += dwell;
                 }
@@ -501,13 +598,14 @@ namespace HideAndSeek.Features.Rule
             };
         }
 
-        /// <summary>把某个玩家在窗口内的样本插值到 <see cref="MoveHz"/>（镜头跟着他走时才需要）。</summary>
-        private static void EmitInterpolated(List<SnapShot> into, float from, float to, int id)
+        /// <summary>把某个玩家在窗口内的样本插值到 <see cref="MoveHz"/>，但**用另一个 id 发出来**
+        /// （镜头不指真实玩家，而是让机位沿那个人走过的路走）。</summary>
+        private static void EmitInterpolated(List<SnapShot> into, float from, float to, int emitId, int srcId)
         {
             var pts = new List<Row>();
             foreach (var r in Rows)
             {
-                if (r.Id != id)
+                if (r.Id != srcId)
                     continue;
                 if (r.Time < from - 1f)
                     continue;
@@ -522,7 +620,7 @@ namespace HideAndSeek.Features.Rule
                 float t1 = Math.Min(to, pts[i + 1].Time);
                 if (t1 <= t0)
                     continue;
-                EmitPath(into, id, t0, t1, pts[i].Info.Pos, pts[i + 1].Info.Pos);
+                EmitPath(into, emitId, t0, t1, pts[i].Info.Pos, pts[i + 1].Info.Pos);
             }
         }
 
@@ -551,7 +649,9 @@ namespace HideAndSeek.Features.Rule
                     Time = now,
                     Id = info.PlayerId,
                     Info = info.Clone(),
-                    Velocity = p.Velocity
+                    Velocity = p.Velocity,
+                    RoomId = RoomOf(p),
+                    IsLight = IsLightOf(p)
                 });
             }
         }

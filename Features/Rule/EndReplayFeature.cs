@@ -1093,7 +1093,9 @@ namespace HideAndSeek.Features.Rule
                 //   （已由 `ClearSlideText` 解决）⇒ 这一包没有收益，反而让客户端闪一下空白投票页 ⇒ 去掉。
 
                 // 没有磁带的片段：补一段"占位磁带"（客户端走一次转场后跳过），
-                // 而不是让这一幕从回放里凭空消失。必须赶在 `Replay` 状态包之前 ——
+                // 而不是让这一幕从回放里凭空消失。（**服务端合成的那几幕例外**：合成不了就
+                // 交回原版渲染，不补占位 —— 见 `SendPlaceholders` 里 `NeedsHostTape` 那一支。）
+                // 必须赶在 `Replay` 状态包之前 ——
                 // 客户端 `UI_TrialEvent.StartReplay → RecordManager.Play()` 会把 `_playTapes` **快照**进 `_session`，
                 // 之后再补就进不了这一轮的播放列表了。
                 SendPlaceholders(room, plan);
@@ -1124,25 +1126,42 @@ namespace HideAndSeek.Features.Rule
         /// 首帧的 Spawn 必须是**每台客户端缓存里都存在**的玩家：客户端 `BeginTape` 里
         /// `ChangeMyPlayer(_cache[id])` 是直接索引，人不在缓存里会抛。
         /// 取不到就整段跳过（宁缺勿崩）。
+        ///
+        /// ⚠ 「服务端合成」的那几幕**不走占位这条路**：它们合不上时按用户口径**降级为原版渲染**
+        /// （见本方法里 `NeedsHostTape` 那一支），不塞假转场。
         /// </summary>
         private static void SendPlaceholders(GameRoom room, List<Clip> plan)
         {
-            if (!(PlaceholderTape?.Value ?? true))
-                return;
-
+            // ⚠ 这个开关**只管"补占位磁带"**，绝不能顺手把服务端合成也一起关掉：
+            //   以前它就写成方法开头的一道早退，于是把 `PlaceholderTape` 关掉会连带让
+            //   「自爆 / 巡礼 / 黑方」三幕整段消失（它们只能靠服务端合成）。
+            bool placeholder = PlaceholderTape?.Value ?? true;
             int sent = 0;
             foreach (var clip in plan)
             {
-                // ★ 优先用房主侧录制器**合成真磁带**：假人与已死者这两类客户端根本交不上磁带；
-                //   而「自爆」更是无论客户端有没有交都改用服务端（白方被处决那一刻全是死人，
-                //   客户端 `Recording()` 的 `!IsAlive` 守卫直接 return ⇒ 白方主视角录不出来）。
-                if ((!clip.Filled || NeedsHostTape(clip)) && TrySendHostTape(room, clip))
+                // ★ **服务端合成的幕**（巡礼 / 自爆 / 黑方收尾）走这里：合成不了就
+                //   **降级为原版渲染**（用户定的口径）—— 不补占位磁带、不强行塞一段假转场；
+                //   它们本来就向客户端要不到磁带，所以观众看到的是"没有这一幕"，
+                //   而同场其它客户端磁带（例如黑方那一卷）照旧原样播（黑方视角保留原版黑遮罩）。
+                if (NeedsHostTape(clip))
+                {
+                    if (TrySendHostTape(room, clip))
+                        sent++;
+                    continue;
+                }
+
+                // ★ 普通片段：优先用房主侧录制器**合成真磁带**（假人与已死者这两类客户端交不上磁带）；
+                //   合不上再退回占位磁带。
+                if (!clip.Filled && TrySendHostTape(room, clip))
                 {
                     sent++;
                     continue;
                 }
 
                 if (clip.Filled)
+                    continue;
+
+                if (!placeholder)
                     continue;
 
                 var spawn = ResolvePlaceholderSpawn(clip);
@@ -1196,8 +1215,11 @@ namespace HideAndSeek.Features.Rule
         /// 窗口 = **登记那一刻的房主时钟**（`Clip.At`）± 配置的前后秒数。这一段本来就没有客户端磁带，
         /// 也就没有"磁带内锚点"可用；房主缓冲的采样也在同一时钟上，所以两边自洽。
         ///
-        /// 镜头与光照现在给的是稳妥默认值（镜头＝黑方、非断电）；P2/P3 的
-        /// "按剧本生成 `AreaShot`（逐人快速平移 + 切黑方时转断电视野）"接手后，这里会换成那条序列。
+        /// 机位（摄影机载具）由 <see cref="FindHostTapeAnchors"/> 按"无客户端实体 → 画面外的死者 →
+        /// 其他画面外人"挑；**挑不到就降级为原版渲染** —— 不合成、不补占位磁带，客户端交上来的那卷
+        /// 原样播（`TapeHook` 不再拦它），本来没有磁带就整段没有，代价是黑方那一侧保留原版黑遮罩。
+        /// 机位若正好是某位观众本人，还要按 <see cref="RepairAnchorCollision"/> 单独给他补发一份
+        /// （否则他客户端上的机位每一帧都会被改写到 id 0，镜头定格在半成品替身上）。
         /// </summary>
         private static bool TrySendHostTape(GameRoom room, Clip clip)
         {
@@ -1206,72 +1228,31 @@ namespace HideAndSeek.Features.Rule
                 float from = clip.At - Math.Max(0f, clip.Before);
                 float to = clip.At + Math.Max(0f, clip.After);
 
-                int anchorId = FindHostTapeAnchor(room, clip);
-                int camId = FindBlackId(room);
-
-                var shots = new List<SnapShot>();
-                int n;
-                if (clip.Kind == "黑方")
+                var anchors = FindHostTapeAnchors(room, clip);
+                if (anchors.Count == 0)
                 {
-                    // 镜头切到黑方、转断电视野，跟着他走 `BlackTailSec` 秒
-                    n = EndReplayHostTape.BuildBlackAct(shots, from, to, anchorId, camId);
-                }
-                else if (NeedsHostTape(clip))
-                {
-                    // 白方巡礼：机位沿贪心"最近未拍摄"顺序直线高速平移，全程非断电
-                    n = EndReplayHostTape.BuildWhiteTour(shots, from, to, anchorId, clip.Subjects,
-                        Math.Max(0.02f, CameraPanSec?.Value ?? 0.2f));
-                }
-                else
-                {
-                    // 普通兜底：镜头钉在镜头目标上（AreaShot），世界照采样铺开
-                    n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, true);
-                }
-                if (n < 2)
-                {
-                    Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端录制，"
-                        + $"但缓冲里可用帧不足（{n} 帧，窗口=[{from:F2},{to:F2}]）⇒ 退回占位磁带。");
+                    // ★ 降级口径（用户定的）：**不用占位磁带**，交回原版渲染 ——
+                    //   不合成、不补帧；客户端自己那卷按原样播，本来没磁带就整段没有。
+                    //   代价是黑方那一侧保留原版的黑遮罩。
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 找不到"
+                        + "「不在画面里、也不与观众撞车」的机位 ⇒ 降级为原版渲染（不合成、不补占位）。");
                     return false;
                 }
 
-                // ★★ 广播前必须按时间戳**稳定排序** —— 这是实测踩出来的硬约束，不看客户端源码想不到：
-                //
-                //   客户端 `RecordManager.Update()` 是这样放的：
-                //       if (_playIndex >= Count) { FinishTape(); return; }
-                //       _currentTime += DeltaTime;
-                //       while (_playIndex < Count) {
-                //           var shot = currentTape[_playIndex];
-                //           if (shot.TimeStamp > _currentTime) break;   // ← 假设时间戳**非递减**
-                //           ...执行...
-                //           _playIndex++;
-                //       }
-                //
-                //   而我们的合成器是"先把世界按 5Hz 铺完、再把机位路径追加在后面" ⇒ 两段 timestamp **交错**：
-                //   追加在后、时间戳却更早的那些帧，一走到就被判定"早就该放了" ⇒ **在同一帧里被一次性执行完**
-                //   ⇒ 整幕塌成一瞬、镜头像坏掉的快切（实测：「自爆」459 帧、「黑方」212 帧都出现这个现象）。
-                //
-                //   稳定排序（`OrderBy`，不是 `List.Sort`）保证时间戳相同的帧保持插入顺序
-                //   ⇒ 首帧仍是最先插入的 `SpawnShot`（客户端 `BeginTape` 的硬要求）。
-                var ordered = shots.OrderBy(s => s.TimeStamp).ToList();
-
-                for (int i = 1; i < ordered.Count; i++)
+                int camId = FindBlackId(room);
+                var ordered = ComposeHostTape(clip, anchors[0], camId, from, to);
+                if (ordered == null)
                 {
-                    if (ordered[i].TimeStamp < ordered[i - 1].TimeStamp)
-                    {
-                        Plugin.Log.LogWarning("[HS] EndReplay：合成磁带排序后时间戳仍非递减失败（不该发生），"
-                            + $"第 {i} 帧 {ordered[i].TimeStamp:F3} < 前帧 {ordered[i - 1].TimeStamp:F3}。");
-                        break;
-                    }
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端录制，"
+                        + $"但缓冲里可用帧不足（窗口=[{from:F2},{to:F2}]）⇒ 降级为原版渲染。");
+                    return false;
                 }
 
-                if (ordered[0].Type != ESnapShotType.SpawnShot)
-                    Plugin.Log.LogWarning($"[HS] EndReplay：合成磁带首帧不是 SpawnShot（{ordered[0].Type}），"
-                        + "客户端会整段跳过。");
-
-                var pkt = new S_TAPE { RecordTime = clip.Key };
-                pkt.SnapShots.AddRange(ordered);
-                room.Broadcast(pkt);
+                BroadcastHostTape(room, clip, ordered);
                 clip.Filled = true;
+
+                // 机位＝某位观众本人时，他客户端上的机位每一帧都会被改写到 id 0 ⇒ 单独给他补发一份。
+                RepairAnchorCollision(room, clip, anchors, camId, from, to);
 
                 string look = clip.Kind == "黑方" ? "断电视野" : "非断电";
                 string how = clip.Kind == "黑方"
@@ -1279,8 +1260,8 @@ namespace HideAndSeek.Features.Rule
                     : (NeedsHostTape(clip) ? "白方巡礼（贪心最近未拍摄 + 直线高速平移）" : "镜头钉在目标上");
 
                 Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 由**服务端录制**合成 "
-                    + $"{ordered.Count} 帧（窗口=[{from:F2},{to:F2}] 锚点=#{anchorId} 镜头=#{camId} {look} / {how}）"
-                    + "⇒ 假人/已死者也能进回放。");
+                    + $"{ordered.Count} 帧（窗口=[{from:F2},{to:F2}] 机位=#{anchors[0]}（备选 {anchors.Count} 个）"
+                    + $" {look} / {how}）⇒ 假人/已死者也能进回放。");
                 return true;
             }
             catch (Exception ex)
@@ -1291,30 +1272,213 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 服务端合成时的"隐形机位"锚点：挑一个**已死 + 仍在房间 + 本机缓存里还在**的人
-        /// （与 <see cref="ResolveObserverId"/> 同一套判据 —— 客户端 `ChangeMyPlayer(_cache[id])`
-        /// 是直接索引，人不在缓存里会抛）。挑不到就返回 0，让 <see cref="EndReplayHostTape.Build"/>
-        /// 退用镜头目标本人当锚点。
+        /// 合成 + **按时间戳稳定排序**。返回 null ＝ 可用帧不足 2 帧（调用方降级为原版渲染）。
+        ///
+        /// 排序是实测踩出来的硬约束，不看客户端源码想不到 —— 客户端 `RecordManager.Update()`：
+        ///   if (_playIndex >= Count) { FinishTape(); return; }
+        ///   _currentTime += DeltaTime;
+        ///   while (_playIndex &lt; Count) {
+        ///       var shot = currentTape[_playIndex];
+        ///       if (shot.TimeStamp &gt; _currentTime) break;   // ← 假设时间戳**非递减**
+        ///       ...执行...; _playIndex++;
+        ///   }
+        /// 而我们的合成器是"先把世界按 5Hz 铺完、再把机位路径追加在后面" ⇒ 两段时间戳**交错**：
+        /// 追加在后、时间戳却更早的那些帧，一走到就被判定"早就该放了" ⇒ **同一帧里被一次性执行完**
+        /// ⇒ 整幕塌成一瞬、镜头像坏掉的快切（实测「自爆」459 帧、「黑方」212 帧都有这个现象）。
+        /// 稳定排序（`OrderBy`，不是 `List.Sort`）保证同时间戳的帧保持插入顺序 ⇒ 首帧仍是最先插入的
+        /// `SpawnShot`（客户端 `BeginTape` 的硬要求）。
         /// </summary>
-        private static int FindHostTapeAnchor(GameRoom room, Clip clip)
+        private static List<SnapShot> ComposeHostTape(Clip clip, int anchorId, int camId,
+            float from, float to)
         {
+            var shots = new List<SnapShot>();
+            int n;
+            if (clip.Kind == "黑方")
+            {
+                // 镜头切到黑方、转断电视野，跟着他走 `BlackTailSec` 秒
+                n = EndReplayHostTape.BuildBlackAct(shots, from, to, anchorId, camId);
+            }
+            else if (NeedsHostTape(clip))
+            {
+                // 白方巡礼：机位沿贪心"最近未拍摄"顺序直线高速平移，全程非断电
+                n = EndReplayHostTape.BuildWhiteTour(shots, from, to, anchorId, clip.Subjects,
+                    Math.Max(0.02f, CameraPanSec?.Value ?? 0.2f));
+            }
+            else
+            {
+                // 普通兜底：镜头钉在机位上（AreaShot），世界照采样铺开
+                n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, true);
+            }
+
+            if (n < 2)
+                return null;
+
+            var ordered = shots.OrderBy(s => s.TimeStamp).ToList();
+
+            for (int i = 1; i < ordered.Count; i++)
+            {
+                if (ordered[i].TimeStamp < ordered[i - 1].TimeStamp)
+                {
+                    Plugin.Log.LogWarning("[HS] EndReplay：合成磁带排序后时间戳仍非递减失败（不该发生），"
+                        + $"第 {i} 帧 {ordered[i].TimeStamp:F3} < 前帧 {ordered[i - 1].TimeStamp:F3}。");
+                    break;
+                }
+            }
+
+            if (ordered[0].Type != ESnapShotType.SpawnShot)
+                Plugin.Log.LogWarning($"[HS] EndReplay：合成磁带首帧不是 SpawnShot（{ordered[0].Type}），"
+                    + "客户端会整段跳过。");
+
+            return ordered;
+        }
+
+        private static void BroadcastHostTape(GameRoom room, Clip clip, List<SnapShot> ordered)
+        {
+            var pkt = new S_TAPE { RecordTime = clip.Key };
+            pkt.SnapShots.AddRange(ordered);
+            room.Broadcast(pkt);
+        }
+
+        /// <summary>
+        /// **撞车补发**：机位若正好是某位观众本人，他客户端上的 `ApplySpawn(:669)` / `ApplyMove(:705)` /
+        /// `ApplyArea(:731)` 会把机位的每一帧都改写成 id 0 —— 而 id 0 的替身是 `ForceSpawnReplayTemp`
+        /// 造出来的半成品、停在 (-10,616)，且 `HandleMove` 的
+        /// `MyPlayer.PublicInfo.PlayerId != pkt.PlayerId` 守卫会把"自己的移动"直接丢掉
+        /// ⇒ 机位一步不动，那位观众看到的是定点空白（实测就是这么坏的：锚点 #4、观众也是 #4）。
+        ///
+        /// 所以**单独给他补发一份**用另一具机位合成的磁带：客户端 `_playTapes` 只以 `RecordTime` 为键，
+        /// 后到者覆盖前一段 ⇒ 只有他换成好的那一份，其余人不受影响。
+        /// 挑不到第二具机位（或合成失败）就**什么都不发**：他保持原版那一份，而不是收到坏镜头。
+        /// </summary>
+        private static void RepairAnchorCollision(GameRoom room, Clip clip, List<int> anchors,
+            int camId, float from, float to)
+        {
+            foreach (var v in Viewers(room))
+            {
+                if (v.Session == null || v.IsDummy)
+                    continue;
+                if (v.PublicInfo.PlayerId != anchors[0])
+                    continue;
+
+                int alt = 0;
+                foreach (var id in anchors)
+                {
+                    if (id != v.PublicInfo.PlayerId)
+                    {
+                        alt = id;
+                        break;
+                    }
+                }
+                if (alt <= 0)
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 机位只有 "
+                        + $"#{anchors[0]} 一个候选、而他本人就是观众 ⇒ 无法补发，他这一份降级为原版渲染。");
+                    continue;
+                }
+
+                var ordered = ComposeHostTape(clip, alt, camId, from, to);
+                if (ordered == null)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 给观众 "
+                        + $"#{v.PublicInfo.PlayerId} 补发失败（备用机位 #{alt} 帧不足）⇒ 他这一份降级为原版渲染。");
+                    continue;
+                }
+
+                var pkt = new S_TAPE { RecordTime = clip.Key };
+                pkt.SnapShots.AddRange(ordered);
+                v.Session.Send(pkt);
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 机位 #{anchors[0]} 正是"
+                    + $"观众 #{v.PublicInfo.PlayerId} 本人 ⇒ 单独补发一份（机位改 #{alt}，{ordered.Count} 帧）。");
+            }
+        }
+
+        /// <summary>房间里**有客户端**的观众（活人与幽灵都在 `room.Players` 里，`DeadPlayers` 只用来去重兜底）。</summary>
+        private static List<GamePlayer> Viewers(GameRoom room)
+        {
+            var list = new List<GamePlayer>();
+            var seen = new HashSet<int>();
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && seen.Add(p.PublicInfo.PlayerId))
+                    list.Add(p);
+            }
+            foreach (var p in room.DeadPlayers)
+            {
+                if (p?.PublicInfo != null && seen.Add(p.PublicInfo.PlayerId))
+                    list.Add(p);
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 服务端合成用的「隐形机位」候选表，按"最不可能与观众撞车、最不该出现在画面里"排序：
+        ///   1. **没有客户端的实体**（假人 / 掉线的壳：`IsDummy || Session == null`）——
+        ///      任何观众的本机 id 都不可能等于它 ⇒ 永远不会被 `== _myPlayerId → 0` 改写；
+        ///      ⚠ 这只是"测试局里恰好命中"，**绝不能假设对局里有假人**（假人只用于测试）；
+        ///   2. 已死者（还在房间、房主缓冲里有采样）；
+        ///   3. 其他不在本幕画面里的人（例如巡礼幕里的黑方）。
+        ///
+        /// 一律**排除本幕的演员**（`clip.Subjects`；黑方幕则是 `blackId`）：机位帧会占用那个 id 的位置
+        /// （`EmitWorld` 把它整个排除、改由机位路径驱动）⇒ 拿演员当机位等于把他从画面里抹掉。
+        /// 一个都挑不到 ⇒ 返回空表，调用方降级为**原版渲染**。
+        /// </summary>
+        private static List<int> FindHostTapeAnchors(GameRoom room, Clip clip)
+        {
+            var ordered = new List<int>();
             try
             {
-                foreach (var p in room.DeadPlayers)
+                if (room == null)
+                    return ordered;
+
+                var actors = new HashSet<int>();
+                if (clip.Kind == "黑方")
+                    actors.Add(FindBlackId(room));
+                else if (clip.Subjects != null)
+                {
+                    foreach (var id in clip.Subjects)
+                        actors.Add(id);
+                }
+
+                var noClient = new List<int>();
+                var dead = new List<int>();
+                var alive = new List<int>();
+                var seen = new HashSet<int> { 0 };
+
+                void Consider(GamePlayer p)
                 {
                     int id = p?.PublicInfo?.PlayerId ?? 0;
-                    if (id <= 0 || id == clip.RecorderId)
-                        continue;
-                    if (Managers.Player.GetPlayerCache(id) == null)
-                        continue;
-                    return id;
+                    if (id <= 0 || id == clip.RecorderId || actors.Contains(id) || !seen.Add(id))
+                        return;
+                    if (!EndReplayHostTape.HasRows(id))
+                        return;
+
+                    // 客户端 `ChangeMyPlayer(_cache[id])`/`Spawn` 都是**直接索引**缓存，
+                    // 所以候选必须"各方缓存里都有" —— 真人进房时由 `S_ADD_PLAYER`/roster 写入，
+                    // 假人由 `DummyManager` 显式补发 `S_ADD_PLAYER`（见那里的注释），两者都满足。
+                    // 这里不再用服务端 `GetPlayerCache` 当判据：假人是绕过 `HandleEnterPlayer` 造的，
+                    // 服务端缓存里未必有它，拿它过滤反而会把测试局里最好用的机位筛掉。
+                    if (p.IsDummy || p.Session == null)
+                        noClient.Add(id);
+                    else if (!p.IsAlive)
+                        dead.Add(id);
+                    else
+                        alive.Add(id);
                 }
+
+                foreach (var p in room.Players)
+                    Consider(p);
+                foreach (var p in room.DeadPlayers)
+                    Consider(p);
+
+                ordered.AddRange(noClient);
+                ordered.AddRange(dead);
+                ordered.AddRange(alive);
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[HS] EndReplay：挑服务端录制锚点失败 — {ex.Message}");
+                Plugin.Log.LogWarning($"[HS] EndReplay：挑服务端录制机位失败 — {ex.Message}");
             }
-            return 0;
+            return ordered;
         }
 
         /// <summary>
@@ -1727,13 +1891,21 @@ namespace HideAndSeek.Features.Rule
                     if (recorderId == 0 || !BySlot.TryGetValue(Slot(recorderId, c.RecordTime), out var clip))
                         return true;                // 不是我们的片段 → 交还原版
 
-                    // ★ "合并剪辑"类片段（自爆）一律改用服务端录制：客户端那卷在他死亡那一刻就停了，
-                    //   而且只含自己视野内的特效帧 ⇒ 直接丢弃它，交给 `TrySendHostTape` 合成。
+                    // ★ 「自爆 / 巡礼 / 黑方」这三类幕**改用服务端录制**（客户端那卷要么根本没有 ——
+                    //   录制者已死或压根没请他们录 —— 要么只含自己视野内的帧）。
+                    //
+                    //   但我们**不丢弃**它，而是 `return true` **交还原版直发**（不裁剪、不改造）：
+                    //     · 服务端合成成功时，我们的磁带会在 `SendPlaceholders` 阶段（更晚）用**同一个
+                    //       RecordTime** 广播 ⇒ 客户端 `_playTapes[key]` 是"后到者覆盖"⇒ 合成版生效；
+                    //     · 合成失败时（找不到"不在画面里的机位"）就靠这一卷原版磁带顶上 ——
+                    //       这正是用户定的**降级＝原版渲染**，代价是黑方那一侧保留原版黑遮罩。
+                    //   以前这里 `return false` 直接吞掉，等于把降级路径也一起吞了。
                     if (NeedsHostTape(clip))
                     {
                         Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 收到客户端磁带"
-                            + $"（{c.SnapShots.Count} 帧）但这一类改用服务端录制 ⇒ 丢弃。");
-                        return false;
+                            + $"（{c.SnapShots.Count} 帧）⇒ **原样交还原版直发**（合成成功时会被同 key 的服务端版覆盖）。");
+                        clip.Filled = true;
+                        return true;
                     }
 
                     var trimmed = TrimTape(c.SnapShots.ToList(), clip);
