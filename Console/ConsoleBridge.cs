@@ -54,6 +54,7 @@ namespace HideAndSeek.Console
             ("hs_grant",     "hs_grant <on|off>",                                  "发刀模式：on=开局随机发刀并锁死武器架，off=自行跑刀（下一局生效）"),
             ("hs_radar",     "hs_radar <on|off>",                                  "白方全图雷达：白方地图显示所有存活玩家位置（不区分阵营）"),
             ("hs_upgrade",   "hs_upgrade [vision|speed|task]",                   "黑学分：击杀获得学分，换取视野/移速/任务门槛强化"),
+            ("hs_panel",     "hs_panel <on|off>",                                 "自爆回放的「全屏面板+心跳声」（默认关：会残留到大厅）"),
         };
 
         private static Type DtConsoleType() => AccessTools.TypeByName(DtConsoleTypeName);

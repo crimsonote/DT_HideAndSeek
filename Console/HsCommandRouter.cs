@@ -45,6 +45,7 @@ namespace HideAndSeek.Console
                     case "hs_check": case "hs_reload": case "hs_mode": case "hs_aoi": case "hs_cd":
                     case "hs_killlimit": case "hs_dummy": case "hs_flash":
                     case "hs_roomname": case "hs_tp": case "hs_grant": case "hs_radar": case "hs_debug": case "hs_upgrade":
+                    case "hs_panel":
                         name = sub;
                         args = args.Skip(1).ToArray();
                         break;
@@ -67,7 +68,8 @@ namespace HideAndSeek.Console
                 case "hs_radar":     return Radar(args);
                 case "hs_debug":     return Debug(args);
                 case "hs_upgrade":   return Upgrade(args);
-                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_reload / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp）");
+                case "hs_panel":     return Panel(args);
+                default:             return Error($"未知命令 {name}（输入 hs 查看总览；另有 hs_check / hs_reload / hs_mode / hs_aoi / hs_cd / hs_killlimit / hs_dummy / hs_flash / hs_roomname / hs_tp / hs_panel）");
             }
         }
 
@@ -246,6 +248,26 @@ namespace HideAndSeek.Console
                 return true;
 
             return DummyManager.TryParseCharacterName(text, out charaId);
+        }
+
+        // ── /hs_panel [on|off] ──────────────────────────────────────
+        // 自爆回放的「全屏面板 + 心跳声」（客户端 `MineBombVfx`）。
+        // ⚠ 默认关：它是 UI 弹层（`UI_DespairBombEffect`），实测**会残留到大厅**（重进房间即消失）。
+        private static string Panel(string[] args)
+        {
+            var entry = HideAndSeek.Features.Rule.EndReplayFeature.BombPanel;
+            if (entry == null)
+                return Error("回放功能未加载");
+
+            if (args.Length == 0)
+                return $"{{\"ok\":true,\"bombPanel\":{Bool(entry.Value)}}}";
+
+            bool? on = ParseBool(args[0]);
+            if (on == null)
+                return Error("用法: hs_panel <on|off>（自爆回放的全屏面板+心跳声；⚠ 开启后可能残留到大厅）");
+
+            entry.Value = on.Value;
+            return $"{{\"ok\":true,\"bombPanel\":{Bool(entry.Value)}}}";
         }
 
         // ── /hs_flash [on|off] ──────────────────────────────────────
