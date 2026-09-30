@@ -99,6 +99,11 @@ namespace HideAndSeek.Features.Rule
             "爆炸后只有这么多素材。", Min = 0f, Max = 7f)]
         public static ConfigEntry<float> BlackTailSec;
 
+        [ConfigField(true, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`，原版自带 3 秒后自动还原）。" +
+            "让「人凭空消失」变成一个有节拍的收尾；关掉就只剩人消失本身。" +
+            "（曾经的 `MineBombVfx` 全屏面板已移除：实测像心跳声、且是屏幕覆盖层、还会残留到大厅。）")]
+        public static ConfigEntry<bool> BombBlackout;
+
         [ConfigField(7.5f, "「白方各段」：白胜结局里幸存者那几段的总窗口（判定前秒数）。" +
             "**按人数平分**：N 个幸存者各录一段自己的视角，每人拿到 (前+后)÷N 秒；" +
             "拿不到客户端磁带的才用服务端兜底。", Min = 0f, Max = 30f)]
