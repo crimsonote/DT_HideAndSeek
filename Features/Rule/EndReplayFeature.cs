@@ -137,13 +137,12 @@ namespace HideAndSeek.Features.Rule
             "补回这一轮即消除该风险，**观感不变**（补的都是原版磁带里本来就有的帧）。")]
         public static ConfigEntry<bool> RosterFrames;
 
-        [ConfigField(true, "推回放前先补一包 `VoteResult` 相位，让客户端把审判 UI 里那个「投票结果」面板收掉。" +
-            "背景（实测诊断确认）：那行「投票结果」是文本键 `VoteResultTrial` 的值，只有审判 UI 的 " +
-            "`InitText()` 会给它赋值（`Texts[4] VoteResultText`）；对应面板是 `GameObjects[3] VoteResult`， " +
-            "原版靠**离开 VoteResult 相位**时的 `EndVoteResult()`（`SetActive(false)`）关闭它。" +
-            "而我们的回放是**直接跳进 Replay** 的，从没经过那个相位 ⇒ 没人关它 ⇒ 面板一直挂在画面上" +
-            "（回放越长越明显，所以只有「片段多」的局面才看得清）。补这一包就是让客户端把收尾处理器跑一遍。" +
-            "关掉本项可回到旧行为（面板会一直显示），用于对照。")]
+        [ConfigField(true, "【审判 UI 残留文字】进回放时把字幕行 `SlideLine/SlideText` 上的文字清空。" +
+            "背景（实测定位）：那行字是**预制体里烘死的默认值**（官方中文包里没有对应条目），" +
+            "原版靠 `StartState(Discuss)` 的开场字幕序列收尾 `slideText.SetActive(false)` 把它收掉；" +
+            "我们的回放直接从 Replay 相位进入，那个序列从未跑过，而 `StartReplay()` 里的 `ResetSlideVisual()` " +
+            "又会把文字设成完全不透明 ⇒ 它会一直挂在画面正中（中文客户端上显示为韩文「논의 시작」）。" +
+            "关掉本项可回到旧行为（残留文字一直显示），用于对照。")]
         public static ConfigEntry<bool> ClearTrialLabels;
 
         [ConfigField(true, "回放里把黑方的昵称显示成红色，让观众一眼看出「黑刀＝黑幕」。" +
@@ -154,14 +153,29 @@ namespace HideAndSeek.Features.Rule
             "返回大厅时客户端自己会 `KnownBlackIds.Clear()`（:29075），不会带到下一局。")]
         public static ConfigEntry<bool> RevealBlackName;
 
+        [ConfigField(true, "【没收到磁带时】补一段「占位磁带」，让客户端自己走一遍「这段没录到」的转场，" +
+            "而不是让这一幕从回放里凭空消失。" +
+            "背景：客户端的播放列表就是它收到的磁带集合（`RecordManager._playTapes`）——服务端少发一段，" +
+            "那一幕在观感上就**根本不存在**，观众只会觉得「少了一段」，并不知道是没录到。" +
+            "两条实测约束决定了占位磁带的样子（均见客户端 `RecordManager`）：" +
+            "① `AddPlayTape` 对**空**磁带直接丢弃（日志 `빈 테이프 무시`）⇒ 0 帧等于没发；" +
+            "② `BeginTape` 要求 `Count >= 2` 且首帧必须是 `SpawnShot`，不满足会**静默跳过**（连转场都不播）。" +
+            "所以占位磁带做成**恰好 2 帧**（`SpawnShot` + 一枚无害的 `NormalTimeEdit`）：客户端会正常" +
+            "「开始 → 立刻播完 → `FinishTape()`」⇒ 走一次转场演出（噪声）再进下一段 —— 那正是「一闪而过、表示这段没录到」。" +
+            "首帧主视角优先取录制者本人，其次取「已死 + 仍在房间」的人（与隐藏观察者同一套判据）——" +
+            "客户端 `ChangeMyPlayer` 用 `_cache[id]` 直接索引，人不在缓存里会抛。")]
+        public static ConfigEntry<bool> PlaceholderTape;
+
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
         {
             public int Key;          // RecordTime（请求磁带时用的键）
             public int RecorderId;   // 谁录的（谁收到 S_RECORD_REPLAY）
-            public string Kind;      // 拿刀 / 杀人 / 最后
+            public string Kind;      // 拿刀 / 杀人 / 最后 / 自爆
             public float Before;
             public float After;
+            /// <summary>真的收到磁带了吗 —— 没收到时会在推 Replay 前补一段"占位磁带"（见 <c>SendPlaceholders</c>）。</summary>
+            public bool Filled;
         }
 
         private static readonly List<Clip> Clips = new List<Clip>();
@@ -626,6 +640,7 @@ namespace HideAndSeek.Features.Rule
 
             int blackId = blackClipLast ? FindBlackId(room) : 0;
             Clip blackClip = null;
+            int lastSeq = 0;
 
             foreach (var p in room.AlivePlayers.ToList())
             {
@@ -641,10 +656,23 @@ namespace HideAndSeek.Features.Rule
                     continue;
                 }
 
-                if (!RequestRecord(p, key, "最后", before, after))
+                // ★ 每一幕「最后时段」必须给**各自独立的 key**（基准值 + 序号）。
+                //   读码 + 实测：客户端的播放列表 `RecordManager._playTapes` 是
+                //   `Dictionary<int, List<SnapShot>>`，**只以 RecordTime 为键** ——
+                //   两个不同录制者用同一个 key 时，后到的那段直接 `_playTapes[key] = tape` **覆盖**前一段
+                //   ⇒ 观众只会看到其中一幕（另一段凭空消失，日志里连"无效磁带"都不会打）。
+                //   而结算时刻 `SurviveTime` 已经停走（整局结束），所有请求拿到的都是同一个值
+                //   （实测日志里「最后时段」与「自爆」的 key 都是 570）⇒ 必须自己加序号区分。
+                //   序号按本循环顺序 ⇒ 播放顺序＝我们的排片顺序（白胜时黑方那幕排到最后）。
+                //   ⚠「自爆」那一组**故意共用**同一个 key：那是同一时刻的多机位，只该占一幕
+                //   （客户端保留最后到达的那一段）—— 别"顺手"把它们也拆开，否则同一个爆炸会播 4 遍。
+                int clipKey = key + 1 + lastSeq;
+                lastSeq++;
+
+                if (!RequestRecord(p, clipKey, "最后", before, after))
                     continue;
 
-                if (!BySlot.TryGetValue(Slot(p.PublicInfo.PlayerId, key), out var clip))
+                if (!BySlot.TryGetValue(Slot(p.PublicInfo.PlayerId, clipKey), out var clip))
                     continue;
 
                 if (blackClipLast && blackId > 0 && p.PublicInfo.PlayerId == blackId)
@@ -895,6 +923,12 @@ namespace HideAndSeek.Features.Rule
                 //   （`VoteResult[self=False,hier=False]`），真正常显的是字幕行 `SlideLine/SlideText`
                 //   （已由 `ClearSlideText` 解决）⇒ 这一包没有收益，反而让客户端闪一下空白投票页 ⇒ 去掉。
 
+                // 没有磁带的片段：补一段"占位磁带"（客户端走一次转场后跳过），
+                // 而不是让这一幕从回放里凭空消失。必须赶在 `Replay` 状态包之前 ——
+                // 客户端 `UI_TrialEvent.StartReplay → RecordManager.Play()` 会把 `_playTapes` **快照**进 `_session`，
+                // 之后再补就进不了这一轮的播放列表了。
+                SendPlaceholders(room, plan);
+
                 room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Replay });
             }
             catch (Exception ex)
@@ -902,6 +936,121 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] EndReplay：推送回放失败 — {ex.Message}");
                 FinishReplay("推送失败");
             }
+        }
+
+        /// <summary>
+        /// 给"没收到磁带"的片段补一段**占位磁带** —— 让客户端自己走一遍"空片段"的转场，
+        /// 而不是被服务端悄悄删掉（用户明确要求：不能直接服务端跳过）。
+        ///
+        /// 为什么不能发**空**磁带：客户端 `AddPlayTape` 对 0 帧直接丢弃（`빈 테이프 무시`）；
+        /// 为什么必须是 **2 帧**：`BeginTape` 的硬要求是 `Count >= 2 && [0].Type == SpawnShot`，
+        /// 不满足会打「무효 … 건너뜀」**静默跳过**（连转场都不播）。满足要求时会正常
+        /// "开始 → 立刻播完 → `FinishTape()`" ⇒ 走**转场演出**（噪声）再进下一段 ——
+        /// 观众看到的就是"闪过一下、表示这段没录到"。
+        ///
+        /// 时间戳取一个极大的值：`BeginTape` 把 `_currentTime` 置成第 2 帧的时间戳，
+        /// `Update` 于是立刻把这 2 帧执行完；`PrepareDevices(eventTime)` 拿它判断
+        /// "临时设备是否在该时刻之后才生成"，给大值 ⇒ 不额外藏任何设备（转场一闪，不露馅）。
+        ///
+        /// 首帧的 Spawn 必须是**每台客户端缓存里都存在**的玩家：客户端 `BeginTape` 里
+        /// `ChangeMyPlayer(_cache[id])` 是直接索引，人不在缓存里会抛。
+        /// 取不到就整段跳过（宁缺勿崩）。
+        /// </summary>
+        private static void SendPlaceholders(GameRoom room, List<Clip> plan)
+        {
+            if (!(PlaceholderTape?.Value ?? true))
+                return;
+
+            int sent = 0;
+            foreach (var clip in plan)
+            {
+                if (clip.Filled)
+                    continue;
+
+                var spawn = ResolvePlaceholderSpawn(clip);
+                if (spawn == null)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 没收到磁带，"
+                        + "又找不到可用的占位主视角 ⇒ 这一段整段跳过（观众看到的是「少了一段」）。");
+                    continue;
+                }
+
+                float t = 1e6f;
+                var pkt = new S_TAPE { RecordTime = clip.Key };
+                pkt.SnapShots.Add(new SnapShot
+                {
+                    Type = ESnapShotType.SpawnShot,
+                    TimeStamp = t,
+                    Spawn = spawn
+                });
+                pkt.SnapShots.Add(new SnapShot
+                {
+                    Type = ESnapShotType.EditShot,
+                    TimeStamp = t,
+                    Edit = new EditSnapShot { Type = EEditShotType.NormalTimeEdit }
+                });
+
+                room.Broadcast(pkt);
+                sent++;
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 没收到磁带 ⇒ "
+                    + $"补 2 帧占位磁带（主视角=#{spawn.PlayerId}），客户端会走一次转场后跳过这一段。");
+            }
+
+            if (sent > 0)
+                Plugin.Log.LogInfo($"[HS] EndReplay：共补 {sent} 段占位磁带（对应没交上来的磁带）。");
+        }
+
+        /// <summary>
+        /// 占位磁带的首帧主视角：优先用**录制者本人**（他录过像 ⇒ 各方缓存里都有他），
+        /// 其次用"已死 + 仍在房间 + 本机缓存里还在"的人（与 <see cref="ResolveObserverId"/> 同一套判据）。
+        ///
+        /// 一律标成 `IsGhost`（跟随 `ObserverGhost` 配置）：这样客户端的 `RefreshGhostVisual()`
+        /// 会把幽灵替身与骨架一起关掉 ⇒ 转场那一瞬间不会突然冒出一个人的身体。
+        /// </summary>
+        private static PublicPlayerInfo ResolvePlaceholderSpawn(Clip clip)
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                    return null;
+
+                bool ghost = ObserverGhost?.Value ?? true;
+
+                var own = Managers.Player.GetPlayerCache(clip.RecorderId)?.PublicInfo;
+                if (own != null)
+                    return MakePlaceholderSpawn(own, clip.RecorderId, ghost);
+
+                foreach (var p in room.DeadPlayers)
+                {
+                    int id = p?.PublicInfo?.PlayerId ?? 0;
+                    if (id <= 0 || id == clip.RecorderId)
+                        continue;
+
+                    var cached = Managers.Player.GetPlayerCache(id)?.PublicInfo;
+                    if (cached == null)
+                        continue;
+
+                    Plugin.Log.LogInfo($"[HS] EndReplay：录制者 #{clip.RecorderId} 已不在本机缓存里，"
+                        + $"占位磁带改用已死者 #{id} 当主视角。");
+                    return MakePlaceholderSpawn(cached, id, ghost);
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：准备占位磁带失败 — {ex.Message}");
+            }
+
+            return null;
+        }
+
+        private static PublicPlayerInfo MakePlaceholderSpawn(PublicPlayerInfo src, int playerId, bool ghost)
+        {
+            var info = src.Clone();
+            info.PlayerId = playerId;
+            info.State = EPlayerState.Idle;   // 别让他"躲在柜子里/死亡幽灵"的状态驱动这个看不见的角色
+            info.IsGhost = ghost;
+            return info;
         }
 
         /// <summary>
@@ -1271,6 +1420,8 @@ namespace HideAndSeek.Features.Rule
                         room.Broadcast(sendPkt);
                         TrialManager.Instance?.SetTape(c.RecordTime, sendPkt.SnapShots.Count);
                     });
+                    // 记下"这一段真的收到了" —— `BroadcastReplay` 靠它决定要不要补占位磁带。
+                    clip.Filled = true;
                     return false;
                 }
                 catch (Exception ex)
@@ -1322,7 +1473,7 @@ namespace HideAndSeek.Features.Rule
             if (anchor == null)
             {
                 Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】找不到时间锚点，按原样播放。");
-                return tape;
+                return StripBombCorpseAdds(tape);
             }
 
             // 录制者是谁：磁带首帧的 Spawn 就是他（客户端 `BeginTape` 也据此决定镜头跟随谁）。
@@ -1330,7 +1481,7 @@ namespace HideAndSeek.Features.Rule
             if (firstSpawn == null)
             {
                 Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】没有 SpawnShot，按原样播放。");
-                return tape;
+                return StripBombCorpseAdds(tape);
             }
 
             float start = anchor.Value - clip.Before;
@@ -1437,19 +1588,43 @@ namespace HideAndSeek.Features.Rule
                 }
             }
 
+            int bombDropped = 0;
             foreach (var s in tape)
             {
                 if (s.TimeStamp <= start || s.TimeStamp > end)
                     continue;
 
-                // ⚠ 丢掉「最后时段 / 自爆」里的 `AddShot`（＝把尸体这类设备重新设为可见）。
-                //   实测：「最后时段」那段是在**结算被拦下那一刻**录的，里面带着刚刚生成的尸体 Add 帧，
-                //   客户端执行 `Corpse.SetInfo` 会空引用 ⇒ `Update` 每帧抛异常 ⇒ `_playIndex` 永不前进
-                //   ⇒ 整段回放卡死（实测 2942 次异常，只能等我们超时；日志里第 3 幕没有"结束"行）。
-                //   这些尸体在回放开始时**本来就已经在场上**（生成时间早于窗口起点，`PrepareDevices`
-                //   也不会把它们藏起来）⇒ 丢掉 Add 帧不影响观感。
-                if (s.Type == ESnapShotType.AddShot && (clip.Kind == "最后" || clip.Kind == "自爆"))
+                // ⚠⚠ 丢掉**项圈自爆尸体**的 `AddShot` —— 这是原版自身的"二次 SetInfo"缺陷，只能绕开。
+                //
+                //   客户端 `Corpse.SetInfo` 的 bomb 分支第一句就是
+                //       GetComponentInChildren<SkeletonAnimation>().gameObject.SetActive(false);
+                //   而 Unity 这个 API **默认跳过未激活对象**：实战里这具尸体已经被"加入"包处理过一次、
+                //   骨架已被它自己关掉 ⇒ 回放里**再**执行一次必然取到 null ⇒ 空引用。
+                //
+                //   实测证据链（`Player.log`）：
+                //     `at Corpse.SetInfo (Protocol.DeviceInfo) [0x000dd]` ← `RecordManager.ApplyAdd` ← `Update`
+                //   用 Mono.Cecil 反查 0xDD：`callvirt Component::get_gameObject()`，前一条正是
+                //   `call GetComponentInChildren<Spine.Unity.SkeletonAnimation>()` ⇒ 与推断完全吻合。
+                //
+                //   罪魁是 `RecordManager.ApplyAdd`：它对 `Corpse` **无条件**调 `SetInfo`
+                //       value.gameObject.SetActive(true); if (value is Corpse) value.SetInfo(...);
+                //   ⇒ 只要这枚 Add 帧进了磁带，改内容也救不了：把 `StateList[3]` 清零走"普通尸体"分支，
+                //     17589 行同样会 `GetComponentInChildren<SkeletonAnimation>()` ⇒ 一样 null。
+                //   （`ModifyShot` 那条路是安全的：`DeviceManager.Modify` 只走 `RefreshState`，不碰 `SetInfo`。）
+                //
+                //   而 `_playIndex++` 在 `switch` **之后** ⇒ 异常让同一枚帧每帧重试 ⇒ 整段回放卡死
+                //   （实测 2942 次异常，第 3 幕没有"结束"行，只能等我们的超时兜底）。
+                //
+                //   ⇒ 唯一稳的做法：**不发这具尸体的 Add**。观感损失很小 —— 爆炸本身是 `EffectShot`
+                //     （`S_PLAY_EFFECT{DyingVfx}` → `ApplyEffect`，路径安全）照常播，只是地上不出现焦尸。
+                //
+                //   判据用**内容**（`DeviceInfo.StateList[3] != 0` 正是 `_isBombCorpse` 的来源）而不是片段种类：
+                //   露娜系白方可能**中途**自爆，那种帧会落进「杀人」窗口，按种类过滤会漏。
+                if (s.Type == ESnapShotType.AddShot && IsBombCorpseShot(s))
+                {
+                    bombDropped++;
                     continue;
+                }
 
                 // ★ 保留 EditShot（曾经这里一律 continue 裁掉，结果把"揭晓"也裁没了）：
                 //   · SlowTimeEdit  插在击杀−0.3s ⇒ 落在窗口内 ⇒ 慢镜 + 最后一段的 ChangeSilhouette(false) 揭晓
@@ -1463,12 +1638,50 @@ namespace HideAndSeek.Features.Rule
                 : (spawn.PlayerId == recorderId
                     ? "原版 #" + recorderId
                     : "隐藏观察者#" + spawn.PlayerId + (spawn.IsGhost ? "(Ghost)" : ""));
+            string bombNote = bombDropped > 0 ? $"（另丢 {bombDropped} 枚自爆尸体帧）" : "";
             Plugin.Log.LogInfo(
                 $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
-                $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧 " +
+                $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧{bombNote} " +
                 $"(出场帧 {rosterAdded}) 主视角={who} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
 
             return result;
+        }
+
+        /// <summary>
+        /// 这枚 `AddShot` 是不是「项圈自爆尸体」。
+        ///
+        /// 判据就是客户端 `Corpse.SetInfo` 里那句 `_isBombCorpse = info.StateList[3] != 0` ——
+        /// 磁带里的 `DeviceInfo` 字节与客户端将要执行的完全一样，所以房主能提前判出来。
+        ///
+        /// 故意用 `var` 而不写类型名：本程序集里 `DeviceInfo` 有**两个同名类型**
+        /// （服务端 `Protocol.DeviceInfo` 与客户端 `DeviceBase.Info` 那一套），写名字容易解析错。
+        /// </summary>
+        private static bool IsBombCorpseShot(SnapShot s)
+        {
+            var st = s?.Add?.Device?.StateList;
+            return st != null && st.Count > 3 && st[3] != 0;
+        }
+
+        /// <summary>
+        /// 原样播放的兜底路径也要去掉毒帧（见 <see cref="TrimTape"/> 里那段说明）：
+        /// 找不到锚点时"宁长不丢"是这个方法的既定策略，但**毒帧不属于"长"，属于"崩"**。
+        /// </summary>
+        private static List<SnapShot> StripBombCorpseAdds(List<SnapShot> tape)
+        {
+            var kept = new List<SnapShot>(tape.Count);
+            int dropped = 0;
+            foreach (var s in tape)
+            {
+                if (s.Type == ESnapShotType.AddShot && IsBombCorpseShot(s))
+                {
+                    dropped++;
+                    continue;
+                }
+                kept.Add(s);
+            }
+            if (dropped > 0)
+                Plugin.Log.LogWarning($"[HS] EndReplay：原样播放的磁带里丢了 {dropped} 枚自爆尸体帧。");
+            return kept;
         }
 
         /// <summary>
