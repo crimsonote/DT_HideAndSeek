@@ -278,63 +278,66 @@ namespace HideAndSeek.Features.Replay
         private const int KnifeItemId = 4001;
 
         /// <summary>
-        /// 「拿刀」幕 —— 事件时刻取自 `DelayAcquireWeapon`。
+        /// 「拿刀」幕 —— 事件时刻取自 **`HandItemObjectId` 的 setter**（`value == 4001` = 刀）。
         ///
-        /// ⚠ **这个挂点正在被怀疑**（2026-10）：用户实测"拿刀幕里人根本没走到刀架前、刀架都不在画面中"。
-        ///   已知事实（读码确认）：
-        ///     · `DelayAcquireWeapon()` 的实现只是 `StartWeaponCooltime(5)`（武器冷却 5 秒）；
-        ///     · 它唯一的**字面**调用点在 `Player.Color` 的 setter 里 `value == EPlayerColor.Black` 分支
-        ///       ⇒ 也就是"玩家被分配为黑方"那一刻，那时他通常**还在起点**。
-        ///   ⇒ 所以它很可能**不是**"走到刀架把刀拿走"的时刻。
+        /// 为什么是这个挂点（读码确认）：
+        ///   · `Player.HandItemObjectId` 的 setter 里有一条**专门为刀写的**分支
+        ///       `if (value == 4001) { _handItemObjectId = 4001; }`
+        ///     ⇒ 拿到刀的那一刻才会走到它；
+        ///   · 它随后 `BroadcastModifyPlayer(ChangeHandItem, …)` 把结果同步给所有客户端。
+        ///   ⇒ 也就是"黑方走到刀架把刀拿走"这一刻。
         ///
-        ///   但**尚未证实**：自提模式下"真正拿刀"对应哪个服务端事件（候选：`HandItemObjectId` 的 setter，
-        ///   其内部有 `value == 4001` 的专门分支并 `BroadcastModifyPlayer(ChangeHandItem)`）。
-        ///   ⇒ 所以**先不改行为**，用下面的探针把两个时刻都打出来，下一局对比后再决定。
-        ///
-        /// 旧实现（已删除的 `EndReplayFeature.cs`）用的也是这个挂点，注释里写
-        /// "`DelayAcquireWeapon` 是拔刀后的入口…只在真正拿到武器的人身上跑" —— 那句话**是推测**，
-        /// 没有任何实测支撑，别再把它当证据。
+        /// ⚠ **不能用 `DelayAcquireWeapon`**：它的实现只是 `StartWeaponCooltime(5)`（武器冷却 5 秒），
+        ///   而唯一的字面调用点在 `Player.Color` 的 setter 里 `value == Black` 分支
+        ///   ⇒ 那是"**玩家被分配为黑方**"那一刻，人还在起点、刀架都不在画面里。
+        ///   旧实现（已删除的 `EndReplayFeature.cs`）挂的就是它，注释里那句
+        ///   "是拔刀后的入口…只在真正拿到武器的人身上跑"**是推测，没有任何实测支撑**。
+        ///   实测症状：拿刀幕里"人根本没走到刀架前"。`KnifeProbeHook` 保留下来做交叉验证。
         /// </summary>
-        [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
+        [HarmonyPatch(typeof(GamePlayer), "set_HandItemObjectId")]
         internal static class KnifeHook
         {
             [HarmonyPostfix]
-            private static void Postfix(GamePlayer __instance)
+            private static void Postfix(GamePlayer __instance, int value)
             {
                 if (!Armed)
                     return;
-                if (WeaponGrantFeature.GiveAtStart?.Value ?? false)
-                    return;                       // 开局直接给刀 ⇒ 没有"跑刀"过程 ⇒ 这一幕没内容
+                if (value != KnifeItemId)
+                    return;                       // 只有刀算"拿刀"，别的物品不算
                 if (__instance?.PublicInfo == null)
                     return;
-                if (__instance.Color != EPlayerColor.Black && __instance.Color != EPlayerColor.Dark)
+
+                // 本模块自己开了"开局直接给刀"时，黑方在**起点**就拿到刀
+                // ⇒ 没有"走到刀架前"这个过程 ⇒ 这一幕没有可看的内容，不登记。
+                if (WeaponGrantFeature.GiveAtStart?.Value ?? false)
+                    return;
+
+                // setter 会被多次调用（拿刀/换物品/放下）⇒ 一局只登记第一幕。
+                if (HasKind(ActKind.Knife))
                     return;
 
                 int id = __instance.PublicInfo.PlayerId;
-                Probe("DelayAcquireWeapon", id, 0);
+                Probe("set_HandItemObjectId（真正拿刀）", id, value);
                 Add(ActKind.Knife, id, id,
                     ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 1f), "拿刀");
             }
         }
 
         /// <summary>
-        /// 【探针】只打日志、不改行为 —— 用来判定"真正拿刀"是哪个服务端事件。
-        ///
-        /// 挂 `HandItemObjectId` 的 setter：它内部有 `value == 4001`（刀）的专门分支，
-        /// 并会 `BroadcastModifyPlayer(ChangeHandItem)` 同步给所有客户端。
-        /// 下一局对比 `DelayAcquireWeapon` 与它两行日志的时间戳，就能一眼看出哪个才是"走到刀架拿刀"。
+        /// 【探针，只打日志不改行为】保留旧的挂点做**交叉验证**：
+        /// 下一局 `DelayAcquireWeapon`（预期＝开局）与 `set_HandItemObjectId`（预期＝走到刀架）
+        /// 两行时间戳一对比，就能确认这次换挂点是对的。
         /// </summary>
-        [HarmonyPatch(typeof(GamePlayer), "set_HandItemObjectId")]
+        [HarmonyPatch(typeof(GamePlayer), "DelayAcquireWeapon")]
         internal static class KnifeProbeHook
         {
             [HarmonyPostfix]
-            private static void Postfix(GamePlayer __instance, int value)
+            private static void Postfix(GamePlayer __instance)
             {
-                if (value != KnifeItemId)
-                    return;
                 if (__instance?.PublicInfo == null)
                     return;
-                Probe("set_HandItemObjectId", __instance.PublicInfo.PlayerId, value);
+                Probe("DelayAcquireWeapon（旧挂点，预期＝开局分配黑方）",
+                    __instance.PublicInfo.PlayerId, 0);
             }
         }
 
