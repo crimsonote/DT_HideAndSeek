@@ -136,6 +136,14 @@ namespace HideAndSeek.Features.Rule
             "关掉本项可回到旧行为（面板会一直显示），用于对照。")]
         public static ConfigEntry<bool> ClearTrialLabels;
 
+        [ConfigField(true, "回放里把黑方的昵称显示成红色，让观众一眼看出「黑刀＝黑幕」。" +
+            "做法：推回放前广播一包 `S_NOTIFY_BLACK{ PlayerId = 黑方 }` —— 客户端会把它加进 `KnownBlackIds`" +
+            "（:42496），而 `Player.Refresh()` 用 `NameTag.SetNameColor(KnownBlackIds.Contains(PublicInfo.PlayerId))`" +
+            "（:17450）决定名字颜色，红色就是 `Color(1, 0.18f, 0.439f)`（:72362）。" +
+            "回放里每个玩家都会被 `ApplySpawn → SetInfo → Refresh` 重设一次，所以黑方自然带红名。" +
+            "返回大厅时客户端自己会 `KnownBlackIds.Clear()`（:29075），不会带到下一局。")]
+        public static ConfigEntry<bool> RevealBlackName;
+
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
         {
@@ -313,7 +321,8 @@ namespace HideAndSeek.Features.Rule
         {
             [HarmonyPrefix]
             private static bool Prefix(GameRoom room)
-                => !TryIntercept("白方胜利(限时归零/任务全清)", () => WhiteWinFeature.TriggerWhiteWin(room));
+                => !TryIntercept("白方胜利(限时归零/任务全清)", () => WhiteWinFeature.TriggerWhiteWin(room),
+                    blackClipLast: true);
         }
 
         private static void CallGameOver(GameRoom room)
@@ -384,7 +393,7 @@ namespace HideAndSeek.Features.Rule
         /// 要不要拦下这次结算？true = 已拦下（结算延后，稍后由 <see cref="FinishReplay"/> 续上）。
         /// 任何异常都吞掉并放行 —— 回放出事绝不能把对局卡在结算之前。
         /// </summary>
-        private static bool TryIntercept(string reason, Action continueSettlement)
+        private static bool TryIntercept(string reason, Action continueSettlement, bool blackClipLast = false)
         {
             try
             {
@@ -423,7 +432,7 @@ namespace HideAndSeek.Features.Rule
                 _played = true;
                 _continueSettlement = continueSettlement;
 
-                var plan = BuildPlan(room);
+                var plan = BuildPlan(room, blackClipLast);
                 if (plan.Count == 0)
                 {
                     Plugin.Log.LogWarning("[HS] EndReplay：达到阈值但没有可用片段，正常结算。");
@@ -434,6 +443,7 @@ namespace HideAndSeek.Features.Rule
 
                 _inReplay = true;
                 EnsureServerSurvive(room);                 // ★ 开局先按一次（正常情况下本来就是 Survive，等于空操作）
+                NotifyKnownBlack(room);                    // ★ 让黑方在回放里带红名（"已知黑幕"配色）
                 Plugin.Log.LogInfo($"[HS] EndReplay：开始回放，共 {plan.Count} 段。");
                 RequestTapes(plan);
                 return true;
@@ -464,8 +474,11 @@ namespace HideAndSeek.Features.Rule
         /// <summary>
         /// 排出实际要播的片段：拿刀 → 杀人（按发生先后）→ 最后时段。
         /// 最后时段给**每个存活者**各录一段（各自视角），所以要在这一步先请它们录。
+        ///
+        /// <paramref name="blackClipLast"/>＝白方幸存胜利时用：把**黑方**那一段「最后时段」压到最后一屏
+        /// （白胜的收尾是"黑方被揭穿"，让黑方的视角收尾才顺）。黑方胜利时不调整。
         /// </summary>
-        private static List<Clip> BuildPlan(GameRoom room)
+        private static List<Clip> BuildPlan(GameRoom room, bool blackClipLast)
         {
             int max = MaxClips?.Value ?? 12;
             var plan = new List<Clip>();
@@ -486,6 +499,9 @@ namespace HideAndSeek.Features.Rule
             float before = EndBeforeSec?.Value ?? 3f;
             float after = EndAfterSec?.Value ?? 1f;
 
+            int blackId = blackClipLast ? FindBlackId(room) : 0;
+            Clip blackClip = null;
+
             foreach (var p in room.AlivePlayers.ToList())
             {
                 if (plan.Count >= max) break;
@@ -495,11 +511,73 @@ namespace HideAndSeek.Features.Rule
                 if (!RequestRecord(p, key, "最后", before, after))
                     continue;
 
-                if (BySlot.TryGetValue(Slot(p.PublicInfo.PlayerId, key), out var clip))
-                    plan.Add(clip);
+                if (!BySlot.TryGetValue(Slot(p.PublicInfo.PlayerId, key), out var clip))
+                    continue;
+
+                if (blackClipLast && blackId > 0 && p.PublicInfo.PlayerId == blackId)
+                {
+                    blackClip = clip;          // 先扣下，等所有"最后时段"都排完再追加 ⇒ 等于挪到最后
+                    continue;
+                }
+
+                plan.Add(clip);
+            }
+
+            if (blackClip != null && plan.Count < max)
+            {
+                plan.Add(blackClip);
+                Plugin.Log.LogInfo("[HS] EndReplay：白方胜利 ⇒ 已把黑方的「最后时段」挪到最后一屏。");
             }
 
             return plan;
+        }
+
+        /// <summary>本局黑方的 id（存活表找不到就去死亡表找 —— 白胜时黑方往往已经死了）。</summary>
+        private static int FindBlackId(GameRoom room)
+        {
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark))
+                    return p.PublicInfo.PlayerId;
+            }
+            foreach (var p in room.DeadPlayers)
+            {
+                if (p?.PublicInfo != null && (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark))
+                    return p.PublicInfo.PlayerId;
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// 广播 `S_NOTIFY_BLACK`，把黑方标成客户端的"已知黑幕"（`KnownBlackIds`）⇒ 回放里他的昵称是**红色**。
+        ///
+        /// 依据：客户端 `Handle_S_NOTIFY_BLACK` 把 id 加进 `KnownBlackIds`（:42496），
+        /// 而 `Player.Refresh()` 是 `NameTag.SetNameColor(KnownBlackIds.Contains(PublicInfo.PlayerId))`（:17450），
+        /// 红色即 `Color(1f, 0.18f, 0.439f)`（:72362）。
+        /// 回放里每个玩家都会被 `ApplySpawn → SetInfo → Refresh` 重设一次 ⇒ 黑方自然带红名；
+        /// 返回大厅时客户端自己 `KnownBlackIds.Clear()`（:29075），不会影响下一局。
+        /// </summary>
+        private static void NotifyKnownBlack(GameRoom room)
+        {
+            if (!(RevealBlackName?.Value ?? true))
+                return;
+
+            try
+            {
+                int blackId = FindBlackId(room);
+                if (blackId <= 0)
+                {
+                    Plugin.Log.LogWarning("[HS] EndReplay：没找到黑方 id，回放里不会有红名。");
+                    return;
+                }
+
+                room.Broadcast(new S_NOTIFY_BLACK { PlayerId = blackId });
+                Plugin.Log.LogInfo($"[HS] EndReplay：已广播 S_NOTIFY_BLACK #{blackId}（回放里黑方昵称显示为红色）。");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：标记黑幕昵称失败 — {ex.Message}");
+            }
         }
 
         /// <summary>把每个片段发给它的录制者 —— 客户端只会回自己录的那一段。</summary>
