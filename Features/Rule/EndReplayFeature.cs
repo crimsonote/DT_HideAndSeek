@@ -102,12 +102,30 @@ namespace HideAndSeek.Features.Rule
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
-        [ConfigField(false, "【试验，默认关闭】用「虚拟观察者」当回放主视角（把合成首帧的角色改成 id=0）。" +
-            "实测结论：对**房主自己的屏幕是空操作** —— 房主就是录制者，`_blackId` 本来就等于 0" +
-            "（BeginTape：`(Spawn.PlayerId != _myPlayerId) ? ... : 0`），而那个 id=0 的临时玩家" +
-            "正是房主自己的替身。对远端玩家只是把剪影从「凶手」挪到「你自己的替身」身上，等于换个错人打码。" +
-            "⇒ 遮罩只能在客户端去掉。本项保留仅作对照实验用。")]
+        [ConfigField(true, "【阶段 2】用「隐藏观察者」当回放主视角，去掉画面上的黑白剪影。" +
+            "做法：把合成首帧的角色换成一位**已死亡、且这段窗口里没有自己镜头**的玩家，并标成 IsGhost。" +
+            "为什么这样就看不见：客户端 `Player.Update` 每帧刷 `RefreshGhostVisual()`，回放期间它走 case 2 " +
+            "把**幽灵替身与正常骨架一起关掉**，于是镜头仍锁在他身上、剪影也打在他身上，但画面上什么都没有；" +
+            "真实玩家（黑方/受害者/旁观者）全部本色出场。取不到合适的人时自动退回原版主视角（#录制者）。")]
         public static ConfigEntry<bool> ObserverCamera;
+
+        [ConfigField(-1, "隐藏观察者用哪个 id：-1 = 自动（已死亡 + 仍在房间 + 磁带里出现过 + 本段窗口内无自己镜头）；" +
+            "0 = 原版的回放临时玩家（房主自己的替身，必然可见、必被剪影）；>0 = 手动指定。" +
+            "⚠ 必须是**本局仍在房间里**的 id —— 客户端 `ChangeMyPlayer` 是 `_cache[id]` 直接索引，" +
+            "id 不存在会抛 KeyNotFoundException 让整段回放中断。")]
+        public static ConfigEntry<int> ObserverPlayerId;
+
+        [ConfigField(true, "把观察者标记成幽灵（IsGhost）。**必须开着** —— 这是让它的骨架被关闭、" +
+            "从而让剪影不可见的唯一途径（见上面 ObserverCamera 的说明）。")]
+        public static ConfigEntry<bool> ObserverGhost;
+
+        [ConfigField(true, "【阶段 1｜防卡死】每段磁带开头补一轮「全员出场帧」（每个玩家各一枚，时间戳＝窗口起点）。" +
+            "原版磁带天生带这一轮：`RecordAllType` 每秒一次、且录音缓冲一定以录制者自己的出场帧开头，" +
+            "于是每一轮「我自己 + 全体」是粘在一起的；客户端靠它把**每台机器自己的** 0 号替身装配好。" +
+            "我们重裁时把这一轮裁掉了，于是「本机自己的换道具/换状态镜头」可能打在还没装配的替身上" +
+            "（`BaseMaterial` 为 null）⇒ `EquipItem` 空引用 ⇒ 回放永久卡死、只能大退（实测踩过）。" +
+            "补回这一轮即消除该风险，**观感不变**（补的都是原版磁带里本来就有的帧）。")]
+        public static ConfigEntry<bool> RosterFrames;
 
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
@@ -879,33 +897,48 @@ namespace HideAndSeek.Features.Rule
                                               && s.TimeStamp <= start)?.Spawn
                       ?? firstSpawn;
 
-            // ★★ 试验：把合成首帧的角色换成**回放临时玩家（id = 0）**，即"虚拟观察者"。
-            //
-            //   客户端 `BeginTape`（新版 :381-392）的顺序是：
-            //       ForceSpawnReplayTemp(MyPlayer.Name);   // ← 凭空造 id=0 的临时玩家
-            //       Despawn(所有人);
-            //       _blackId = (tape[0].Spawn.PlayerId != _myPlayerId) ? tape[0].Spawn.PlayerId : 0;
-            //       ChangeMyPlayer(_blackId);              // ← 内部是 _cache[id]，没有兜底
-            //       ApplySpawn(tape[0].Spawn);
-            //       Players[_blackId].ChangeSilhouette(true);   // ← 遮罩打给 _blackId
-            //
-            //   ⇒ `ChangeMyPlayer` 用的是 `_cache[id]`，此刻 `_cache` 里只有刚造出来的 id=0
-            //     ⇒ **只能用 0**。而这正好就是"不存在的隐藏角色"：
-            //       镜头跟随它、遮罩打在它身上，真实玩家（黑方/受害者/旁观者）全部本色出场。
-            //     顺便我们还拿到了镜头控制权（位置由这枚 spawn 的 Pos 决定）。
-            //
-            //   ⚠ 代价：`ForceSpawnReplayTemp` 给它的名字是**本地玩家自己的名字**，
-            //     所以它可能以"你的替身"的样子出现在画面里；另外 `Update` 会把
-            //     `PlayerId == _myPlayerId` 的 SpawnShot 改写成 0，而 0 == `_blackId` ⇒ 整帧被跳过
-            //     （本地玩家自己的 spawn 帧因此消失，能否由 MoveShot 补回来需要实测）。
-            var spawn = src;
+            // ★★ 阶段 2：把合成首帧的角色换成"隐藏观察者"。
+            //   客户端 `BeginTape` 的顺序（详见 .tmps/回放-隐藏观察者-崩因分析.md）：
+            //       ForceSpawnReplayTemp(MyPlayer.Name);   // ← 造 id=0 的替身（半成品）
+            //       Despawn(在场所有人);
+            //       _blackId = (首帧.PlayerId != _myPlayerId) ? 首帧.PlayerId : 0;
+            //       ChangeMyPlayer(_blackId);              // ← `_cache[id]` 直接索引，不存在就抛
+            //       ApplySpawn(首帧);                       // ← 唯一会 SetInfo(PublicPlayerInfo) 的地方
+            //       Players[_blackId].ChangeSilhouette(true);   // ← 剪影只打给 _blackId
+            //   ⇒ 首帧的 id 同时决定"镜头跟谁 / 剪影打谁 / 谁被装配"，只有一个槽位。
+            //     把这个槽位让给一位 IsGhost 的已死玩家：镜头仍锁在他身上，但 `Player.Update` 每帧刷
+            //     `RefreshGhostVisual()`，回放期间走 case 2 把幽灵渲染与正常骨架一起关掉 ⇒ 画面上没有他，
+            //     剪影也就看不见了；真实玩家（黑方/受害者/旁观者）因此全部本色出场。
+            var roster = BuildRoster(tape, start);
+            roster[recorderId] = src;      // 录制者自己那批帧是 SurvivalTime 基准，上面会漏掉他，这里显式补上
+
+            int obsId = 0;
+            bool useTemp = false;
             if (ObserverCamera?.Value ?? true)
             {
-                spawn = src.Clone();
-                spawn.PlayerId = 0;
+                int cfg = ObserverPlayerId?.Value ?? -1;
+                if (cfg == 0)
+                    useTemp = true;                                   // 显式要求原版临时玩家（id=0）
+                else
+                    obsId = ResolveObserverId(tape, roster, recorderId, start, end);
             }
 
-            var result = new List<SnapShot>(tape.Count)
+            var spawn = src;
+            if (obsId > 0)
+            {
+                spawn = src.Clone();
+                spawn.PlayerId = obsId;
+                spawn.State = EPlayerState.Idle;   // 别让录制者的状态（拿刀/跑动/躲柜）驱动这个看不见的角色
+                if (ObserverGhost?.Value ?? true)
+                    spawn.IsGhost = true;          // ★ 关键：回放期间 IsGhost ⇒ 幽灵替身与骨架都被关掉 ⇒ 不可见
+            }
+            else if (useTemp)
+            {
+                spawn = src.Clone();
+                spawn.PlayerId = 0;                // 原版临时玩家（房主自己的替身）
+            }
+
+            var result = new List<SnapShot>(tape.Count + roster.Count + 1)
             {
                 new SnapShot
                 {
@@ -914,6 +947,30 @@ namespace HideAndSeek.Features.Rule
                     Spawn = spawn
                 }
             };
+
+            // ★ 阶段 1：补一轮"全员出场帧"（每个玩家各一枚，时间戳＝窗口起点）。
+            //   客户端 `BeginTape` 把 `_playIndex` 置 1、`_currentTime` 置第 2 帧的时间戳；这里所有补帧的
+            //   时间戳都等于 start ⇒ **第一次 `Update` 就会连着执行完它们**。每台机器都会把自己那一枚认领走
+            //   （客户端把 `PlayerId == _myPlayerId` 改写成 0）⇒ 先装配好自己的 0 号替身，再开始演动作。
+            //   ⚠ 时间戳必须是 ClientTime 基准（＝ start）。**不要**模仿 `RecordAllType` 里
+            //     "isStartShot ⇒ SurvivalTime" 的写法：那种帧会被 `_blackId` 规则跳过、或让
+            //     `TimeStamp > _currentTime` 直接 break，等于白补甚至卡住播放。
+            int rosterAdded = 0;
+            if (RosterFrames?.Value ?? true)
+            {
+                foreach (var kv in roster)
+                {
+                    if (kv.Key == obsId)
+                        continue;   // 观察者是镜头锚点：他若被自己的出场帧重新摆位，镜头就会从现场被拽走
+                    result.Add(new SnapShot
+                    {
+                        Type = ESnapShotType.SpawnShot,
+                        TimeStamp = start,
+                        Spawn = kv.Value
+                    });
+                    rosterAdded++;
+                }
+            }
 
             foreach (var s in tape)
             {
@@ -926,13 +983,122 @@ namespace HideAndSeek.Features.Rule
                 result.Add(s);
             }
 
-            bool observer = (ObserverCamera?.Value ?? true);
+            string who = spawn.PlayerId == 0
+                ? "回放临时玩家(id=0)"
+                : (spawn.PlayerId == recorderId
+                    ? "原版 #" + recorderId
+                    : "隐藏观察者#" + spawn.PlayerId + (spawn.IsGhost ? "(Ghost)" : ""));
             Plugin.Log.LogInfo(
                 $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
                 $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧 " +
-                $"主视角={(observer ? "虚拟观察者(id=0)" : "#" + recorderId)} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
+                $"(出场帧 {rosterAdded}) 主视角={who} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
 
             return result;
+        }
+
+        /// <summary>
+        /// 【阶段 1】采集"每个玩家在窗口起点时的样子"，用来合成一轮全员出场帧。
+        /// 取法：每位玩家在 `start` 之前最后一枚 SpawnShot 的信息 —— `RecordAllType` 每秒给在场者各记一枚
+        /// （ClientTime 基准）。录制者自己那批带 `isStartShot` 的帧是 SurvivalTime 基准（几百的剩余秒数），
+        /// 会被 `TimeStamp > start` 自然排除 ⇒ 由调用方用 `src` 显式补上。
+        /// </summary>
+        private static Dictionary<int, PublicPlayerInfo> BuildRoster(List<SnapShot> tape, float start)
+        {
+            var roster = new Dictionary<int, PublicPlayerInfo>();
+            foreach (var s in tape)
+            {
+                if (s.Type != ESnapShotType.SpawnShot || s.Spawn == null || s.TimeStamp > start)
+                    continue;
+                roster[s.Spawn.PlayerId] = s.Spawn;   // 后到的覆盖先到的 ⇒ 天然就是"最后一枚"
+            }
+            return roster;
+        }
+
+        /// <summary>一枚镜头"属于哪个玩家" —— 只取会移动/改变这个角色的那几类（用于查他在这段窗口里有没有自己的镜头）。</summary>
+        private static int FramePlayerId(SnapShot s)
+        {
+            switch (s.Type)
+            {
+                case ESnapShotType.SpawnShot: return s.Spawn?.PlayerId ?? 0;
+                case ESnapShotType.DespawnShot: return s.Despawn;
+                case ESnapShotType.RespawnShot: return s.Respawn?.PlayerId ?? 0;
+                case ESnapShotType.MoveShot: return s.Move?.PlayerId ?? 0;
+                case ESnapShotType.StateShot: return s.State?.PlayerId ?? 0;
+                default: return 0;
+            }
+        }
+
+        /// <summary>
+        /// 【阶段 2】挑"隐藏观察者"的 id。任何一条不满足就退回 0（＝原版主视角，绝不会因此崩）。
+        ///
+        /// · **必须在每台客户端的 `_cache` 里** —— `ChangeMyPlayer` 是 `_cache[id]` 直接索引，
+        ///   不存在会抛 `KeyNotFoundException`、整段回放被跳过。判据：**本局还在房间里**
+        ///   （`room.DeadPlayers`）⇒ 宿主从没给他发过 S_LEAVE_GAME（那一条会 `_cache.Remove` 并 Destroy）。
+        /// · **必须是磁带里出现过的人** —— 说明录制那台客户端的在场表里有他。
+        /// · **必须已死亡** —— 死人在窗口内不会再有自己的 Move/State 镜头，否则那些镜头会把镜头焦点拽走。
+        /// · **不能是录制者自己** —— 否则 `_blackId` 会被折成 0，等于没换。
+        /// </summary>
+        private static int ResolveObserverId(
+            List<SnapShot> tape, Dictionary<int, PublicPlayerInfo> roster, int recorderId, float start, float end)
+        {
+            int cfg = ObserverPlayerId?.Value ?? -1;
+            if (cfg > 0)
+            {
+                Plugin.Log.LogInfo($"[HS] EndReplay：按配置指定用隐藏观察者 #{cfg}"
+                    + (roster.ContainsKey(cfg) ? "。" : "（⚠ 磁带里没出现过这个 id，客户端可能没有他，请留意）。"));
+                return cfg;
+            }
+            if (cfg == 0)
+                return 0;
+
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                    return 0;
+
+                // 窗口内"有自己镜头"的人：他的镜头会把镜头焦点拽走 / 让看不见的观察者被动起来
+                var busy = new HashSet<int>();
+                foreach (var s in tape)
+                {
+                    if (s.TimeStamp <= start || s.TimeStamp > end)
+                        continue;
+                    int id = FramePlayerId(s);
+                    if (id > 0)
+                        busy.Add(id);
+                }
+
+                foreach (var p in room.DeadPlayers)
+                {
+                    int id = p?.PublicInfo?.PlayerId ?? 0;
+                    if (id <= 0 || id == recorderId)
+                        continue;
+                    if (!roster.ContainsKey(id) || busy.Contains(id))
+                        continue;
+                    Plugin.Log.LogInfo($"[HS] EndReplay：挑到隐藏观察者 #{id}（已死亡、仍在房间、窗口内无自己的镜头）。");
+                    return id;
+                }
+
+                // 兜底：房间里仍在的人（活人几乎必然在窗口内有镜头，所以这条通常为空）
+                foreach (var kv in roster)
+                {
+                    int id = kv.Key;
+                    if (id <= 0 || id == recorderId || busy.Contains(id))
+                        continue;
+                    if (!room.Players.Any(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id))
+                        continue;
+                    Plugin.Log.LogWarning($"[HS] EndReplay：没有已死亡的候选，退而用仍在房间的 #{id} 当观察者。");
+                    return id;
+                }
+
+                Plugin.Log.LogWarning("[HS] EndReplay：找不到合适的隐藏观察者，本段按原版主视角播（剪影会打在录制者身上）。");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：挑观察者失败，本段按原版主视角播 — {ex.Message}");
+            }
+
+            return 0;
         }
     }
 }
