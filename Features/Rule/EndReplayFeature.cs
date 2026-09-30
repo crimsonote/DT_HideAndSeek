@@ -2458,10 +2458,41 @@ namespace HideAndSeek.Features.Rule
                     ? "原版 #" + recorderId
                     : "隐藏观察者#" + spawn.PlayerId + (spawn.IsGhost ? "(Ghost)" : ""));
             string bombNote = bombDropped > 0 ? $"（另丢 {bombDropped} 枚自爆尸体帧）" : "";
+
+            // ★★ **排序（保留首帧）** —— 客户端播放要求时间戳**非递减**：
+            //   `RecordManager.Update` 是 `while (…) { if (shot.TimeStamp > _currentTime) break; … }`，
+            //   一旦输出里出现「大值夹在小值中间」，它会**在那一帧 break、跳过后面所有帧**
+            //   ⇒ 画面卡住/瞬移（实测观感："走路像穿墙"）。
+            //
+            //   而磁带本身就混着**两种时间基准** —— 客户端 `RecordManager.Recording`（:296-297）：
+            //       shot.TimeStamp = isStartShot ? SurvivalTime : ClientTime;
+            //   即"每秒一次的全员出场帧"用 `SurvivalTime`、其余帧（移动/编辑/特效）用 `ClientTime`，
+            //   两者数值可差几百（实测：出场帧 ≈463~502、其余帧 ≈65~114）。
+            //   裁到窗口内的帧因此可能大小交错，**必须在这里排一次序**。
+            //
+            //   ⚠ 首帧必须留在原位：客户端 `BeginTape` 的硬要求（首帧是 SpawnShot、且 `tape[1]`
+            //     的时间戳决定 `_currentTime` 起点）。所以只对 `result[1..]` 排序。
+            int inverted = 0;
+            for (int i = 2; i < result.Count; i++)
+            {
+                if (result[i].TimeStamp < result[i - 1].TimeStamp)
+                    inverted++;
+            }
+            if (result.Count > 2)
+            {
+                var head = result[0];
+                var body = result.GetRange(1, result.Count - 1);
+                body.Sort((a, b) => a.TimeStamp.CompareTo(b.TimeStamp));
+                result.Clear();
+                result.Add(head);
+                result.AddRange(body);
+            }
+
             Plugin.Log.LogInfo(
                 $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
                 $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧{bombNote} " +
-                $"(出场帧 {rosterAdded}) 主视角={who} 位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
+                $"(出场帧 {rosterAdded}，排序前逆序 {inverted} 处) 主视角={who} " +
+                $"位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
 
             return result;
         }
@@ -2629,45 +2660,38 @@ namespace HideAndSeek.Features.Rule
                     return loose;
                 }
 
-                // ★ 兜底 1：**本段窗口内不在场的人**（存活、但这段磁带里没有他的镜头）。
+                // ★ 兜底 1：**本段画面里不会出现的人**（存活、且这段磁带里没有他的**出场帧**）。
                 //
                 //   用户口径：没有观察者时**应该用"不在场的人"当替身**，而不是 id 0 ——
                 //   id 0 是**本机用户**的特殊值（客户端 `ApplySpawn`/`ApplyMove`/`ApplyArea` 会把
                 //   `== _myPlayerId` 改写成 0）⇒ 每台机器对它的解释都不同，**不同设备会冲突**。
                 //   只有"所有人都要在场、没有别的可选项"时，才退回**当事人自己**（接受被涂黑）。
+                //
+                //   ⚠ **判据必须用 `roster`（磁带里有出场帧的人），不能用 `busy`**：
+                //   `busy` 收集的是"窗口内**任何帧**里的玩家"，而客户端磁带是**数据广播**、
+                //   录了**全房所有人**的位置帧 ⇒ `busy` ≈ 所有人 ⇒ 拿它当判据会把候选排光，
+                //   于是【拿刀】这种"局刚开始、还没人死"的幕永远挑不到替身、退回当事人（黑漆漆）。
+                //   而只有**有出场帧**的人才会被 `ApplySpawn` 真正生成到画面里 ⇒ 没有出场帧的人
+                //   即使有移动帧也**不会出现**（`ApplyMove` 对没 spawn 过的人是静默无效的）。
                 foreach (var p in room.Players)
                 {
                     int id = p?.PublicInfo?.PlayerId ?? 0;
                     if (id <= 0 || id == recorderId)
                         continue;
-                    if (busy.Contains(id))
-                        continue;                       // 窗口内有他自己的镜头 ⇒ 镜头会被他拽走
                     if (avoidObs != null && avoidObs.Contains(id))
                         continue;
                     if (roster.ContainsKey(id))
-                        continue;                       // 磁带里有他的出场帧 ⇒ 他在这段画面里
+                        continue;                       // 他在本段画面里（会被 spawn）⇒ 不能当替身
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
                     Plugin.Log.LogWarning(
-                        $"[HS] EndReplay：没有已死亡的候选，改用**本段不在场**的 #{id} 当替身（剪影落在他身上，不会出现在画面里）。");
+                        $"[HS] EndReplay：没有已死亡的候选，改用**本段画面里不会出现**的 #{id} 当替身（剪影落在他身上，看不到）。");
                     return id;
                 }
 
-                // 兜底 2：磁带里出现过、但窗口内没有自己镜头的活人（在场但不动 ⇒ 影响也小）
-                foreach (var kv in roster)
-                {
-                    int id = kv.Key;
-                    if (id <= 0 || id == recorderId || busy.Contains(id))
-                        continue;
-                    if (avoidObs != null && avoidObs.Contains(id))
-                        continue;
-                    if (Managers.Player.GetPlayerCache(id) == null)
-                        continue;
-                    if (!room.Players.Any(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id))
-                        continue;
-                    Plugin.Log.LogWarning($"[HS] EndReplay：没有已死亡的候选，退而用仍在房间的 #{id} 当观察者。");
-                    return id;
-                }
+                // （原来还有一条"用 roster 里的活人当替身"的兜底，已按用户口径删除：
+                //   roster 里的人**会被 spawn 到画面里**，剪影落在他身上就是画面里多一个黑块；
+                //   用户要的是"不在场的人"，都不行就直接用当事人自己。）
 
                 Plugin.Log.LogWarning(
                     $"[HS] EndReplay：这一段**所有人都要在场**、没有可用替身 ⇒ 退回**当事人自己**当首帧" +
