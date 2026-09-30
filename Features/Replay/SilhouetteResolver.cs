@@ -97,8 +97,13 @@ namespace HideAndSeek.Features.Replay
                 //   ⇒ 而"没有客户端的人（假人）"**不可能**成为任何一台机器的 `_myPlayerId`
                 //     ⇒ 剪影落在他身上，**所有机器都走正常路径**。
                 //   所以把"无客户端"排在最前，它比"离主角远"重要得多。
-                var noClientInScene = new List<int>();
-                var noClientOffScene = new List<int>();
+                // ⚠ 这里**不按"有没有客户端"分档**。曾经按它分过（想避开 `_blackId = 0`），
+                //   但那是错的：**正式对局里没有假人**（假人只是 `DummyFeature` 的测试装置），
+                //   所以"无客户端"档永远是空的 ⇒ 那是把测试环境写进常态逻辑，只会制造
+                //   "问题已解决"的错觉。判据只反映常态：
+                //
+                //     ① 他在本幕画面里 ⇒ 还必须"起点即幽灵"（整段不可见）才算数
+                //     ② 他不在画面里   ⇒ 不会被 `ApplySpawn` 装配，一定看不见
                 var inScene = new List<int>();
                 var offScene = new List<int>();
 
@@ -112,12 +117,9 @@ namespace HideAndSeek.Features.Replay
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
 
-                    bool noClient = p.Session == null;
-
                     if (rosterIds == null || !rosterIds.Contains(id))
                     {
-                        // 他不会出现在画面里（没被 ApplySpawn 装配）⇒ 一定看不见
-                        (noClient ? noClientOffScene : offScene).Add(id);
+                        offScene.Add(id);
                         continue;
                     }
 
@@ -128,18 +130,10 @@ namespace HideAndSeek.Features.Replay
                     //   ⇒ 他一整段本色可见，剪影落上去就是"死前没人影、死后才冒出尸体"。
                     var at = HostRecorder.At(id, windowStart);
                     if (at != null && at.IsGhost)
-                        (noClient ? noClientInScene : inScene).Add(id);
+                        inScene.Add(id);
                 }
 
-                int pick = Farthest(noClientInScene, subjectId, windowStart);
-                if (pick > 0)
-                    return new Result { Id = pick, Why = "起点即幽灵·本幕出场·**无客户端**（取离主角最远）" };
-
-                pick = Farthest(noClientOffScene, subjectId, windowStart);
-                if (pick > 0)
-                    return new Result { Id = pick, Why = "已死·不在画面·**无客户端**（取离主角最远）" };
-
-                pick = Farthest(inScene, subjectId, windowStart);
+                int pick = Farthest(inScene, subjectId, windowStart);
                 if (pick > 0)
                     return new Result
                     {
@@ -151,7 +145,7 @@ namespace HideAndSeek.Features.Replay
 
                 pick = Farthest(offScene, subjectId, windowStart);
                 if (pick > 0)
-                    return new Result { Id = pick, Why = "已死·不在画面（同上，可能有客户端）" };
+                    return new Result { Id = pick, Why = "已死·不在画面（不会被 ApplySpawn 装配 ⇒ 一定看不见）" };
 
                 // ② 本幕 roster 之外的人 —— 不会被 ApplySpawn 装配到画面里
                 var outside = new List<int>();
