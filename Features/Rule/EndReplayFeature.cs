@@ -556,13 +556,19 @@ namespace HideAndSeek.Features.Rule
                             eligible.Add(p);
                     }
 
+                    // 每位幸存者都取**同一段时间**（判定前 before ~ 判定后 after），只是视角不同，
+                    // 依次播放 ⇒ 每段都能看到"结束前后那一段"的完整过程（用户口径：
+                    // 「白方最好是结束时同时的回放，依次放，而不是像自爆那样错开不同时间」）。
+                    // ⚠ 这里**不做平铺**（平铺是给"自爆幕"用的：那一刻 5 个人同时开始闪，
+                    //   只能靠错开窗口凑出"依次"的观感）。白胜时人都在场、同一段时间即可。
                     int segCount = eligible.Count;
                     int seq = 0;
                     int noClient = 0;
                     foreach (var p in eligible)
                     {
                         int id = p.PublicInfo.PlayerId;
-                        TileWindow(seq, segCount, before, after, out float segBefore, out float segAfter);
+                        float segBefore = before;
+                        float segAfter = after;
 
                         int key = BaseKey + KeyWhiteTour + seq;
                         bool ok;
@@ -585,14 +591,15 @@ namespace HideAndSeek.Features.Rule
                     // 本机替身 ⇒ 替身没有移动帧可跟 ⇒ **相机定格、画面里也不出现他本人**（实测如此）。
                     // 兜底合成里镜头＝凶手本人、剪影槽位＝幽灵替身，而世界帧里带着凶手真实的移动帧
                     // ⇒ 客户端改写成 0 之后替身沿他真实路径走 ⇒ 镜头正常跟。
+                    // 黑方收尾（白胜）：窗口落在判定**之前** `tail` 秒 —— 白胜是立刻推 `TotalResult`，
+                    // 判定之后没有素材可拍（黑胜那一路才是"跟着爆炸"）。
                     var black = FindPlayerById(room, blackId);
                     if (black?.PublicInfo != null)
                         AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail, null, -tail);
 
-                    float perTotal = (before + after) / Math.Max(1, segCount);
                     Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 登记 {seq} 段幸存白方视角"
-                        + $"（总窗口 {before + after:F1}s 平铺到 {segCount} 段、每人 {perTotal:F1}s，"
-                        + $"最后一段压到判定后 {after:F1}s；其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
+                        + $"（每段都取**同一段**判定前 {before:F1}s ~ 判定后 {after:F1}s，视角各异、依次播放；"
+                        + $"其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
                         + $" + 黑方失败收尾 1 段（服务端兜底，{tail:F1}s 断电视野，窗口落在判定前 {tail:F1}s）。");
                 }
                 catch (Exception ex)
@@ -735,8 +742,11 @@ namespace HideAndSeek.Features.Rule
                         // 窗口从"自爆走完 + after 秒"开始（不能从"自爆开始"算，见 `CollarToDeadSec`）。
                         var black = FindPlayerById(room, blackId);
                         if (black?.PublicInfo != null)
+                            // ★ 黑方收尾幕：**与爆炸同时**（让爆炸落在这一幕的中间），而不是等炸完才开始。
+                            //   用户口径："黑方的录制时段最好和爆炸同时，而不是在那之后"。
+                            //   窗口 = [t0+6−tail/2, t0+6+tail/2] ⇒ 爆炸（t0+6）正好在中间。
                             AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail,
-                                null, CollarToDeadSec + after);
+                                null, CollarToDeadSec - tail / 2f);
 
                         float perTotal = (before + after) / Math.Max(1, segCount);
                         Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记 {seq} 段白方视角"
