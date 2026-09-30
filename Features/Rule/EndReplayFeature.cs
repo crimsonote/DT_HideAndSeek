@@ -2488,11 +2488,31 @@ namespace HideAndSeek.Features.Rule
                 result.AddRange(body);
             }
 
+            // ★ 诊断：把"可能造成穿墙观感"的两个量测出来（现有日志里没有，靠这一条判定）。
+            //
+            //   · **瞬移帧**：`MoveShot.IsMove == false` 的帧 ⇒ 客户端 `UpdateMove` 会**直接把位置吸附到
+            //     目标点**（不做速度插值）⇒ 无论帧多密都会"跳"过去。玩家用**传送门**时通常就是这种帧
+            //     ⇒ 如果传送门的**设备帧**又不在（服务端兜底那段没有设备帧），观感就是"人凭空穿墙"。
+            //   · **帧密度**：`帧数 ÷ 窗口秒数`。低密度本身不至于穿墙（客户端用 `Velocity` 补间），
+            //     但密度过低 + 瞬移帧叠加时会很明显。实测 8.8~26.5 帧/秒（越往后越低）。
+            int teleport = 0;
+            int moveFrames = 0;
+            foreach (var s in result)
+            {
+                if (s.Type != ESnapShotType.MoveShot || s.Move == null)
+                    continue;
+                moveFrames++;
+                if (!s.Move.IsMove)
+                    teleport++;
+            }
+            float span = Math.Max(0.01f, end - start);
+
             Plugin.Log.LogInfo(
                 $"[HS] EndReplay：片段【{clip.Kind}】锚点={anchor.Value:F2} 窗口=[{start:F2},{end:F2}] " +
                 $"磁带跨度=[{tape[0].TimeStamp:F2},{tape[tape.Count - 1].TimeStamp:F2}] 留 {result.Count} 帧{bombNote} " +
                 $"(出场帧 {rosterAdded}，排序前逆序 {inverted} 处) 主视角={who} " +
-                $"位置=({src.Pos?.X:F0},{src.Pos?.Y:F0})");
+                $"位置=({src.Pos?.X:F0},{src.Pos?.Y:F0}) " +
+                $"｜移动帧 {moveFrames} 枚（其中**瞬移** {teleport} 枚），密度 {result.Count / span:F1} 帧/秒");
 
             return result;
         }
