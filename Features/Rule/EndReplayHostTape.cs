@@ -108,35 +108,44 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 用房主缓冲合成一段磁带，写进 <paramref name="into"/>，返回帧数（0＝缓冲里没有可用样本，
-        /// 调用方应退回占位磁带）。
+        /// 用房主缓冲合成一段磁带（**只在客户端磁带没到时兜底**），返回帧数（0＝没有可用样本）。
         ///
-        /// <paramref name="anchorId"/>：**隐形机位**的玩家 id —— 它同时充当首帧的 `SpawnShot`
-        /// （客户端 `BeginTape` 的硬要求）与 `AreaShot.CameraTargetId`（镜头跟它走）；
-        /// <paramref name="cameraTargetId"/>：机位挑不到时的**兜底锚点**（正常不生效）；
-        /// <paramref name="lit"/>：`AreaShot.IsLight` ⇒ `Managers.Game.Darkness = !IsLight`
-        /// （白方主视角要"非断电视野"，切到黑方时改 false）。
+        /// ★ 这里有两个**必须分开**的角色 —— 之前把它们合成一个，两个方向都踩了坑：
         ///
-        /// ⚠ 镜头目标**绝不能指真人**：客户端 `ApplyArea`(:731) 会把 `CameraTargetId == _myPlayerId`
-        /// 改写成 0，而 id 0 的替身是 `ForceSpawnReplayTemp` 造出来的半成品、停在 (-10,616)
-        /// ⇒ 观众看到的是定格空白（实测踩过）。机位 id 由调用方按"无客户端实体优先、
-        /// 不在画面里的死者次之"挑（见 `EndReplayFeature.FindHostTapeAnchors`）。
+        ///   · <paramref name="ghostId"/>：**首帧的玩家**（客户端 `BeginTape` 的硬要求），
+        ///     它同时决定**剪影打谁**（`Players[_blackId].ChangeSilhouette(true)`，`_blackId` 就是首帧 id）。
+        ///     打在真人身上就是"视角涂黑"，用户明确不要 ⇒ 这里必须是**另一个已死者**，
+        ///     标成 `IsGhost = true`：回放期间 `Player.Update` 每帧 `RefreshGhostVisual()` 走
+        ///     case 2（幽灵替身与骨架一起关）⇒ 他在画面上不可见，剪影落在他身上等于没落
+        ///     ⇒ 真人本色出场。**他只占"剪影槽位"，不承担镜头。**
         ///
-        /// 锚点会被标成 `IsGhost = true`：回放期间 `Player.Update` 每帧 `RefreshGhostVisual()` 会走
-        /// "幽灵与骨架一起关掉"的分支 ⇒ 这个机位在画面上是**不可见**的（与隐藏观察者同一套做法）。
+        ///   · <paramref name="cameraTargetId"/>：**镜头跟着谁**（`ApplyArea` 里
+        ///     `Managers.Game.CameraTarget = GetDevice(area.CameraTargetId)`）。
+        ///     必须指向**录制者本人** —— 他本人在哪个房间，镜头就在哪个房间；他走门换房间，
+        ///     `AreaShot` 是那一刻录下来的。**原版根本没有"把相机送到别的房间取景"的实现**
+        ///     （`ChangeArea`(:29605) 只有换房间 / 设相机目标 / 设黑灯，相机被约束在当前房间边界内），
+        ///     自造跨房间机位必然"漂出去又被边界拽回"。
+        ///     （观众本人就是录制者时，客户端 `ApplyArea` 会把 `== _myPlayerId` 改写成 0
+        ///      ⇒ 镜头跟着 id 0 的本机替身，`ApplyMove` 同步改写 ⇒ 替身沿他的真实路径走 ✓ 原版行为。）
+        ///
+        ///   · <paramref name="lit"/>：`AreaShot.IsLight` ⇒ `Darkness = !IsLight`（黑方收尾幕要断电视野）。
+        ///
+        /// ⚠ **录制者必须强制 `IsGhost = false`**：被处决者在服务端已是幽灵（`MakeSpectatorGhost` 置
+        /// `IsGhost=true`），照抄采样值会让客户端把他整段隐形 ⇒ 画面没人。客户端磁带里录制者那枚帧
+        /// 也是显式清成 `false` 的（`RecordAllType` :31799）⇒ 这里对齐同一语义。
         /// </summary>
         public static int Build(List<SnapShot> into, float from, float to,
-            int anchorId, int cameraTargetId, bool lit)
+            int ghostId, int cameraTargetId, bool lit)
         {
             into.Clear();
             if (Rows.Count == 0 || to <= from)
                 return 0;
 
-            var anchor = Pick(anchorId, from) ?? Pick(cameraTargetId, from) ?? Pick(Rows[0].Id, from);
-            if (anchor == null)
+            var ghost = Pick(ghostId, from) ?? Pick(Rows[0].Id, from) ?? Pick(cameraTargetId, from);
+            if (ghost == null)
                 return 0;
 
-            var head = anchor.Info.Clone();
+            var head = ghost.Info.Clone();
             head.State = EPlayerState.Idle;
             head.IsGhost = true;
 
@@ -147,11 +156,13 @@ namespace HideAndSeek.Features.Rule
                 Spawn = head
             });
 
-            var camShot = MakeArea(from, anchor.Id, lit, anchor.RoomId);
+            // 相机跟着**录制者本人**，房间取他那一刻所在的房间（不是幽灵的房间）。
+            var camRow = Pick(cameraTargetId, from);
+            var camShot = MakeArea(from, cameraTargetId, lit, camRow?.RoomId ?? ghost.RoomId);
             if (camShot != null)
                 into.Add(camShot);
 
-            var spawned = new HashSet<int> { anchor.Id };
+            var spawned = new HashSet<int> { ghost.Id };
             foreach (var r in Rows)
             {
                 if (r.Time < from)
@@ -161,11 +172,19 @@ namespace HideAndSeek.Features.Rule
 
                 if (spawned.Add(r.Id))
                 {
+                    var info = r.Info.Clone();
+                    if (r.Id == cameraTargetId)
+                    {
+                        // 录制者本色出场（他被处决后服务端标的是幽灵）
+                        info.IsGhost = false;
+                        info.State = EPlayerState.Idle;
+                    }
+
                     into.Add(new SnapShot
                     {
                         Type = ESnapShotType.SpawnShot,
                         TimeStamp = r.Time,
-                        Spawn = r.Info.Clone()
+                        Spawn = info
                     });
                 }
                 else

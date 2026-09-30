@@ -1244,13 +1244,13 @@ namespace HideAndSeek.Features.Rule
         /// <summary>
         /// 【兜底】用 <see cref="EndReplayHostTape"/> 给这一段合成磁带 —— 只在**客户端磁带没到**时用。
         ///
-        /// ★ 关键（这是之前"哑剧/漂移"的教训）：**镜头目标就是录制者本人**（`clip.RecorderId`）。
-        ///   原版回放里 `CameraTargetId` 恒等于录制者自己 —— 他本人在哪个房间，镜头就在哪个房间，
-        ///   走门换房间由他自己走出来的 `AreaShot` 决定。**原版没有"把相机送到别的房间取景"这回事**
-        ///   （`ChangeArea`(:29605) 只有换房间/设相机目标/设黑灯三件事，相机被约束在当前房间边界内），
-        ///   所以自造一个"隐形机位在房间之间飞"必然出现"漂移、然后被边界拽回"。
-        ///
-        /// ⇒ 现在这条兜底路径不会再跨房间：谁的那一段，镜头就跟着谁。
+        /// ★ 两个角色必须分开（用户纠正的关键点）：
+        ///   · **首帧（剪影槽位）＝另一个已死者**：客户端 `BeginTape` 把首帧 id 折成 `_blackId` 并
+        ///     `ChangeSilhouette(true)` —— 打在真人身上就是"把视角那个人涂黑"，用户明确不要；
+        ///     换成已死者（`IsGhost` 幽灵 ⇒ 画面上本来就不存在）⇒ 剪影看不见，真人本色出场。
+        ///   · **镜头＝录制者本人**：他本人在哪个房间镜头就在哪个房间；原版没有"把相机送到别的房间"
+        ///     这回事（`ChangeArea`(:29605) 只换房间/设相机目标/设黑灯，相机被约束在当前房间边界内），
+        ///     自造跨房间机位必然"漂出去、再被边界拽回"。
         /// </summary>
         private static bool TrySendHostTape(GameRoom room, Clip clip)
         {
@@ -1259,15 +1259,24 @@ namespace HideAndSeek.Features.Rule
                 float from = clip.At - Math.Max(0f, clip.Before);
                 float to = clip.At + Math.Max(0f, clip.After);
 
-                int anchorId = clip.RecorderId;
-                if (anchorId <= 0 || !EndReplayHostTape.HasRows(anchorId))
+                int recorderId = clip.RecorderId;
+                if (recorderId <= 0 || !EndReplayHostTape.HasRows(recorderId))
                 {
-                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 没有可当镜头目标的"
-                        + $"录制者（#{anchorId} 缓冲里没采样）⇒ 不合成。");
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 录制者 #{recorderId} "
+                        + "在房主缓冲里没有采样 ⇒ 不合成。");
                     return false;
                 }
 
-                var ordered = ComposeHostTape(clip, anchorId, anchorId, from, to);
+                int ghostId = FindGhostStandIn(room, recorderId);
+                if (ghostId <= 0)
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 找不到"
+                        + "「剪影替身」（已死、仍在房间、缓冲里有采样的另一个人）⇒ 不合成 ——"
+                        + "宁可少一幕，也不把镜头涂黑到真人身上。");
+                    return false;
+                }
+
+                var ordered = ComposeHostTape(clip, ghostId, recorderId, from, to);
                 if (ordered == null)
                 {
                     Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端兜底，"
@@ -1279,13 +1288,9 @@ namespace HideAndSeek.Features.Rule
                 clip.Filled = true;
 
                 string look = clip.Kind == "黑方" ? "断电视野" : "非断电";
-                string how = clip.Kind == "黑方"
-                    ? "跟着黑方（移动插值 20Hz）"
-                    : "镜头跟着录制者本人（同房间，不跨房间）";
-
                 Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 客户端磁带没到 ⇒ "
-                    + $"服务端兜底合成 {ordered.Count} 帧（窗口=[{from:F2},{to:F2}] 镜头=#{anchorId} 本人"
-                    + $" {look} / {how}）。");
+                    + $"服务端兜底合成 {ordered.Count} 帧（窗口=[{from:F2},{to:F2}] "
+                    + $"剪影替身=#{ghostId} 镜头=#{recorderId} 本人 {look}）。");
                 return true;
             }
             catch (Exception ex)
@@ -1293,6 +1298,31 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] EndReplay：服务端合成磁带失败 — {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 挑一个「剪影替身」：**已死、仍在房间里、房主缓冲里有采样**，且不是录制者本人。
+        /// 他的 id 会被当作磁带首帧（客户端据此决定 `_blackId` 与剪影落点），而他本身是幽灵
+        /// （回放期间 `RefreshGhostVisual` 走 case 2：幽灵替身与骨架一起关）⇒ 剪影看不见。
+        /// </summary>
+        private static int FindGhostStandIn(GameRoom room, int excludeId)
+        {
+            try
+            {
+                foreach (var p in room.DeadPlayers)
+                {
+                    int id = p?.PublicInfo?.PlayerId ?? 0;
+                    if (id <= 0 || id == excludeId)
+                        continue;
+                    if (EndReplayHostTape.HasRows(id))
+                        return id;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：挑剪影替身失败 — {ex.Message}");
+            }
+            return 0;
         }
 
         /// <summary>
@@ -1312,16 +1342,15 @@ namespace HideAndSeek.Features.Rule
         /// 稳定排序（`OrderBy`，不是 `List.Sort`）保证同时间戳的帧保持插入顺序 ⇒ 首帧仍是最先插入的
         /// `SpawnShot`（客户端 `BeginTape` 的硬要求）。
         /// </summary>
-        private static List<SnapShot> ComposeHostTape(Clip clip, int anchorId, int camId,
+        private static List<SnapShot> ComposeHostTape(Clip clip, int ghostId, int cameraTargetId,
             float from, float to)
         {
             var shots = new List<SnapShot>();
 
-            // ★ 只有一种合成方式：**镜头盯着录制者本人**（`anchorId` 既是首帧主视角，也是
-            //   `AreaShot.CameraTargetId`）。不再有"隐形机位在房间之间飞"的那套 ——
-            //   原版没有跨房间取景的实现，自造它必然漂移、被房间边界拽回。
-            //   黑方那一幕同样：盯着凶手本人，只是 `IsLight = false`（断电视野）。
-            int n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, clip.Kind != "黑方");
+            // 首帧＝**剪影替身**（幽灵，剪影打在他身上看不见 ⇒ 真人不会被涂黑）；
+            // 镜头＝**录制者本人**（他在哪个房间镜头就在哪个房间，不跨房间）。
+            // 黑方那一幕同样，只是 `IsLight = false`（断电视野）。
+            int n = EndReplayHostTape.Build(shots, from, to, ghostId, cameraTargetId, clip.Kind != "黑方");
 
             if (n < 2)
                 return null;
@@ -1386,8 +1415,8 @@ namespace HideAndSeek.Features.Rule
                       .Append(',').Append((int)(s.Spawn.Pos?.Y ?? 0f)).Append(')');
                 }
 
-                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 机位=#{anchorId} "
-                    + $"出场名单：{sb}");
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} "
+                    + $"剪影替身=#{ghostId} 镜头=#{cameraTargetId} 出场名单：{sb}");
             }
             catch (Exception ex)
             {
