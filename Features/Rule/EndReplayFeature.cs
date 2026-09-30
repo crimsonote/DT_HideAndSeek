@@ -1342,6 +1342,32 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] EndReplay：合成磁带首帧不是 SpawnShot（{ordered[0].Type}），"
                     + "客户端会整段跳过。");
 
+            // ★★★ 必须在 head 之后补一枚 `EditShot{NormalTimeEdit}` —— 这是"哑剧"的真凶，实测定位：
+            //
+            //   客户端 `ApplyEdit`（:32167-32188）：
+            //       SlowTimeEdit   ⇒ `Managers.Game.TimeScale = 0.25f` + `Camera.main.DOOrthoSize(300f, 2f)`
+            //       NormalTimeEdit ⇒ `Managers.Game.TimeScale = 1f`    + `Camera.main.DOOrthoSize(480f, 1f)`
+            //   而 `Managers.Game.DeltaTime => TimeScale * Time.deltaTime`（:28706），客户端放带子的
+            //   推进正是 `_currentTime += Managers.Game.DeltaTime`（`RecordManager.Update` :31993）。
+            //
+            //   客户端自己录的每一段都带这两枚 edit（所以 tape 1-4 正常）；**我们合成的段一枚都没有**
+            //   ⇒ 直接继承上一段留在 `0.25` 的 `TimeScale` ⇒ `_currentTime` 只按 1/4 速度走
+            //   ⇒ 8 秒的带子要 32 秒真实时间，而回放有总预算/超时 ⇒ **只有开头几帧被执行**：
+            //     机位 head + AreaShot（所以客户端日志里只剩一句"카메라 즉시 이동"），
+            //     而每个演员的 SpawnShot 时间戳始终大于 `_currentTime` ⇒ **永远不执行**
+            //   ⇒ 画面里一个人都没有（哑剧），镜头也被 AreaShot 摆一下就不动（"漂移后被拽回"）。
+            //   同时这也解释了"唯独我们那两段没有 `실루엣 유지` 日志"——那行只由 SlowTimeEdit 打印。
+            //
+            //   位置取 index 1：`BeginTape` 把 `_currentTime` 置成 `currentTape[1].TimeStamp`，
+            //   所以这一枚会在**第一个 Update** 就被执行（时间戳相等 ⇒ 不满足 `> _currentTime`）；
+            //   首帧仍是 SpawnShot（客户端 `BeginTape` 的硬要求），时间戳非递减也仍然成立。
+            ordered.Insert(1, new SnapShot
+            {
+                Type = ESnapShotType.EditShot,
+                TimeStamp = ordered[0].TimeStamp,
+                Edit = new EditSnapShot { Type = EEditShotType.NormalTimeEdit }
+            });
+
             // ★ 诊断：把这一幕的"出场名单"打出来（谁、可见还是幽灵、在哪儿）。
             //   下一局据此一次分清哑剧的两种可能：**演员压根没进磁带**（名单里没有他）还是
             //   **进了但客户端把他当幽灵**（名单里是"(幽灵)"）。
