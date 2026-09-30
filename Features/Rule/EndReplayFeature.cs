@@ -83,6 +83,16 @@ namespace HideAndSeek.Features.Rule
             "之后场上已冻结，所以「后」实际表现为在静止画面上多留一会儿。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> EndAfterSec;
 
+        [ConfigField(2f, "「自爆」片段（黑方胜利时对存活露娜系白方的项圈自爆）：事件前秒数。" +
+            "⚠ 录制者本人的录像在他死亡那一刻就停了 ⇒ 这一段实际只有「爆前 + 到爆炸那一刻」。",
+            Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> SelfDestructBeforeSec;
+
+        [ConfigField(1f, "「自爆」片段：事件后秒数。⚠ 同上 —— 被炸的那个人死亡即停录，" +
+            "所以「爆后」多半拿不到（除非另有目击者的磁带被要进来）。假人没有客户端，也录不了这一段。",
+            Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> SelfDestructAfterSec;
+
         [ConfigField(12, "最多播放几段，取段顺序为 拿刀 → 杀人 → 最后时段。段数越多回放越长。",
             Min = 1f, Max = 40f)]
         public static ConfigEntry<int> MaxClips;
@@ -298,49 +308,132 @@ namespace HideAndSeek.Features.Rule
             return Diagnostics.IsLoaded("EndReplay");
         }
 
+        /// <summary>
+        /// 是否达到"播放回放"的阈值（刀杀死亡人数超过白方人数的 <see cref="DeathRatioPercent"/>%）。
+        /// 单独抽出来是为了让"自爆片段"的请求（<see cref="CollarBombHook"/>）也能用同一判据 ——
+        /// 自爆发生在最后，那时死亡数已是最终值；不达阈值就不必白请客户端录一段。
+        /// </summary>
+        private static bool ThresholdMet(GameRoom room)
+        {
+            int white = CountWhite(room);
+            int need = DeathRatioPercent?.Value ?? 30;
+            if (_murderDeaths <= 0 || white <= 0)
+                return false;
+            return _murderDeaths * 100 > white * need;
+        }
+
         // ── ③ 拦下结算：先播回放 ────────────────────────────────────────
-        /// <summary>
-        /// 黑方胜利的两条路径最终都会调原版 `GameRoom.GameOver()`（:171389，private）
-        /// —— 它做「EndClass 提示 → 判黑方胜 → 存活白方项圈自爆 → 7.5s 后进总结算」。
-        /// 在它**之前**插回放：取消这次调用，播完再调一次。
-        /// </summary>
+        //
+        // ★ 拦截点选在**结算状态切换** `GameRoom.ChangeGameState(EGameState.TotalResult)`，
+        //   而不是原来的 `GameOver()` / `WhiteWinFeature.TriggerWhiteWin`。原因（读码 + 需求）：
+        //   · `GameOver()` 内部就做完了原版收尾演出 —— `EndClass` 提示、判黑方胜、
+        //     **对存活白方 `OnDeadCollarBomb()`（项圈自爆）**，然后才
+        //     `PushAfter(7500, ChangeGameState, TotalResult)`（:171400 / :171403）。
+        //     也就是说**自爆发生在结算之前**；要在回放里播"自爆"，就必须等它演完再插回放。
+        //   · 结算状态切换只有三个调用点（`GameOver` 的推送、`ClearAllMission()`＝任务全清白胜、
+        //     `Trial.FinalizeTrialResult()`），**全都走公开的 `ChangeGameState(EGameState)`**
+        //     ⇒ 一个钩子全覆盖。
+        //   · 此刻客户端的房间状态还是 `Survive`（这条广播被我们拦下了），所以照旧可以把它们推进
+        //     Trial、借审判 UI 当回放宿主；回放播完我们再调一次原方法把 TotalResult 放出去。
+        private static string _ending = "结算前";
+        private static bool _whiteWin;
+
+        /// <summary>只做记录：黑方胜利的收尾演出跑过了（`GameOver` 是 private，用字符串定位）。</summary>
         [HarmonyPatch(typeof(GameRoom), "GameOver")]
-        internal static class GameOverHook
+        internal static class GameOverNoteHook
         {
-            [HarmonyPrefix]
-            private static bool Prefix(GameRoom __instance)
-                => !TryIntercept("黑方胜利(GameOver)", () => CallGameOver(__instance));
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                _ending = "结算前（黑方胜利）";
+                _whiteWin = false;
+            }
+        }
+
+        /// <summary>只做记录：白方幸存胜利走的是本模块自己的 `WhiteWinFeature.TriggerWhiteWin`。</summary>
+        [HarmonyPatch(typeof(WhiteWinFeature), nameof(WhiteWinFeature.TriggerWhiteWin))]
+        internal static class WhiteWinNoteHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                _ending = "结算前（白方胜利）";
+                _whiteWin = true;
+            }
         }
 
         /// <summary>
-        /// 白方胜利走的是本模块自己的 `WhiteWinFeature.TriggerWhiteWin`（原版没有这条路径），
-        /// 同样在它之前插回放。白胜没有项圈自爆，死亡数在拦下时已是最终值。
+        /// ★ 结算的唯一入口（三个调用点都走它）。在这里拦下 `TotalResult`：
+        /// 原版收尾（含项圈自爆）已经演完 ⇒ 正好插回放；播完再调原方法放行。
         /// </summary>
-        [HarmonyPatch(typeof(WhiteWinFeature), nameof(WhiteWinFeature.TriggerWhiteWin))]
-        internal static class WhiteWinHook
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
+        internal static class TotalResultHook
         {
             [HarmonyPrefix]
-            private static bool Prefix(GameRoom room)
-                => !TryIntercept("白方胜利(限时归零/任务全清)", () => WhiteWinFeature.TriggerWhiteWin(room),
-                    blackClipLast: true);
+            private static bool Prefix(GameRoom __instance, EGameState state)
+            {
+                if (state != EGameState.TotalResult)
+                    return true;
+
+                return !TryIntercept(_ending, () => CallChangeTotalResult(__instance));
+            }
         }
 
-        private static void CallGameOver(GameRoom room)
+        /// <summary>回放结束后继续结算：调用原版 `ChangeGameState(EGameState.TotalResult)`。</summary>
+        private static void CallChangeTotalResult(GameRoom room)
         {
-            var method = AccessTools.Method(typeof(GameRoom), "GameOver");
+            var method = AccessTools.Method(typeof(GameRoom), "ChangeGameState", new[] { typeof(EGameState) });
             if (method == null)
             {
-                Plugin.Log.LogWarning("[HS] EndReplay：找不到 GameOver，回放后无法继续结算。");
+                Plugin.Log.LogWarning("[HS] EndReplay：找不到 GameRoom.ChangeGameState(EGameState)，回放后无法继续结算。");
                 return;
             }
 
             try
             {
-                method.Invoke(room, null);
+                Plugin.Log.LogInfo("[HS] EndReplay：回放结束，继续结算（ChangeGameState → TotalResult）。");
+                method.Invoke(room, new object[] { EGameState.TotalResult });
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[HS] EndReplay：回放后调用 GameOver 失败：{ex.Message}");
+                Plugin.Log.LogWarning($"[HS] EndReplay：回放后进入结算失败：{ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 【自爆片段】黑方胜利时原版会对**存活的露娜系白方**执行 `OnDeadCollarBomb()`（在 `GameOver()` 里）。
+        /// 我们在它执行**之前**给该玩家自己的客户端发 `S_RECORD_REPLAY`，让它把"此刻"登记成一个事件
+        /// （客户端 `BuildUploadTape` 靠它定位窗口），于是磁带窗口就以自爆为中心。
+        ///
+        /// ⚠ 两个已知限制（配置说明里也写了）：
+        ///   · **录制者本人的录像在他死亡那一刻就停了**（客户端 `Recording()` 要求 `IsAlive`）
+        ///     ⇒ "爆后 N 秒"通常拿不到，实际只有"爆前 + 到爆炸那一刻"；
+        ///   · **假人没有客户端** ⇒ 拿不到（`RequestRecord` 会返回 false）。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "OnDeadCollarBomb")]
+        internal static class CollarBombHook
+        {
+            [HarmonyPrefix]
+            private static void Prefix(GamePlayer __instance)
+            {
+                try
+                {
+                    if (_played || _inReplay || !IsArmed())
+                        return;
+                    if (__instance?.PublicInfo == null || __instance.Session == null || __instance.IsSpectator)
+                        return;
+
+                    var room = GameRoom.Instance;
+                    if (room == null || !ThresholdMet(room))
+                        return;
+
+                    RequestRecord(__instance, TimeManager.Instance.SurviveTime, "自爆",
+                        SelfDestructBeforeSec?.Value ?? 2f, SelfDestructAfterSec?.Value ?? 1f);
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：请求自爆片段失败 — {ex.Message}");
+                }
             }
         }
 
@@ -393,7 +486,7 @@ namespace HideAndSeek.Features.Rule
         /// 要不要拦下这次结算？true = 已拦下（结算延后，稍后由 <see cref="FinishReplay"/> 续上）。
         /// 任何异常都吞掉并放行 —— 回放出事绝不能把对局卡在结算之前。
         /// </summary>
-        private static bool TryIntercept(string reason, Action continueSettlement, bool blackClipLast = false)
+        private static bool TryIntercept(string reason, Action continueSettlement)
         {
             try
             {
@@ -421,9 +514,7 @@ namespace HideAndSeek.Features.Rule
                 int need = DeathRatioPercent?.Value ?? 30;
                 Plugin.Log.LogInfo($"[HS] EndReplay（{reason}）：刀杀死亡 {_murderDeaths} 人 / 白方 {white} 人，阈值 {need}%。");
 
-                if (_murderDeaths <= 0 || white <= 0)
-                    return false;
-                if (_murderDeaths * 100 <= white * need)
+                if (!ThresholdMet(room))
                 {
                     Plugin.Log.LogInfo("[HS] EndReplay：未达阈值，正常结算。");
                     return false;
@@ -432,6 +523,8 @@ namespace HideAndSeek.Features.Rule
                 _played = true;
                 _continueSettlement = continueSettlement;
 
+                // 白方幸存胜利时，把黑方那一段「最后时段」挪到最后一屏（黑方胜利时不调整）。
+                bool blackClipLast = _whiteWin || room.ResultType == EResultType.WhiteWin;
                 var plan = BuildPlan(room, blackClipLast);
                 if (plan.Count == 0)
                 {
@@ -521,6 +614,13 @@ namespace HideAndSeek.Features.Rule
                 }
 
                 plan.Add(clip);
+            }
+
+            // 「自爆」排在「最后时段」之后：它是整局的收尾（黑方胜利时白方被处决）。
+            foreach (var c in Clips.Where(c => c.Kind == "自爆"))
+            {
+                if (plan.Count >= max) break;
+                plan.Add(c);
             }
 
             if (blackClip != null && plan.Count < max)
