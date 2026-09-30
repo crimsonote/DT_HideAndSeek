@@ -427,8 +427,40 @@ namespace HideAndSeek.Features.Rule
                     if (room == null || !ThresholdMet(room))
                         return;
 
-                    RequestRecord(__instance, TimeManager.Instance.SurviveTime, "自爆",
-                        SelfDestructBeforeSec?.Value ?? 2f, SelfDestructAfterSec?.Value ?? 1f);
+                    // ① 被处决者本人优先（他的客户端会记下"自己眼前"的爆炸 VFX）。
+                    // ② 再请**其他活着的真人**各录一段做兜底：假人没有客户端 ⇒ 录不了像
+                    //    （实测上一局自爆段的录制者恰好是假人 ⇒ 一段都没拿到，回放里看不到自爆）。
+                    //    多个录制者 ⇒ 我们的计划里就会多出几幕"自爆"（不同视角），上限 4 段。
+                    int key = TimeManager.Instance.SurviveTime;
+                    float before = SelfDestructBeforeSec?.Value ?? 2f;
+                    float after = SelfDestructAfterSec?.Value ?? 1f;
+                    int asked = 0;
+
+                    if (!__instance.IsDummy
+                        && RequestRecord(__instance, key, "自爆", before, after))
+                    {
+                        asked++;
+                    }
+                    else
+                    {
+                        Plugin.Log.LogWarning($"[HS] EndReplay：被处决者 #{__instance.PublicInfo.PlayerId} "
+                            + (__instance.IsDummy ? "是假人" : "没有客户端") + "，自爆段改由目击者录。");
+                    }
+
+                    foreach (var witness in room.AlivePlayers.ToList())
+                    {
+                        if (asked >= 4)
+                            break;
+                        if (witness?.PublicInfo == null || witness.Session == null
+                            || witness.IsSpectator || witness.IsDummy)
+                            continue;
+                        if (witness.PublicInfo.PlayerId == __instance.PublicInfo.PlayerId)
+                            continue;
+                        if (RequestRecord(witness, key, "自爆", before, after))
+                            asked++;
+                    }
+
+                    Plugin.Log.LogInfo($"[HS] EndReplay：自爆片段共请 {asked} 个客户端录制（被处决者 + 存活目击者）。");
                 }
                 catch (Exception ex)
                 {
@@ -600,6 +632,14 @@ namespace HideAndSeek.Features.Rule
                 if (plan.Count >= max) break;
                 if (p?.PublicInfo == null || p.IsSpectator || p.Session == null)
                     continue;
+
+                // 假人没有客户端 ⇒ 发过去也没人录（实测：上一局「最后时段」只有房主那一台回了磁带，
+                // 白方全是假人）。与其排一幕永远等不到磁带的片段，不如直接跳过并记一条日志。
+                if (p.IsDummy)
+                {
+                    Plugin.Log.LogInfo($"[HS] EndReplay：跳过「最后时段」#{p.PublicInfo.PlayerId}（假人没有客户端，录不了像）。");
+                    continue;
+                }
 
                 if (!RequestRecord(p, key, "最后", before, after))
                     continue;
@@ -850,20 +890,10 @@ namespace HideAndSeek.Features.Rule
                 // 用原版同款等待：第一个回执到达后再宽限一小会儿就推进；超时也会强制推进。
                 room.WaitCompletePacket(() => FinishReplay("客户端回执/超时"), room.CompleteWaitCount(), budget, 4000);
 
-                // ★ 先补一包 `VoteResult` 再推 `Replay`：让客户端执行 `EndVoteResult()`
-                //   （`GetObject(3) VoteResult` → `SetActive(false)`）把那个默认挂着的「投票结果」面板收掉。
-                //
-                //   实测诊断依据：界面上的「投票结果」= 文本键 `VoteResultTrial`（中文表里有），
-                //   而全工程只有审判 UI 的 `InitText()` 会把它赋给 `Texts[4] VoteResultText`；
-                //   与之配对的 `GameObjects[3] VoteResult` 面板由 `StartVoteResult()` 打开、
-                //   由 `EndVoteResult()`（离开该相位时）关闭。原版流程会经过那个相位，
-                //   我们的回放**直接跳进 Replay** ⇒ 收尾处理器从没跑过 ⇒ 面板一直挂着。
-                //   两包同一帧发出，客户端按顺序处理 ⇒ 最多闪一帧。
-                if (ClearTrialLabels?.Value ?? true)
-                {
-                    room.Broadcast(new S_TRIAL_STATE { State = ETrialState.VoteResult });
-                    Plugin.Log.LogInfo("[HS] EndReplay：已先补一包 VoteResult（触发客户端的 EndVoteResult，收掉那个「投票结果」面板）。");
-                }
+                // ⚠ 曾经这里先补一包 `S_TRIAL_STATE{VoteResult}`（想借 `EndVoteResult()` 收掉
+                //   「投票结果」面板）。实测诊断证明**那个面板本来就是关着的**
+                //   （`VoteResult[self=False,hier=False]`），真正常显的是字幕行 `SlideLine/SlideText`
+                //   （已由 `ClearSlideText` 解决）⇒ 这一包没有收益，反而让客户端闪一下空白投票页 ⇒ 去掉。
 
                 room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Replay });
             }
@@ -1060,13 +1090,21 @@ namespace HideAndSeek.Features.Rule
                     //   ⇒ 你自己的屏幕上永远看不到那个红名。我们刚广播过 `S_NOTIFY_BLACK`，
                     //   所以只在"我确实是被标记的黑幕"时把它重新打开 —— 对白方玩家没有影响。
                     var my = Managers.Player.MyPlayer;
-                    if ((RevealBlackName?.Value ?? true) && my?.PublicInfo != null && my.NameTag != null
-                        && !my.NameTag.gameObject.activeSelf
+                    if ((RevealBlackName?.Value ?? true) && my?.PublicInfo != null
                         && Managers.Player.KnownBlackIds.Contains(my.PublicInfo.PlayerId))
                     {
-                        my.NameTag.gameObject.SetActive(true);
-                        Plugin.Log.LogInfo("[HS] EndReplay（客户端）：黑方就是本机玩家 ⇒ 已重新打开自己的昵称"
-                            + "（原版回放会关掉它），于是本机也能看到红色昵称。");
+                        // ★ 回放里"你"的可视化身是 **id=0 的替身**（`MyPlayer` 本身被 `HidePlayer(true)` 藏起来了），
+                        //   所以要把**那个替身**的昵称设成红名 —— 它默认是白的，因为 `Player.Refresh()` 用
+                        //   `KnownBlackIds.Contains(PublicInfo.PlayerId)` 决定颜色，而替身的 id 是 0。
+                        //   （实测现象：本机玩家头上"第二幕起有白字"，就是它。）
+                        var standIn = Managers.Player.GetPlayerCache(0);
+                        if (standIn?.NameTag != null)
+                        {
+                            standIn.NameTag.gameObject.SetActive(true);
+                            standIn.NameTag.SetNameColor(true);
+                            Plugin.Log.LogInfo("[HS] EndReplay（客户端）：黑方就是本机玩家 ⇒ 已把回放里"
+                                + "『你自己』的替身(id=0)昵称设为红名（之前是白字）。");
+                        }
                     }
 
                     int hits = 0;
@@ -1403,6 +1441,16 @@ namespace HideAndSeek.Features.Rule
             {
                 if (s.TimeStamp <= start || s.TimeStamp > end)
                     continue;
+
+                // ⚠ 丢掉「最后时段 / 自爆」里的 `AddShot`（＝把尸体这类设备重新设为可见）。
+                //   实测：「最后时段」那段是在**结算被拦下那一刻**录的，里面带着刚刚生成的尸体 Add 帧，
+                //   客户端执行 `Corpse.SetInfo` 会空引用 ⇒ `Update` 每帧抛异常 ⇒ `_playIndex` 永不前进
+                //   ⇒ 整段回放卡死（实测 2942 次异常，只能等我们超时；日志里第 3 幕没有"结束"行）。
+                //   这些尸体在回放开始时**本来就已经在场上**（生成时间早于窗口起点，`PrepareDevices`
+                //   也不会把它们藏起来）⇒ 丢掉 Add 帧不影响观感。
+                if (s.Type == ESnapShotType.AddShot && (clip.Kind == "最后" || clip.Kind == "自爆"))
+                    continue;
+
                 // ★ 保留 EditShot（曾经这里一律 continue 裁掉，结果把"揭晓"也裁没了）：
                 //   · SlowTimeEdit  插在击杀−0.3s ⇒ 落在窗口内 ⇒ 慢镜 + 最后一段的 ChangeSilhouette(false) 揭晓
                 //   · NormalTimeEdit 插在击杀瞬间  ⇒ 落在窗口内 ⇒ 把 TimeScale/镜头复位
