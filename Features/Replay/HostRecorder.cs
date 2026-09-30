@@ -31,19 +31,20 @@ namespace HideAndSeek.Features.Replay
     internal static class HostRecorder
     {
         /// <summary>
-        /// 环形缓冲时长 —— **必须覆盖整局**。
+        /// 环形缓冲时长 —— 只需覆盖**结算类的那几秒**（自爆 6.5s + 黑方收尾 3s），留 60 秒足够。
         ///
-        /// 为什么从 45 秒提到 300 秒（实测）：客户端磁带是"最近约 14 秒"的缓冲，
-        /// 而结算是整局结束那一刻才发生的 ⇒ **早期事件（第一次刀杀等）的窗口根本不在磁带里**。
-        /// 实测：3 次刀杀里只有最后一次能裁出帧，前两次裁出 3 帧（= 首帧 + 1 枚出场帧 + 时间编辑，
-        /// 即窗口内一帧素材都没有）。那些幕只能由**房主侧采样**兜底，所以它得活到结算。
+        /// ⚠ **曾经设成 300 秒（"覆盖整局"），结果造成严重卡顿** —— 见 <see cref="Trim"/> 与
+        ///   `NoteMove` 里的节流注释：`MaxRows` 被顶满后触发条件恒真 ⇒ `Trim` 每帧遍历几万帧
+        ///   ⇒ 主线程一帧 5.7 秒（Dissonance 报 frame skip）⇒ 游戏被判定无响应。
         ///
-        /// 内存量级：5 人 × 10Hz × 300s ≈ 1.5 万帧 × ~120B ≈ 1.8MB ⇒ 可以接受。
+        /// ⚠ 而**根本不需要**覆盖整局：早期事件（几十秒前的那次刀杀）的素材由
+        ///   **客户端 9 秒快照**提供（客户端收到 `S_RECORD_REPLAY` 后会把当时的录制缓冲存成
+        ///   持久快照）—— 见 `ReplayFeature.HitHook`。房主侧采样只是"客户端给不了时"的兜底。
         /// </summary>
-        private const float KeepSeconds = 300f;
+        private const float KeepSeconds = 60f;
 
-        /// <summary>超过这个帧数就强制裁剪（防住"人多 + 高刷"时的无限增长）。</summary>
-        private const int MaxRows = 60000;
+        /// <summary>硬上限。超过就**按数量**裁掉最老的（不能只靠时间 —— 帧率高于预期时会空转）。</summary>
+        private const int MaxRows = 12000;
 
         /// <summary>一次采样 —— 某个玩家在某个时刻的样子。</summary>
         private sealed class Row
@@ -128,7 +129,12 @@ namespace HideAndSeek.Features.Replay
                 _rowCount++;
                 _newestTime = now;
 
-                if (now - _lastTrim > 5f || _rowCount > MaxRows)
+                // ★★ 触发条件**必须只按时间**，而且要节流。
+                //    曾经写成 `|| _rowCount > MaxRows`：帧数一旦顶到上限，这个条件就**恒真**
+                //    ⇒ `Trim` 每一帧都跑 ⇒ 每帧遍历几万帧 ⇒ 主线程一帧 5.7 秒
+                //    （实测 Dissonance 报 "frame skip, Delta Time:5.697155"，随后游戏被强杀）。
+                //    "超上限"由 `Trim` 内部按数量兜底处理，不需要在这里每帧检查。
+                if (now - _lastTrim >= 1f)
                 {
                     _lastTrim = now;
                     Trim(now);
@@ -394,15 +400,29 @@ namespace HideAndSeek.Features.Replay
             return best >= 0 ? rows[best] : rows[0];
         }
 
+        /// <summary>
+        /// 裁剪缓冲。**只在节流后调用**（见 `NoteMove`）—— 它遍历所有玩家的所有帧。
+        ///
+        /// 两级裁剪：
+        ///   ① 按时间：丢掉早于 `now - KeepSeconds` 的（常规路径）；
+        ///   ② 按数量：时间裁不掉、但总量超过 `MaxRows` 时，每人保留等额的一份
+        ///      （防住"帧率远高于预期"时缓冲无限增长 —— 只按时间会永远裁不掉）。
+        /// </summary>
         private static void Trim(float now)
         {
             float keepFrom = now - KeepSeconds;
+            int perPlayerCap = Math.Max(64, MaxRows / Math.Max(1, ById.Count));
+
             foreach (var kv in ById)
             {
                 var l = kv.Value;
                 int drop = 0;
                 while (drop < l.Count - 1 && l[drop].Time < keepFrom)
                     drop++;
+
+                if (drop == 0 && _rowCount > MaxRows && l.Count > perPlayerCap)
+                    drop = l.Count - perPlayerCap;
+
                 if (drop > 0)
                 {
                     l.RemoveRange(0, drop);
