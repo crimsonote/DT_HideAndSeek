@@ -222,6 +222,26 @@ namespace HideAndSeek.Features.Replay
                     //   ⇒ "全员出场帧"真正的用途就是保证 `EffectShot` 引用的 id 一定在 `_cache` 里。
                     //   昵称是观感问题、卡死是能不能玩的问题 —— 不值得换。（2026-10 核实）
 
+                    // ★ **硬约束：绝不让 `PlayerId <= 0` 的出场帧进入磁带。**
+                    //
+                    //   id 0 在每台客户端上含义不同 —— 它是"**接收方自己的角色**"：
+                    //   客户端会把 `PlayerId == _myPlayerId` 的帧**在本地改写**成 0
+                    //   （`ApplySpawn` / `ApplyMove` / `ApplyState` 各有一句）。
+                    //   所以服务端只能发**真实 id**，一份包让每台机器各自解释。
+                    //
+                    //   为什么必须挡：`ForceSpawnReplayTemp` 造的 0 号替身**只进 `_cache`**，
+                    //   不在 `Players` 里；而 `ApplySpawn` 的守卫查的正是 `Players.ContainsKey`
+                    //   ⇒ 收到 `PlayerId = 0` 的帧会**新建一个多余的 0 号玩家**
+                    //   ⇒ 每台机器场上多出一个"自己模样的幽灵"，还可能被选成剪影
+                    //   ⇒ 各机器看到的黑块都不同（不崩，但画面错）。
+                    //
+                    //   来源上本不该出现（`HostRecorder.NoteMove` 拒绝 id<=0；客户端录的是真实 id），
+                    //   但**不能依赖上游永远正确** —— 这里是唯一的出口，硬约束要落在出口上。
+                    //   （只需挡 `SpawnShot`：它是唯一会触发 `Spawn` 的类型；
+                    //     `MoveShot{PlayerId=0}` 走 `HandleMove` 的 `TryGetValue` 会安全跳过。）
+                    if (s.Type == ESnapShotType.SpawnShot && s.Spawn != null && s.Spawn.PlayerId <= 0)
+                        continue;
+
                     result.Add(s);
                     rawInWindow++;
                 }
