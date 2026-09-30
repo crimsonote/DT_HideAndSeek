@@ -81,7 +81,6 @@ namespace HideAndSeek.Features.Combat
 
         private static float _baseExit = -1f;
         private static float _baseSpeed = -1f;
-        private static float _baseTask = -1f;
 
         internal static float Credits => _credits;
 
@@ -333,13 +332,14 @@ namespace HideAndSeek.Features.Combat
                     _baseSpeed + (SpeedBonusPerLevel?.Value ?? 0.1f) * Levels[DirSpeed];
             }
 
-            // 任务门槛：抬高白方获胜所需进度
-            if (WhiteWinFeature.MinMissionProgress != null)
+            // 任务门槛：抬高白方获胜所需进度。
+            // ★ 只写**纯内存**的 `MatchTaskBonus`，不再写 `MinMissionProgress.Value` ——
+            //   `ConfigEntry.Value` 赋值在 `SaveOnConfigSet = true` 下立刻落盘，局内关游戏/崩溃时
+            //   还原回调跑不到，抬高的门槛就永久留在 `.cfg` 里（实测被写成 10 ⇒ 白方永远赢不了）。
+            if (TaskBonusPerLevel?.Value > 0f)
             {
-                if (_baseTask < 0f)
-                    _baseTask = WhiteWinFeature.MinMissionProgress.Value;
-                WhiteWinFeature.MinMissionProgress.Value =
-                    (int)(_baseTask + (TaskBonusPerLevel?.Value ?? 10f) * Levels[DirTask]);
+                WhiteWinFeature.MatchTaskBonus =
+                    (int)(TaskBonusPerLevel.Value * Levels[DirTask]);
             }
         }
 
@@ -442,10 +442,11 @@ namespace HideAndSeek.Features.Combat
             }
             if (_baseSpeed >= 0f && SpeedBoostFeature.BlackSpeedMul != null)
                 SpeedBoostFeature.BlackSpeedMul.Value = _baseSpeed;
-            if (_baseTask >= 0f && WhiteWinFeature.MinMissionProgress != null)
-                WhiteWinFeature.MinMissionProgress.Value = (int)_baseTask;
 
-            _baseEnter = _baseExit = _baseSpeed = _baseTask = -1f;
+            // 任务门槛加成是纯内存的，回合重置直接清零（配置项本身从一开始就没被我们写过）
+            WhiteWinFeature.MatchTaskBonus = 0;
+
+            _baseEnter = _baseExit = _baseSpeed = -1f;
             _totalWhitesAtStart = 0;
             _lastAppliedSpeed = float.NaN;
         }

@@ -44,6 +44,20 @@ namespace HideAndSeek.Features.Rule
             Min = 0f, Max = 100f)]
         public static ConfigEntry<int> MinMissionProgress;
 
+        /// <summary>
+        /// **局内**的任务进度加成（由 `KillUpgradeFeature` 按黑方击杀等级临时抬高门槛），单位百分点。
+        ///
+        /// ⚠ 必须是**纯内存字段**：它以前是直接写 `MinMissionProgress.Value`，而 `ConfigEntry.Value`
+        /// 赋值在 `SaveOnConfigSet = true` 下**立刻落盘** ⇒ 局内关游戏 / 崩溃 / 回大厅中断了还原回调时，
+        /// 抬高的门槛就**永久留在 `.cfg`**。实测后果：`.cfg` 里被写成 10，于是每一局
+        /// 「时间归零：任务进度 0% &lt; 10% → 判黑方胜利」⇒ 白方**永远赢不了**，一局都不剩，
+        /// 而黑方即使一个不杀也会赢并触发项圈自爆。
+        ///
+        /// 真正的门槛 = `MinMissionProgress`（用户自己设的基准，仍可随时改）**＋** 本字段（仅本局）。
+        /// 回退：把 `KillUpgrade` 段关掉，本字段恒为 0，一切回到纯配置行为。
+        /// </summary>
+        internal static int MatchTaskBonus;
+
         // MissionManager 在发行程序集中是 internal，相关字段只能反射读取
         // 注意 AccessTools.PropertyGetter 返回的是 getter 的 MethodInfo
         private static MethodInfo _allClearGetter;
@@ -70,13 +84,15 @@ namespace HideAndSeek.Features.Rule
                 return true;                      // 未归零 → 原版正常 tick
 
             // 任务进度门槛：不达标就判黑方胜（本玩法无报告，回退原版会进一个推不动的审判）
-            int need = MinMissionProgress?.Value ?? 0;
+            // 门槛 = 用户配置的基准 + 本局由击杀升级临时抬高的部分（后者纯内存，不落盘）
+            int need = global::System.Math.Max(0, (MinMissionProgress?.Value ?? 0) + MatchTaskBonus);
             if (need > 0)
             {
                 int progress = GetMissionProgress();
                 if (progress < need)
                 {
-                    Plugin.Log.LogInfo($"[HS] 时间归零：任务进度 {progress}% < 要求 {need}% → 判黑方胜利。");
+                    Plugin.Log.LogInfo($"[HS] 时间归零：任务进度 {progress}% < 要求 {need}%"
+                        + $"（基准 {MinMissionProgress?.Value ?? 0}% + 局内加成 {MatchTaskBonus}%）→ 判黑方胜利。");
                     TriggerBlackWin(__instance);
                     return false;
                 }
