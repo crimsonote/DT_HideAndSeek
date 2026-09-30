@@ -83,14 +83,15 @@ namespace HideAndSeek.Features.Rule
             "之后场上已冻结，所以「后」实际表现为在静止画面上多留一会儿。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> EndAfterSec;
 
-        [ConfigField(2f, "「自爆」片段（黑方胜利时对存活露娜系白方的项圈自爆）：事件前秒数。" +
-            "⚠ 录制者本人的录像在他死亡那一刻就停了 ⇒ 这一段实际只有「爆前 + 到爆炸那一刻」。",
+        [ConfigField(7.5f, "「自爆」片段（黑方胜利时对存活露娜系白方的项圈自爆）：事件**前**秒数。" +
+            "这一段现在是**服务端录制**的（客户端录不了：白方被处决时全是死人，" +
+            "`RecordManager.Recording()` 的 `!Managers.Game.IsAlive` 守卫直接 return）⇒ 爆前素材拿得到。" +
+            "7.5s ＝ 原版结算从进入自爆流程到爆炸的时长。",
             Min = 0f, Max = 30f)]
         public static ConfigEntry<float> SelfDestructBeforeSec;
 
-        [ConfigField(1f, "「自爆」片段：事件后秒数。⚠ 同上 —— 被炸的那个人死亡即停录，" +
-            "所以「爆后」多半拿不到（除非另有目击者的磁带被要进来）。假人没有客户端，也录不了这一段。",
-            Min = 0f, Max = 30f)]
+        [ConfigField(0.5f, "「自爆」片段：事件**后**秒数。这 0.5s 是镜头切到黑方之后的收尾" +
+            "（前 7.5s 为白方多机位巡礼）⇒ 整段约 8s。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> SelfDestructAfterSec;
 
         [ConfigField(12, "最多播放几段，取段顺序为 拿刀 → 杀人 → 最后时段。段数越多回放越长。",
@@ -174,6 +175,8 @@ namespace HideAndSeek.Features.Rule
             public string Kind;      // 拿刀 / 杀人 / 最后 / 自爆
             public float Before;
             public float After;
+            /// <summary>登记这一刻的**房主时钟**（`Managers.Game.ClientTime`）—— 服务端合成磁带时的窗口原点。</summary>
+            public float At;
             /// <summary>真的收到磁带了吗 —— 没收到时会在推 Replay 前补一段"占位磁带"（见 <c>SendPlaceholders</c>）。</summary>
             public bool Filled;
         }
@@ -199,6 +202,7 @@ namespace HideAndSeek.Features.Rule
             _inReplay = false;
             _continueSettlement = null;
             _anchorId = 0;
+            EndReplayHostTape.Clear();
         }
 
         private static bool AddClip(int key, int recorderId, string kind, float before, float after)
@@ -210,7 +214,15 @@ namespace HideAndSeek.Features.Rule
             if (BySlot.ContainsKey(slot))
                 return false;
 
-            var clip = new Clip { Key = key, RecorderId = recorderId, Kind = kind, Before = before, After = after };
+            var clip = new Clip
+            {
+                Key = key,
+                RecorderId = recorderId,
+                Kind = kind,
+                Before = before,
+                After = after,
+                At = Managers.Game.ClientTime
+            };
             Clips.Add(clip);
             BySlot[slot] = clip;
             Plugin.Log.LogInfo($"[HS] EndReplay：登记片段【{kind}】录制者=#{recorderId} key={key} 窗口={before:F1}s前/{after:F1}s后");
@@ -226,6 +238,36 @@ namespace HideAndSeek.Features.Rule
             {
                 if (state == EGameState.Survive)
                     ResetRound();
+            }
+        }
+
+        /// <summary>
+        /// 【房主侧录制】每帧节流采样一次全体玩家，攒进 <see cref="EndReplayHostTape"/> 的环形缓冲。
+        ///
+        /// 为什么挂在 `Managers.Update`：它是这台机器的**主更新**（实测崩因堆栈里就是
+        /// `Managers.Update → RecordManager.Update`），假人、已死者也都在服务端的
+        /// `Players` / `DeadPlayers` 里 ⇒ 采得到；客户端那套 `RecordManager` 对这两类人无能为力。
+        ///
+        /// 采样本身很便宜（5Hz、每人一次 `PublicInfo.Clone()`），但**只在武装状态且不在回放中**才跑，
+        /// 免得在结算/大厅里白采。
+        /// </summary>
+        [HarmonyPatch(typeof(Managers), "Update")]
+        internal static class HostTapeSampleHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                try
+                {
+                    if (_played || _inReplay || !IsArmed())
+                        return;
+
+                    EndReplayHostTape.Sample(Managers.Game.ClientTime);
+                }
+                catch
+                {
+                    // 采样失败不该影响对局。
+                }
             }
         }
 
@@ -443,6 +485,12 @@ namespace HideAndSeek.Features.Rule
                     var room = GameRoom.Instance;
                     if (room == null || !ThresholdMet(room))
                         return;
+
+                    // ★ 同时喂给房主侧录制器：这一刻的爆炸是"自爆剪辑"的核心素材，而白方此刻
+                    //   全是死人 ⇒ 他们的客户端录不了（`Recording()` 的 `!IsAlive` 守卫），
+                    //   只能由服务端自己记下时刻与位置，稍后合成磁带。
+                    EndReplayHostTape.NoteBomb(
+                        Managers.Game.ClientTime, __instance.PublicInfo.PlayerId, __instance.PublicInfo.Pos);
 
                     // ① 被处决者本人优先（他的客户端会记下"自己眼前"的爆炸 VFX）。
                     // ② 再请**其他活着的真人**各录一段做兜底：假人没有客户端 ⇒ 录不了像
@@ -967,6 +1015,15 @@ namespace HideAndSeek.Features.Rule
             int sent = 0;
             foreach (var clip in plan)
             {
+                // ★ 优先用房主侧录制器**合成真磁带**：假人与已死者这两类客户端根本交不上磁带；
+                //   而「自爆」更是无论客户端有没有交都改用服务端（白方被处决那一刻全是死人，
+                //   客户端 `Recording()` 的 `!IsAlive` 守卫直接 return ⇒ 白方主视角录不出来）。
+                if ((!clip.Filled || NeedsHostTape(clip)) && TrySendHostTape(room, clip))
+                {
+                    sent++;
+                    continue;
+                }
+
                 if (clip.Filled)
                     continue;
 
@@ -1000,7 +1057,90 @@ namespace HideAndSeek.Features.Rule
             }
 
             if (sent > 0)
-                Plugin.Log.LogInfo($"[HS] EndReplay：共补 {sent} 段占位磁带（对应没交上来的磁带）。");
+                Plugin.Log.LogInfo($"[HS] EndReplay：共补 {sent} 段（服务端合成 / 占位磁带二选一）。");
+        }
+
+        /// <summary>
+        /// 这些片段**无论客户端有没有交磁带**都改用服务端录制 —— 它们是"合并剪辑"，
+        /// 需要跨视角/跨时刻的素材：自爆是**同一刻的多机位**（白方各有各的死法现场），
+        /// 白胜结局（待做）是**幸存者巡礼 + 黑方失败**。
+        ///
+        /// 为什么不直接用客户端那卷：客户端的录像在他死亡那一刻就停了
+        /// （`Recording()` 的 `!IsAlive` 守卫），而且它只收到**自己视野内**的特效帧 ⇒
+        /// 远处那些爆炸根本不在它的磁带里。
+        /// </summary>
+        private static bool NeedsHostTape(Clip clip)
+            => clip.Kind == "自爆";
+
+        /// <summary>
+        /// 用房主侧缓冲（<see cref="EndReplayHostTape"/>）给这一段合成磁带并广播出去。
+        ///
+        /// 窗口 = **登记那一刻的房主时钟**（`Clip.At`）± 配置的前后秒数。这一段本来就没有客户端磁带，
+        /// 也就没有"磁带内锚点"可用；房主缓冲的采样也在同一时钟上，所以两边自洽。
+        ///
+        /// 镜头与光照现在给的是稳妥默认值（镜头＝黑方、非断电）；P2/P3 的
+        /// "按剧本生成 `AreaShot`（逐人快速平移 + 切黑方时转断电视野）"接手后，这里会换成那条序列。
+        /// </summary>
+        private static bool TrySendHostTape(GameRoom room, Clip clip)
+        {
+            try
+            {
+                float from = clip.At - Math.Max(0f, clip.Before);
+                float to = clip.At + Math.Max(0f, clip.After);
+
+                int anchorId = FindHostTapeAnchor(room, clip);
+                int camId = FindBlackId(room);
+
+                var shots = new List<SnapShot>();
+                int n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, true);
+                if (n < 2)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端录制，"
+                        + $"但缓冲里可用帧不足（{n} 帧，窗口=[{from:F2},{to:F2}]）⇒ 退回占位磁带。");
+                    return false;
+                }
+
+                var pkt = new S_TAPE { RecordTime = clip.Key };
+                pkt.SnapShots.AddRange(shots);
+                room.Broadcast(pkt);
+                clip.Filled = true;
+
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 由**服务端录制**合成 {n} 帧"
+                    + $"（窗口=[{from:F2},{to:F2}] 锚点=#{anchorId} 镜头=#{camId} 非断电）⇒ 假人/已死者也能进回放。");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：服务端合成磁带失败 — {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 服务端合成时的"隐形机位"锚点：挑一个**已死 + 仍在房间 + 本机缓存里还在**的人
+        /// （与 <see cref="ResolveObserverId"/> 同一套判据 —— 客户端 `ChangeMyPlayer(_cache[id])`
+        /// 是直接索引，人不在缓存里会抛）。挑不到就返回 0，让 <see cref="EndReplayHostTape.Build"/>
+        /// 退用镜头目标本人当锚点。
+        /// </summary>
+        private static int FindHostTapeAnchor(GameRoom room, Clip clip)
+        {
+            try
+            {
+                foreach (var p in room.DeadPlayers)
+                {
+                    int id = p?.PublicInfo?.PlayerId ?? 0;
+                    if (id <= 0 || id == clip.RecorderId)
+                        continue;
+                    if (Managers.Player.GetPlayerCache(id) == null)
+                        continue;
+                    return id;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：挑服务端录制锚点失败 — {ex.Message}");
+            }
+            return 0;
         }
 
         /// <summary>
@@ -1412,6 +1552,15 @@ namespace HideAndSeek.Features.Rule
                     int recorderId = ResolvePlayerId(room, session);
                     if (recorderId == 0 || !BySlot.TryGetValue(Slot(recorderId, c.RecordTime), out var clip))
                         return true;                // 不是我们的片段 → 交还原版
+
+                    // ★ "合并剪辑"类片段（自爆）一律改用服务端录制：客户端那卷在他死亡那一刻就停了，
+                    //   而且只含自己视野内的特效帧 ⇒ 直接丢弃它，交给 `TrySendHostTape` 合成。
+                    if (NeedsHostTape(clip))
+                    {
+                        Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 收到客户端磁带"
+                            + $"（{c.SnapShots.Count} 帧）但这一类改用服务端录制 ⇒ 丢弃。");
+                        return false;
+                    }
 
                     var trimmed = TrimTape(c.SnapShots.ToList(), clip);
                     if (trimmed.Count < 2)
