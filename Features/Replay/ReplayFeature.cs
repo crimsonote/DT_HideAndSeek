@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using BepInEx.Configuration;
+using DummyClient;
 using HarmonyLib;
 using Protocol;
 using Server.Game;
@@ -36,6 +38,13 @@ namespace HideAndSeek.Features.Replay
         [ConfigField(true, "影子模式：只计算与记录，不发包、不播回放。用于与现有实现对照。")]
         public static ConfigEntry<bool> ShadowOnly;
 
+        [ConfigField(false, "【验证用·默认关】真的向客户端索取真实磁带并装配 —— 但**不广播、不播放**，"
+            + "只把装配结果打进日志并落盘到 tapedump/。"
+            + "它验证的是整套重写里唯一没法用合成数据覆盖的一环：**真实客户端磁带**能不能被新装配器正确处理"
+            + "（旧实现所有窗口错误都出在「拿真实磁带 + 用锚点算窗口」这一步）。"
+            + "⚠ 开着它会让每个有客户端的录制者多回一轮磁带；装完后关掉。")]
+        public static ConfigEntry<bool> FetchRealTapes;
+
         // ── 状态（**一个**地方）────────────────────────────────────────
         private static readonly List<Act> Acts = new List<Act>();
 
@@ -70,6 +79,17 @@ namespace HideAndSeek.Features.Replay
                 Note = note,
             };
             Acts.Add(act);
+
+            // 【真索带模式】请录制者在**此刻**把当前时刻登记成一个可裁事件：
+            //  客户端 `ReserveSaveTape` 会把它记进 `_killLocalTime[key]` 并插一枚 `NormalTimeEdit`。
+            // 没有这一步，客户端 `BuildUploadTape` 查不到这个 key 会回**空磁带**（实测踩过）。
+            if (FetchRealTapes?.Value ?? false)
+            {
+                var p = FindPlayer(GameRoom.Instance, act.RecorderId);
+                if (p?.Session != null)
+                    p.Session.Send(new S_RECORD_REPLAY { RecordTime = act.Key });
+            }
+
             return act;
         }
 
@@ -91,6 +111,7 @@ namespace HideAndSeek.Features.Replay
             _ending = "结算前";
             _reported = false;
             HostRecorder.Clear();
+            ReplayDirector.ReportFetch();   // 上一局的真实磁带汇总（如果有）
             LastHitAt.Clear();
             ReplayDirector.Reset();
         }
@@ -365,6 +386,11 @@ namespace HideAndSeek.Features.Replay
                 Report();   // 概览：阈值 / 采样
                 // 影子：逐幕做一次完整装配并打印结果（不发包、不广播、不播放）。
                 ReplayDirector.ShadowAssemble(Acts, EndReplayFeature.BombBlackout?.Value ?? false);
+
+                // 【真索带】真的向客户端要一遍 —— 验证"真实客户端磁带 → 装配"这一环。
+                // 收上来的包由下面的 TapeHook 拦住，绝不会被广播出去污染别人的回放。
+                if (FetchRealTapes?.Value ?? false)
+                    ReplayDirector.FetchTapes(Acts);
             }
         }
 
@@ -426,6 +452,57 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
+        /// <summary>
+        /// 收客户端回传的真实磁带 —— **只接我们自己的 key**。
+        ///
+        /// ⚠ 为什么必须拦在这里，而不是放着不管：
+        ///   现有实现的 `TapeHook` 对"不是它登记的 key"一律 `return true` **交还原版**，
+        ///   而原版 `HostPacketHandler.Handle_C_TAPE` 会直接 `Broadcast(S_TAPE)` ——
+        ///   于是我们索取回来的原始磁带会**广播给所有客户端**、进入它们的 `_playTapes`
+        ///   （那就是回放的播放列表）⇒ 用户看到的回放里会凭空多出几段原始录像。
+        ///
+        /// 两个 Prefix 并存不会打架：Harmony 只在"某个 Prefix 返回 false"时跳过其余 Prefix，
+        /// 而本类只在**自己的 key** 上 return false，其余一律 return true 放行给旧实现。
+        /// `Priority.First` 是为了先判"是不是我们的 key"。
+        /// </summary>
+        [HarmonyPatch(typeof(HostPacketHandler), nameof(HostPacketHandler.Handle_C_TAPE))]
+        internal static class TapeHook
+        {
+            [HarmonyPrefix]
+            [HarmonyPriority(Priority.First)]
+            private static bool Prefix(IPacketSink session, Packet packet)
+            {
+                if (!(FetchRealTapes?.Value ?? false))
+                    return true;
+                if (!Armed)
+                    return true;
+
+                var c = packet?.Pkt as C_TAPE;
+                if (c == null)
+                    return true;
+
+                int recorderId = ResolveRecorder(session);
+                if (recorderId <= 0)
+                    return true;
+
+                return !ReplayDirector.OnTape(recorderId, c.RecordTime, c.SnapShots.ToList());
+            }
+
+            /// <summary>包处理器只给到 session，用"哪个玩家的 Session 就是它"反查 id。</summary>
+            private static int ResolveRecorder(IPacketSink session)
+            {
+                var room = GameRoom.Instance;
+                if (room == null || session == null)
+                    return 0;
+                foreach (var p in room.Players)
+                {
+                    if (p?.PublicInfo != null && ReferenceEquals(p.Session, session))
+                        return p.PublicInfo.PlayerId;
+                }
+                return 0;
+            }
+        }
+
         // ── 输出 ────────────────────────────────────────────────────────
 
         private static void Report()
@@ -452,18 +529,11 @@ namespace HideAndSeek.Features.Replay
                     + $"刀杀 {_murderDeaths}/{white} 人（阈值 {need}% ⇒ {(armed ? "会播" : "不会播")}）════");
                 Plugin.Log.LogInfo($"[HS-Shadow] 采样：{HostRecorder.Stats()}");
 
+                // 单幕详情（含剪影与帧数）由 ReplayDirector 的装配报告给出，这里只列幕序。
                 foreach (var a in Acts)
-                {
-                    // 剪影槽位：必须在"本幕会出现在画面里的人"之外，所以先算 roster
-                    ActTable.BuildRoster(a.SubjectId, a.Window, out var rosterIds);
-                    var sil = SilhouetteResolver.Resolve(a.SubjectId, rosterIds);
-                    a.SilhouetteId = sil.Id;
-
-                    Plugin.Log.LogInfo($"[HS-Shadow]   {ActTable.Name(a.Kind),-4} key={a.Key,-3} "
-                        + $"窗口={a.Window} 主角=#{a.SubjectId,-2} 剪影={sil} "
-                        + $"roster={rosterIds.Count} 人 录制者=#{a.RecorderId} "
+                    Plugin.Log.LogInfo($"[HS-Shadow]   幕 {a.Key,-3} {ActTable.Name(a.Kind),-4} 窗口={a.Window} "
+                        + $"主角=#{a.SubjectId,-2} 录制者=#{a.RecorderId} "
                         + $"来源={(CanRecord(a.RecorderId) ? "客户端磁带" : (a.RecorderId > 0 ? "服务端合成（该录制者无客户端）" : "服务端合成"))}  {a.Note}");
-                }
 
                 if (Acts.Count == 0)
                     Plugin.Log.LogInfo("[HS-Shadow]   （这一幕是空的）");

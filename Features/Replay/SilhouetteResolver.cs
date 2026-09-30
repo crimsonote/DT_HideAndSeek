@@ -46,7 +46,7 @@ namespace HideAndSeek.Features.Replay
         /// 挑一个剪影槽位。
         /// </summary>
         /// <param name="subjectId">本幕主角（镜头要拍的人）—— 他**不能**被选中。</param>
-        /// <param name="rosterIds">本幕"会出现在画面里"的人（含主角）。</param>
+        /// <param name="rosterIds">本幕"会出现在画面里的人"（含主角）。</param>
         public static Result Resolve(int subjectId, ICollection<int> rosterIds)
         {
             if (subjectId <= 0)
@@ -88,8 +88,6 @@ namespace HideAndSeek.Features.Replay
                         continue;                       // 他在本幕画面里 ⇒ 剪影落在他身上会多一个黑块
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
-                    if (!HostRecorder.HasRows(id))
-                        continue;                       // 没有任何采样 ⇒ 客户端可能根本不认识他
 
                     return new Result { Id = id, Why = "本幕不在场" };
                 }

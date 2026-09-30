@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Protocol;
+using Server.Game;
+using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Replay
 {
@@ -82,14 +85,21 @@ namespace HideAndSeek.Features.Replay
 
         private static bool AssembleOne(Act act, bool bombBlackout)
         {
-            // ① roster：本幕"会出现在画面里的人"
-            ActTable.BuildRoster(act.SubjectId, act.Window, out var rosterIds);
+            // ① 世界帧（服务端合成）。
+            //    它的开头就是"窗口起点的全员出场帧" —— 那一轮同时承担两个作用：
+            //    让每台客户端装配好自己的 id 0 替身，以及作为"谁在画面里"的**唯一依据**。
+            //    黑方收尾幕用断电视野，这是**刻意的艺术选择**，所以写在这里而不是让合成器猜。
+            bool dark = act.Kind == ActKind.BlackTail;
+            var frames = HostSynth.Frames(act.Window, act.SubjectId, dark, bombBlackout);
 
-            // ② 剪影槽位（唯一决策点）
-            var sil = SilhouetteResolver.Resolve(act.SubjectId, rosterIds);
+            // ② "谁在画面里" —— **直接从帧里读**，不做任何 AOI / 房间的近似推断。
+            var visibleIds = ActTable.VisibleIn(frames, act.Window.From, 0);
+
+            // ③ 剪影槽位（唯一决策点）：必须落在"不会出现在画面里"的人身上。
+            var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
             act.SilhouetteId = sil.Id;
 
-            // ③ 首帧信息：用**剪影槽位自己的**信息，只把位置换成"主角在窗口起点的位置"。
+            // ④ 首帧信息：用**剪影槽位自己的**信息，只把位置换成"主角在窗口起点的位置"。
             //    为什么不能省事复用主角的信息：客户端 `Spawn → SetInfo` 里有一句
             //    `RefreshSkeletonCharacter(CharacterId)`，会**把这个人的角色改成主角的角色**，
             //    而且改动留在客户端的 PublicInfo 上 —— 录像绝不能影响结算画面（实测踩过）。
@@ -101,25 +111,8 @@ namespace HideAndSeek.Features.Replay
                 return false;
             }
 
-            // ④ roster 里**去掉剪影槽位**：他是"不该被看见的人"，
-            //    给他补出场帧反而会把他装配到画面里（剪影就变成一个可见的黑块）。
-            var roster = new List<PublicPlayerInfo>(rosterIds.Count);
-            foreach (int id in rosterIds)
-            {
-                if (id == sil.Id)
-                    continue;
-                var info = HostRecorder.At(id, act.Window.From);
-                if (info != null)
-                    roster.Add(info);
-            }
-
-            // ⑤ 世界帧（服务端合成）
-            //    黑方收尾幕用断电视野 —— 这是**刻意的艺术选择**，所以写在这里而不是让合成器猜。
-            bool dark = act.Kind == ActKind.BlackTail;
-            var frames = HostSynth.Frames(act.Window, act.SubjectId, dark, bombBlackout);
-
-            // ⑥ 装配合规磁带（唯一出口）
-            var tape = TapeAssembler.Assemble(act, frames, head, roster, out var rep);
+            // ⑤ 装配合规磁带（唯一出口）
+            var tape = TapeAssembler.Assemble(act, frames, head, visibleIds, out var rep);
 
             float density = rep.FramesOut / Math.Max(0.01f, act.Window.Length);
             if (tape == null)
@@ -141,6 +134,133 @@ namespace HideAndSeek.Features.Replay
         /// = **十几秒前的位置** ⇒ 与窗内帧相差上千单位 ⇒ 角色朝错误方向匀速漂移
         /// （实测"每一帧都是坏的飘的"就是这么来的）。这里从接口上就没有这个可能。
         /// </summary>
+        // ── 真索带（验证用：真的向客户端要，但不广播、不播放）────────────────
+
+        /// <summary>待收的幕：`(录制者, key)` → Act。客户端回包时按这个找回对应的一幕。</summary>
+        private static readonly Dictionary<long, Act> Pending = new Dictionary<long, Act>();
+
+        private static long Slot(int recorderId, int key) => ((long)recorderId << 32) | (uint)key;
+
+        /// <summary>本局有几段真的向客户端索取了（用于收尾汇总）。</summary>
+        private static int _fetched, _assembled, _failed;
+
+        /// <summary>
+        /// 【验证用】真的向客户端索取真实磁带 —— 但**不广播、不播放**，只装配 + 落盘。
+        ///
+        /// 为什么必须先做这一步：它验证的是"**真实客户端磁带**能不能被新装配器正确处理"，
+        /// 而这是整套重写里唯一没法用合成数据覆盖的部分（影子装配用的是房主侧采样）。
+        /// 旧实现所有的窗口错误都出在"拿真实磁带 + 用锚点算窗口"这一步上，所以这一环必须真跑。
+        ///
+        /// ⚠ 收上来的 `C_TAPE` **必须由我们拦下来**（见 `ReplayFeature.TapeHook`）：
+        ///   否则现有实现的 TapeHook 会把它判成"不是我的片段"交还原版 ⇒
+        ///   原版 `Handle_C_TAPE` 直接 `Broadcast(S_TAPE)` ⇒ 污染所有客户端的 `_playTapes`
+        ///   ⇒ 用户看到的回放会多出几段莫名其妙的原始录像。
+        /// </summary>
+        public static void FetchTapes(List<Act> acts)
+        {
+            Pending.Clear();
+            _fetched = _assembled = _failed = 0;
+
+            var room = GameRoom.Instance;
+            if (room == null || acts == null)
+            {
+                Plugin.Log.LogInfo("[HS-Shadow/真实] 房间不存在，跳过索取。");
+                return;
+            }
+
+            foreach (var act in acts)
+            {
+                // 只有**有客户端**的录制者才问得到东西；假人没有 Session，旧实现也是直接跳过。
+                var p = FindPlayer(room, act.RecorderId);
+                if (act.RecorderId <= 0 || p?.Session == null)
+                    continue;
+
+                Pending[Slot(act.RecorderId, act.Key)] = act;
+                p.Session.Send(new S_REQUEST_TAPE { RecordTime = act.Key });
+                _fetched++;
+            }
+
+            Plugin.Log.LogInfo($"[HS-Shadow/真实] 已向客户端逐个索取 {_fetched} 段真实磁带"
+                + $"（每 key 单发 ⇒ 客户端回原始缓冲，由我们裁；其余 {acts.Count - _fetched} 幕没有客户端可用）");
+        }
+
+        /// <summary>
+        /// 收到一段真实客户端磁带（由 `ReplayFeature.TapeHook` 调用）。
+        /// 返回 true = 这段是我们登记的，已处理（调用方不要交还原版）。
+        /// </summary>
+        public static bool OnTape(int recorderId, int key, List<SnapShot> raw)
+        {
+            long slot = Slot(recorderId, key);
+            if (!Pending.TryGetValue(slot, out var act))
+                return false;
+
+            Pending.Remove(slot);
+            Current = Phase.Preparing;
+
+            try
+            {
+                // "谁在画面里" —— 直接读**客户端真实磁带**里的 SpawnShot（那就是 AOI 的真实结果）。
+                var visibleIds = ActTable.VisibleIn(raw, act.Window.From, 0);
+                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
+                act.SilhouetteId = sil.Id;
+
+                var head = BuildHead(act, sil.Id);
+                var tape = TapeAssembler.Assemble(act, raw, head, visibleIds, out var rep);
+                float density = rep.FramesOut / Math.Max(0.01f, act.Window.Length);
+
+                if (tape == null)
+                {
+                    _failed++;
+                    Plugin.Log.LogWarning($"[HS-Shadow/真实] {rep.Line()}");
+                }
+                else
+                {
+                    _assembled++;
+                    Plugin.Log.LogInfo($"[HS-Shadow/真实] {rep.Line()} 密度={density:F1}帧/秒"
+                        + $"，客户端给了 {raw.Count} 帧");
+                }
+
+                // 落盘对照（复用 TapeDump 的目录；这里 at/before/after 传的是**新定义的绝对区间**，
+                // 所以头部那个"窗口"数值就是规范窗口 —— 与旧实现那几行并列时一眼能看出差别）。
+                TapeDump.Save(recorderId, key, "新装配-" + ActTable.Name(act.Kind),
+                    act.Window.From, 0f, act.Window.Length, raw, tape, sil.ToString());
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _failed++;
+                Plugin.Log.LogWarning($"[HS-Shadow/真实] 装配抛异常 — {ex.Message}");
+                return true;
+            }
+        }
+
+        /// <summary>收尾汇总（结算后调用）。</summary>
+        public static void ReportFetch()
+        {
+            if (_fetched == 0 && _assembled == 0 && _failed == 0)
+                return;
+            Plugin.Log.LogInfo($"[HS-Shadow/真实] 真实磁带汇总：索取 {_fetched} 段，"
+                + $"装配成功 {_assembled} 段，失败 {_failed} 段"
+                + $"（落盘在插件目录 tapedump/ 下，与旧实现的 dump 并列可比）");
+        }
+
+        private static GamePlayer FindPlayer(GameRoom room, int id)
+        {
+            if (room == null || id <= 0)
+                return null;
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)
+                    return p;
+            }
+            foreach (var p in room.DeadPlayers)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)
+                    return p;
+            }
+            return null;
+        }
         private static PublicPlayerInfo BuildHead(Act act, int silhouetteId)
         {
             var subject = HostRecorder.At(act.SubjectId, act.Window.From);

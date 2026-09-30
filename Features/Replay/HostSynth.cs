@@ -42,6 +42,24 @@ namespace HideAndSeek.Features.Replay
 
             var samples = HostRecorder.Range(window.From, window.To);
 
+            // ── 窗口起点的"全员出场帧" ──────────────────────────────────
+            // 它有两个作用：
+            //   ① 让每台客户端把自己 id 0 的替身装配好（缺了 ⇒ 换道具镜头打在空引用上 ⇒ 整段卡死）；
+            //   ② 它就是"谁在画面里"的**唯一依据** —— `TapeAssembler` 从这个列表判断要补谁的帧，
+            //      `SilhouetteResolver` 也从它判断剪影该落在谁身上。不做任何 AOI/房间的近似推断。
+            // 服务端这条路上没有 AOI 信息，所以按"有采样的所有人"给（保守：宁可多装配，不可漏）。
+            foreach (var info in HostRecorder.Roster(window.From))
+            {
+                if (info == null)
+                    continue;
+                shots.Add(new SnapShot
+                {
+                    Type = ESnapShotType.SpawnShot,
+                    TimeStamp = window.From,
+                    Spawn = info.Clone(),
+                });
+            }
+
             // ── 相机 ────────────────────────────────────────────────────
             // 原版只有 `ChangeArea` 一条路能改相机目标，而且 `RoomId` 必须合法
             // （客户端 `RoomDic[RoomId]` 直接索引，0 会抛 `KeyNotFoundException`）。
