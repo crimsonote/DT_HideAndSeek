@@ -327,6 +327,51 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
+        /// 回放期间**必须**让服务端留在 `Survive`（只写字段 `_state`，**不发包**）。
+        ///
+        /// 两条理由（都读过码）：
+        ///   · `GameRoom` 的每秒 tick 里有 `case EGameState.Trial: TrialTick();`，而
+        ///     `TrialTick`（守卫 `if (State == Trial)`）会跑 `Trial.Tick()` ——
+        ///     **原版裁判状态机接管，并不断广播 `S_TRIAL_STATE{Discuss/VotePhase/VoteResult}`**，
+        ///     玩家就会看到「开始讨论 / 投票 / 投票结果」那些界面，而且会把我们的 Replay 覆盖掉
+        ///     （我们没走 `TrialManager.Init`，DiscussionSecond 是 0 ⇒ 讨论瞬间过期）。
+        ///   · `GameOver()` 末尾是 `if (State == EGameState.Survive) PushAfter(7500, …TotalResult)`
+        ///     ⇒ 服务端不在 Survive 时，结算那一步反而不执行。
+        ///
+        /// 正常情况下服务端一直是 Survive（我们只给客户端发状态包，见 `BeginReplayScreen` 的注释）。
+        /// 但原版的**侦探阶段是另一条独立链路**：`DetectiveTick` 每秒把自己 `PushAfter` 回来，
+        /// 到点就 `ChangeGameState(EGameState.Trial)` —— 它完全可能在我们回放期间把服务端推进 Trial。
+        /// 所以每次拦截结算时都兜一次（黑方全敲完那种局面每秒都会来一次），把它按回去。
+        ///
+        /// 只写字段而不走 `ChangeGameState`：后者的 setter 会附带广播等动作，
+        /// 而客户端的 Trial 视图**必须留着**（回放宿主 `UI_TrialEvent` 就挂在它上面）。
+        /// </summary>
+        private static void EnsureServerSurvive(GameRoom room)
+        {
+            try
+            {
+                if (room == null || room.State == EGameState.Survive)
+                    return;
+
+                var field = AccessTools.Field(typeof(GameRoom), "_state");
+                if (field == null)
+                {
+                    Plugin.Log.LogWarning("[HS] EndReplay：找不到 GameRoom._state，无法把服务端按回 Survive。");
+                    return;
+                }
+
+                Plugin.Log.LogWarning(
+                    $"[HS] EndReplay：服务端状态是 {room.State}（回放期间必须是 Survive）——原版裁判状态机会接管并广播"
+                    + "讨论/投票/投票结果界面，已按回 Survive（只改字段，不发包）。");
+                field.SetValue(room, EGameState.Survive);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：把服务端按回 Survive 失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// 要不要拦下这次结算？true = 已拦下（结算延后，稍后由 <see cref="FinishReplay"/> 续上）。
         /// 任何异常都吞掉并放行 —— 回放出事绝不能把对局卡在结算之前。
         /// </summary>
@@ -343,6 +388,7 @@ namespace HideAndSeek.Features.Rule
                 if (_inReplay)
                 {
                     Plugin.Log.LogInfo($"[HS] EndReplay（{reason}）：回放进行中，继续拦截结算。");
+                    EnsureServerSurvive(GameRoom.Instance);   // ★ 每秒兜一次：原版裁判状态机不能在回放期间接管
                     return true;
                 }
 
@@ -378,6 +424,7 @@ namespace HideAndSeek.Features.Rule
                 }
 
                 _inReplay = true;
+                EnsureServerSurvive(room);                 // ★ 开局先按一次（正常情况下本来就是 Survive，等于空操作）
                 Plugin.Log.LogInfo($"[HS] EndReplay：开始回放，共 {plan.Count} 段。");
                 RequestTapes(plan);
                 return true;
