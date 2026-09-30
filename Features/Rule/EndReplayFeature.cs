@@ -100,17 +100,13 @@ namespace HideAndSeek.Features.Rule
             "爆炸后只有这么多素材。", Min = 0f, Max = 7f)]
         public static ConfigEntry<float> BlackTailSec;
 
-        [ConfigField(7.5f, "「白方巡礼」（白胜结局的幸存者巡礼）：判定前秒数。与自爆幕同构 —— " +
-            "先在这段时间里逐个拍幸存者，再由「黑方收尾」幕收尾。", Min = 0f, Max = 30f)]
+        [ConfigField(7.5f, "「白方各段」：白胜结局里幸存者那几段的总窗口（判定前秒数）。" +
+            "**按人数平分**：N 个幸存者各录一段自己的视角，每人拿到 (前+后)÷N 秒；" +
+            "拿不到客户端磁带的才用服务端兜底。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> TourBeforeSec;
 
-        [ConfigField(0.5f, "「白方巡礼」：判定后秒数。", Min = 0f, Max = 30f)]
+        [ConfigField(0.5f, "「白方各段」：判定后秒数（同上，并入平分的总窗口）。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> TourAfterSec;
-
-        [ConfigField(0.2f, "运镜：机位在两方之间**直线平移**所用的秒数（不是瞬移 —— 平移期间机位角色自己" +
-            "在高速移动，镜头自然跟过去）。人越多、或窗口越紧，会被自动压缩并记日志。",
-            Min = 0.02f, Max = 2f)]
-        public static ConfigEntry<float> CameraPanSec;
 
         [ConfigField(12, "最多播放几段，取段顺序为 拿刀 → 杀人 → 最后时段。段数越多回放越长。",
             Min = 1f, Max = 40f)]
@@ -218,10 +214,12 @@ namespace HideAndSeek.Features.Rule
         // 结算那一刻 `SurviveTime` **已经停走** ⇒ 所有请求拿到同一个 base（实测日志里全是 570）。
         // 而客户端 `_playTapes` 是 `Dictionary<int, List<SnapShot>>`、**只以 RecordTime 为键**：
         // 同键的多段会互相覆盖、只剩最后一幕。所以必须自己加偏移区分，而偏移量同时决定**播放顺序**：
-        //     最后时段 = base + 1 + 序号   <   白方巡礼 = base + 100   <   黑方收尾 = base + 101
-        // 与 `BuildPlan` 的排片顺序一致：拿刀 → 杀人 → 最后时段 → 白方巡礼 → 黑方收尾。
+        //     最后时段  = base + 1 + 序号
+        //     白方各一段 = base + 100 + 序号   ← "总窗口按人数平分"：每人一段（优先客户端磁带）
+        //     黑方收尾  = base + 200           ← 凶手本人那一段，永远排最后
+        // 与 `BuildPlan` 的排片顺序一致：拿刀 → 杀人 → 最后时段 → 白方各段 → 黑方收尾。
         private const int KeyWhiteTour = 100;
-        private const int KeyBlackAct = 101;
+        private const int KeyBlackAct = 200;
 
         private static int BaseKey
         {
@@ -429,13 +427,14 @@ namespace HideAndSeek.Features.Rule
         /// ⚠️ 客户端收到它会执行 `_recordList.Last()`（:31679）—— 只有本局生存阶段在场过、
         /// 真的录过像的客户端才有内容，所以调用方必须先确认对象是真人玩家（有 Session）。
         /// </summary>
-        private static bool RequestRecord(GamePlayer player, int key, string kind, float before, float after)
+        private static bool RequestRecord(GamePlayer player, int key, string kind, float before, float after,
+            float atOffset = 0f)
         {
             if (player?.Session == null || player.PublicInfo == null)
                 return false;
 
             player.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
-            return AddClip(key, player.PublicInfo.PlayerId, kind, before, after);
+            return AddClip(key, player.PublicInfo.PlayerId, kind, before, after, null, atOffset);
         }
 
         private static bool IsArmed()
@@ -499,10 +498,9 @@ namespace HideAndSeek.Features.Rule
                 _ending = "结算前（白方胜利）";
                 _whiteWin = true;
 
-                // ★ 白胜也走「运镜两幕」：幸存者巡礼（服务端录制，逐个快速平移）+ 黑方失败收尾（断电视野）。
-                //   窗口锚点：巡礼 = 判定那一刻前后（同自爆幕的 7.5/0.5）；黑方那一幕**结束于判定那一刻**
-                //   —— 白胜是立刻推 `TotalResult`（不像黑胜还有 7.5s 结算演出），判定之后没有素材可拍，
-                //   所以取 [判定−N, 判定]：观众刚看完"活着的那些人"，镜头再落回"输掉的那一个"。
+                // ★ 白胜与自爆同口径：**每个幸存白方各录一段自己的视角**，总窗口按人数平分；
+                //   这里的人都还活着（白胜那一刻幸存者没死）⇒ 正常录得到客户端磁带。
+                //   凶手那一段收尾，窗口落在判定之前 `tail` 秒（白胜是立刻推 TotalResult，判定后没素材）。
                 try
                 {
                     var room = GameRoom.Instance;
@@ -511,23 +509,29 @@ namespace HideAndSeek.Features.Rule
 
                     int blackId = FindBlackId(room);
                     var subjects = SurvivingWhites(room, blackId);
-                    int rec = blackId > 0 ? blackId : (subjects.Count > 0 ? subjects[0] : 0);
-                    if (rec == 0)
-                    {
-                        Plugin.Log.LogWarning("[HS] EndReplay：白胜运镜找不到可用录制者，跳过。");
-                        return;
-                    }
 
                     float before = TourBeforeSec?.Value ?? 7.5f;
                     float after = TourAfterSec?.Value ?? 0.5f;
                     float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
+                    float per = Math.Max(0.5f, (before + after) / Math.Max(1, subjects.Count));
 
-                    AddClip(BaseKey + KeyWhiteTour, rec, "巡礼", before, after, subjects);
-                    AddClip(BaseKey + KeyBlackAct, rec, "黑方", 0f, tail, null, -tail);
+                    int seq = 0;
+                    foreach (int id in subjects)
+                    {
+                        var p = FindPlayerById(room, id);
+                        if (p?.Session == null || p.IsDummy)
+                            continue;
+                        if (RequestRecord(p, BaseKey + KeyWhiteTour + seq, "巡礼", per, 0f))
+                            seq++;
+                    }
 
-                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 登记两幕：幸存者巡礼 {subjects.Count} 人"
-                        + $"（{before:F1}s 前 / {after:F1}s 后）+ 黑方失败收尾 {tail:F1}s"
-                        + $"（窗口落在判定前 {tail:F1}s，断电视野）。");
+                    var black = FindPlayerById(room, blackId);
+                    if (black?.Session != null && !black.IsDummy)
+                        RequestRecord(black, BaseKey + KeyBlackAct, "黑方", 0f, tail, -tail);
+
+                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 幸存白方 {subjects.Count} 人各要一段"
+                        + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}，优先客户端磁带）"
+                        + $" + 黑方失败收尾 {tail:F1}s（窗口落在判定前 {tail:F1}s，断电视野）。");
                 }
                 catch (Exception ex)
                 {
@@ -607,27 +611,45 @@ namespace HideAndSeek.Features.Rule
                     EndReplayHostTape.NoteBomb(
                         Managers.Game.ClientTime, __instance.PublicInfo.PlayerId, __instance.PublicInfo.Pos);
 
-                    // ★ 自爆幕与黑方收尾幕**都由服务端录制**，不再请客户端录：
-                    //   · 被处决者那一刻就死了，客户端 `Recording()` 的 `!IsAlive` 守卫直接 return；
-                    //   · 假人更是没有客户端（实测两次都栽在这里：一次一段都没拿到，一次拿到的是假人视角）。
-                    //   所以这里只做两件事：登记两幕 + 记下爆炸时刻（供服务端缓冲取素材）。
-                    //   ⚠ 项圈自爆会对每个存活白方各调一次本钩子 ⇒ 必须用 `HasKind` 保证只登记一次，
-                    //     否则计划里会出现 N 幕一模一样的巡礼。
+                    // ★ 自爆幕＝"**每个被处决的白方各一段**"，总窗口按人数平分 —— 用户定的口径：
+                    //   仿照原版"一个人一段视角"的效果，而**优先用客户端磁带**，拿不到才用服务端兜底。
+                    //
+                    //   · **客户端磁带是拿得到的**：他们死后 `Recording()` 会停（`!IsAlive` 守卫），
+                    //     但**死前的录制缓冲还在**（每秒一轮 `RecordAllType`，由 `S_TIME` 驱动 :42314，
+                    //     环形只保留 `_length ≤ 14` 轮 ≈ 死前 14 秒）；而 `Handle_S_RECORD_REPLAY`(:42958)
+                    //     与 `ReserveSaveTape`(:31647) **都没有 `IsAlive` 守卫** ⇒ 事后索取也能拿到
+                    //     "死前那一段"（实测日志里的 `[Replay] 미확정 테이프 … 260컷 업로드` 就是这条路）。
+                    //   · **镜头跟着录制者本人** ⇒ 他本人在哪个房间镜头就在哪个房间，不存在跨房间取景
+                    //     （那正是之前"漂移/被拽回"的根源）。
+                    //   · 每人只取"自己那卷磁带的末尾 per 秒"——他带子的末尾就是他倒下的时刻。
+                    //   ⚠ 项圈自爆会对每个存活白方各调一次本钩子 ⇒ 必须用 `HasKind` 保证只登记一次。
                     if (!HasKind("自爆"))
                     {
                         int blackId = FindBlackId(room);
-                        int rec = blackId > 0 ? blackId : __instance.PublicInfo.PlayerId;
                         var subjects = SurvivingWhites(room, blackId);
 
                         float before = SelfDestructBeforeSec?.Value ?? 7.5f;
                         float after = SelfDestructAfterSec?.Value ?? 0.5f;
                         float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
+                        float per = Math.Max(0.5f, (before + after) / Math.Max(1, subjects.Count));
 
-                        AddClip(BaseKey + KeyWhiteTour, rec, "自爆", before, after, subjects);
-                        AddClip(BaseKey + KeyBlackAct, rec, "黑方", 0f, tail, null, after);
+                        int seq = 0;
+                        foreach (int id in subjects)
+                        {
+                            var p = FindPlayerById(room, id);
+                            if (p?.Session == null || p.IsDummy)
+                                continue;
+                            if (RequestRecord(p, BaseKey + KeyWhiteTour + seq, "自爆", per, 0f))
+                                seq++;
+                        }
 
-                        Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记两幕：白方巡礼 {subjects.Count} 人"
-                            + $"（{before:F1}s 前 / {after:F1}s 后，服务端录制）+ 黑方收尾 {tail:F1}s（断电视野）。");
+                        var black = FindPlayerById(room, blackId);
+                        if (black?.Session != null && !black.IsDummy)
+                            RequestRecord(black, BaseKey + KeyBlackAct, "黑方", 0f, tail, after);
+
+                        Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 白方 {subjects.Count} 人各要一段"
+                            + $"（每人 {per:F1}s ＝ ({before:F1}+{after:F1})÷{subjects.Count}，优先客户端磁带，"
+                            + "拿不到才服务端兜底）+ 黑方收尾 {tail:F1}s（断电视野）。");
                     }
                 }
                 catch (Exception ex)
@@ -897,6 +919,25 @@ namespace HideAndSeek.Features.Rule
             return 0;
         }
 
+        /// <summary>按 id 找玩家（活人表 + 死者表）—— "每人各录一段"要拿到他的 Session 才能发请求。</summary>
+        private static GamePlayer FindPlayerById(GameRoom room, int id)
+        {
+            if (id <= 0)
+                return null;
+
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)
+                    return p;
+            }
+            foreach (var p in room.DeadPlayers)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)
+                    return p;
+            }
+            return null;
+        }
+
         /// <summary>
         /// 广播 `S_NOTIFY_BLACK`，把黑方标成客户端的"已知黑幕"（`KnownBlackIds`）⇒ 回放里他的昵称是**红色**。
         ///
@@ -939,11 +980,6 @@ namespace HideAndSeek.Features.Rule
             var byRecorder = new Dictionary<int, List<int>>();
             foreach (var clip in plan)
             {
-                // 服务端合成的幕（巡礼 / 自爆 / 黑方收尾）不需要向任何客户端索取磁带 ——
-                // 它们的数据来自房主自己的缓冲，向客户端要只会白跑一趟。
-                if (NeedsHostTape(clip))
-                    continue;
-
                 if (!byRecorder.TryGetValue(clip.RecorderId, out var list))
                     byRecorder[clip.RecorderId] = list = new List<int>();
                 list.Add(clip.Key);
@@ -1144,28 +1180,19 @@ namespace HideAndSeek.Features.Rule
         /// `ChangeMyPlayer(_cache[id])` 是直接索引，人不在缓存里会抛。
         /// 取不到就整段跳过（宁缺勿崩）。
         ///
-        /// ⚠ 「服务端合成」的那几幕**不走占位这条路**：它们合不上时按用户口径**降级为原版渲染**
-        /// （见本方法里 `NeedsHostTape` 那一支），不塞假转场。
+        /// ⚠ 「服务端合成」只做**兜底**：某一段没等到客户端磁带时才由房主侧补一段
+        /// （见本方法里 `!clip.Filled && TrySendHostTape` 那一支），合不上再退占位磁带。
         /// </summary>
         private static void SendPlaceholders(GameRoom room, List<Clip> plan)
         {
-            // ⚠ 这个开关**只管"补占位磁带"**，绝不能顺手把服务端合成也一起关掉：
-            //   以前它就写成方法开头的一道早退，于是把 `PlaceholderTape` 关掉会连带让
-            //   「自爆 / 巡礼 / 黑方」三幕整段消失（它们只能靠服务端合成）。
+            // ⚠ 这个开关**只管"补占位磁带"**，绝不能顺手把服务端合成也一起关掉。
             bool placeholder = PlaceholderTape?.Value ?? true;
             int sent = 0;
             foreach (var clip in plan)
             {
-                // ★ **服务端合成的幕**（巡礼 / 自爆 / 黑方收尾）走这里：合成不了就
-                //   **降级为原版渲染**（用户定的口径）—— 不补占位磁带、不强行塞一段假转场；
-                //   它们本来就向客户端要不到磁带，所以观众看到的是"没有这一幕"，
-                //   而同场其它客户端磁带（例如黑方那一卷）照旧原样播（黑方视角保留原版黑遮罩）。
-                if (NeedsHostTape(clip))
-                {
-                    if (TrySendHostTape(room, clip))
-                        sent++;
-                    continue;
-                }
+                // ★ **优先客户端磁带**（用户定的口径）：只有这一段迟迟没收到，才用服务端合成的兜底版本。
+                //   合成版本的镜头就是"盯着录制者本人"，所以他本人在哪个房间镜头就在哪个房间，
+                //   不存在跨房间取景（那正是之前"漂移/被拽回"的根源）。
 
                 // ★ 普通片段：优先用房主侧录制器**合成真磁带**（假人与已死者这两类客户端交不上磁带）；
                 //   合不上再退回占位磁带。
@@ -1215,28 +1242,15 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 这些片段**无论客户端有没有交磁带**都改用服务端录制 —— 它们是"合并剪辑"，
-        /// 需要跨视角/跨时刻的素材：自爆是**同一刻的多机位**（白方各有各的死法现场），
-        /// 白胜结局（待做）是**幸存者巡礼 + 黑方失败**。
+        /// 【兜底】用 <see cref="EndReplayHostTape"/> 给这一段合成磁带 —— 只在**客户端磁带没到**时用。
         ///
-        /// 为什么不直接用客户端那卷：客户端的录像在他死亡那一刻就停了
-        /// （`Recording()` 的 `!IsAlive` 守卫），而且它只收到**自己视野内**的特效帧 ⇒
-        /// 远处那些爆炸根本不在它的磁带里。
-        /// </summary>
-        private static bool NeedsHostTape(Clip clip)
-            => clip.Kind == "自爆" || clip.Kind == "巡礼" || clip.Kind == "黑方";
-
-        /// <summary>
-        /// 用房主侧缓冲（<see cref="EndReplayHostTape"/>）给这一段合成磁带并广播出去。
+        /// ★ 关键（这是之前"哑剧/漂移"的教训）：**镜头目标就是录制者本人**（`clip.RecorderId`）。
+        ///   原版回放里 `CameraTargetId` 恒等于录制者自己 —— 他本人在哪个房间，镜头就在哪个房间，
+        ///   走门换房间由他自己走出来的 `AreaShot` 决定。**原版没有"把相机送到别的房间取景"这回事**
+        ///   （`ChangeArea`(:29605) 只有换房间/设相机目标/设黑灯三件事，相机被约束在当前房间边界内），
+        ///   所以自造一个"隐形机位在房间之间飞"必然出现"漂移、然后被边界拽回"。
         ///
-        /// 窗口 = **登记那一刻的房主时钟**（`Clip.At`）± 配置的前后秒数。这一段本来就没有客户端磁带，
-        /// 也就没有"磁带内锚点"可用；房主缓冲的采样也在同一时钟上，所以两边自洽。
-        ///
-        /// 机位（摄影机载具）由 <see cref="FindHostTapeAnchors"/> 按"无客户端实体 → 画面外的死者 →
-        /// 其他画面外人"挑；**挑不到就降级为原版渲染** —— 不合成、不补占位磁带，客户端交上来的那卷
-        /// 原样播（`TapeHook` 不再拦它），本来没有磁带就整段没有，代价是黑方那一侧保留原版黑遮罩。
-        /// 机位若正好是某位观众本人，还要按 <see cref="RepairAnchorCollision"/> 单独给他补发一份
-        /// （否则他客户端上的机位每一帧都会被改写到 id 0，镜头定格在半成品替身上）。
+        /// ⇒ 现在这条兜底路径不会再跨房间：谁的那一段，镜头就跟着谁。
         /// </summary>
         private static bool TrySendHostTape(GameRoom room, Clip clip)
         {
@@ -1245,40 +1259,33 @@ namespace HideAndSeek.Features.Rule
                 float from = clip.At - Math.Max(0f, clip.Before);
                 float to = clip.At + Math.Max(0f, clip.After);
 
-                var anchors = FindHostTapeAnchors(room, clip);
-                if (anchors.Count == 0)
+                int anchorId = clip.RecorderId;
+                if (anchorId <= 0 || !EndReplayHostTape.HasRows(anchorId))
                 {
-                    // ★ 降级口径（用户定的）：**不用占位磁带**，交回原版渲染 ——
-                    //   不合成、不补帧；客户端自己那卷按原样播，本来没磁带就整段没有。
-                    //   代价是黑方那一侧保留原版的黑遮罩。
-                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 找不到"
-                        + "「不在画面里、也不与观众撞车」的机位 ⇒ 降级为原版渲染（不合成、不补占位）。");
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 没有可当镜头目标的"
+                        + $"录制者（#{anchorId} 缓冲里没采样）⇒ 不合成。");
                     return false;
                 }
 
-                int camId = FindBlackId(room);
-                var ordered = ComposeHostTape(clip, anchors[0], camId, from, to);
+                var ordered = ComposeHostTape(clip, anchorId, anchorId, from, to);
                 if (ordered == null)
                 {
-                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端录制，"
-                        + $"但缓冲里可用帧不足（窗口=[{from:F2},{to:F2}]）⇒ 降级为原版渲染。");
+                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端兜底，"
+                        + $"但缓冲里可用帧不足（窗口=[{from:F2},{to:F2}]）⇒ 不合成。");
                     return false;
                 }
 
                 BroadcastHostTape(room, clip, ordered);
                 clip.Filled = true;
 
-                // 机位＝某位观众本人时，他客户端上的机位每一帧都会被改写到 id 0 ⇒ 单独给他补发一份。
-                RepairAnchorCollision(room, clip, anchors, camId, from, to);
-
                 string look = clip.Kind == "黑方" ? "断电视野" : "非断电";
                 string how = clip.Kind == "黑方"
                     ? "跟着黑方（移动插值 20Hz）"
-                    : (NeedsHostTape(clip) ? "白方巡礼（贪心最近未拍摄 + 直线高速平移）" : "镜头钉在目标上");
+                    : "镜头跟着录制者本人（同房间，不跨房间）";
 
-                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 由**服务端录制**合成 "
-                    + $"{ordered.Count} 帧（窗口=[{from:F2},{to:F2}] 机位=#{anchors[0]}（备选 {anchors.Count} 个）"
-                    + $" {look} / {how}）⇒ 假人/已死者也能进回放。");
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 客户端磁带没到 ⇒ "
+                    + $"服务端兜底合成 {ordered.Count} 帧（窗口=[{from:F2},{to:F2}] 镜头=#{anchorId} 本人"
+                    + $" {look} / {how}）。");
                 return true;
             }
             catch (Exception ex)
@@ -1309,23 +1316,12 @@ namespace HideAndSeek.Features.Rule
             float from, float to)
         {
             var shots = new List<SnapShot>();
-            int n;
-            if (clip.Kind == "黑方")
-            {
-                // 镜头切到黑方、转断电视野，跟着他走 `BlackTailSec` 秒
-                n = EndReplayHostTape.BuildBlackAct(shots, from, to, anchorId, camId);
-            }
-            else if (NeedsHostTape(clip))
-            {
-                // 白方巡礼：机位沿贪心"最近未拍摄"顺序直线高速平移，全程非断电
-                n = EndReplayHostTape.BuildWhiteTour(shots, from, to, anchorId, clip.Subjects,
-                    Math.Max(0.02f, CameraPanSec?.Value ?? 0.2f));
-            }
-            else
-            {
-                // 普通兜底：镜头钉在机位上（AreaShot），世界照采样铺开
-                n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, true);
-            }
+
+            // ★ 只有一种合成方式：**镜头盯着录制者本人**（`anchorId` 既是首帧主视角，也是
+            //   `AreaShot.CameraTargetId`）。不再有"隐形机位在房间之间飞"的那套 ——
+            //   原版没有跨房间取景的实现，自造它必然漂移、被房间边界拽回。
+            //   黑方那一幕同样：盯着凶手本人，只是 `IsLight = false`（断电视野）。
+            int n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, clip.Kind != "黑方");
 
             if (n < 2)
                 return null;
@@ -1406,148 +1402,6 @@ namespace HideAndSeek.Features.Rule
             var pkt = new S_TAPE { RecordTime = clip.Key };
             pkt.SnapShots.AddRange(ordered);
             room.Broadcast(pkt);
-        }
-
-        /// <summary>
-        /// **撞车补发**：机位若正好是某位观众本人，他客户端上的 `ApplySpawn(:669)` / `ApplyMove(:705)` /
-        /// `ApplyArea(:731)` 会把机位的每一帧都改写成 id 0 —— 而 id 0 的替身是 `ForceSpawnReplayTemp`
-        /// 造出来的半成品、停在 (-10,616)，且 `HandleMove` 的
-        /// `MyPlayer.PublicInfo.PlayerId != pkt.PlayerId` 守卫会把"自己的移动"直接丢掉
-        /// ⇒ 机位一步不动，那位观众看到的是定点空白（实测就是这么坏的：锚点 #4、观众也是 #4）。
-        ///
-        /// 所以**单独给他补发一份**用另一具机位合成的磁带：客户端 `_playTapes` 只以 `RecordTime` 为键，
-        /// 后到者覆盖前一段 ⇒ 只有他换成好的那一份，其余人不受影响。
-        /// 挑不到第二具机位（或合成失败）就**什么都不发**：他保持原版那一份，而不是收到坏镜头。
-        /// </summary>
-        private static void RepairAnchorCollision(GameRoom room, Clip clip, List<int> anchors,
-            int camId, float from, float to)
-        {
-            foreach (var v in Viewers(room))
-            {
-                if (v.Session == null || v.IsDummy)
-                    continue;
-                if (v.PublicInfo.PlayerId != anchors[0])
-                    continue;
-
-                int alt = 0;
-                foreach (var id in anchors)
-                {
-                    if (id != v.PublicInfo.PlayerId)
-                    {
-                        alt = id;
-                        break;
-                    }
-                }
-                if (alt <= 0)
-                {
-                    Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 机位只有 "
-                        + $"#{anchors[0]} 一个候选、而他本人就是观众 ⇒ 无法补发，他这一份降级为原版渲染。");
-                    continue;
-                }
-
-                var ordered = ComposeHostTape(clip, alt, camId, from, to);
-                if (ordered == null)
-                {
-                    Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 给观众 "
-                        + $"#{v.PublicInfo.PlayerId} 补发失败（备用机位 #{alt} 帧不足）⇒ 他这一份降级为原版渲染。");
-                    continue;
-                }
-
-                var pkt = new S_TAPE { RecordTime = clip.Key };
-                pkt.SnapShots.AddRange(ordered);
-                v.Session.Send(pkt);
-                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 机位 #{anchors[0]} 正是"
-                    + $"观众 #{v.PublicInfo.PlayerId} 本人 ⇒ 单独补发一份（机位改 #{alt}，{ordered.Count} 帧）。");
-            }
-        }
-
-        /// <summary>房间里**有客户端**的观众（活人与幽灵都在 `room.Players` 里，`DeadPlayers` 只用来去重兜底）。</summary>
-        private static List<GamePlayer> Viewers(GameRoom room)
-        {
-            var list = new List<GamePlayer>();
-            var seen = new HashSet<int>();
-            foreach (var p in room.Players)
-            {
-                if (p?.PublicInfo != null && seen.Add(p.PublicInfo.PlayerId))
-                    list.Add(p);
-            }
-            foreach (var p in room.DeadPlayers)
-            {
-                if (p?.PublicInfo != null && seen.Add(p.PublicInfo.PlayerId))
-                    list.Add(p);
-            }
-            return list;
-        }
-
-        /// <summary>
-        /// 服务端合成用的「隐形机位」候选表，按"最不可能与观众撞车、最不该出现在画面里"排序：
-        ///   1. **没有客户端的实体**（假人 / 掉线的壳：`IsDummy || Session == null`）——
-        ///      任何观众的本机 id 都不可能等于它 ⇒ 永远不会被 `== _myPlayerId → 0` 改写；
-        ///      ⚠ 这只是"测试局里恰好命中"，**绝不能假设对局里有假人**（假人只用于测试）；
-        ///   2. 已死者（还在房间、房主缓冲里有采样）；
-        ///   3. 其他不在本幕画面里的人（例如巡礼幕里的黑方）。
-        ///
-        /// 一律**排除本幕的演员**（`clip.Subjects`；黑方幕则是 `blackId`）：机位帧会占用那个 id 的位置
-        /// （`EmitWorld` 把它整个排除、改由机位路径驱动）⇒ 拿演员当机位等于把他从画面里抹掉。
-        /// 一个都挑不到 ⇒ 返回空表，调用方降级为**原版渲染**。
-        /// </summary>
-        private static List<int> FindHostTapeAnchors(GameRoom room, Clip clip)
-        {
-            var ordered = new List<int>();
-            try
-            {
-                if (room == null)
-                    return ordered;
-
-                var actors = new HashSet<int>();
-                if (clip.Kind == "黑方")
-                    actors.Add(FindBlackId(room));
-                else if (clip.Subjects != null)
-                {
-                    foreach (var id in clip.Subjects)
-                        actors.Add(id);
-                }
-
-                var noClient = new List<int>();
-                var dead = new List<int>();
-                var alive = new List<int>();
-                var seen = new HashSet<int> { 0 };
-
-                void Consider(GamePlayer p)
-                {
-                    int id = p?.PublicInfo?.PlayerId ?? 0;
-                    if (id <= 0 || id == clip.RecorderId || actors.Contains(id) || !seen.Add(id))
-                        return;
-                    if (!EndReplayHostTape.HasRows(id))
-                        return;
-
-                    // 客户端 `ChangeMyPlayer(_cache[id])`/`Spawn` 都是**直接索引**缓存，
-                    // 所以候选必须"各方缓存里都有" —— 真人进房时由 `S_ADD_PLAYER`/roster 写入，
-                    // 假人由 `DummyManager` 显式补发 `S_ADD_PLAYER`（见那里的注释），两者都满足。
-                    // 这里不再用服务端 `GetPlayerCache` 当判据：假人是绕过 `HandleEnterPlayer` 造的，
-                    // 服务端缓存里未必有它，拿它过滤反而会把测试局里最好用的机位筛掉。
-                    if (p.IsDummy || p.Session == null)
-                        noClient.Add(id);
-                    else if (!p.IsAlive)
-                        dead.Add(id);
-                    else
-                        alive.Add(id);
-                }
-
-                foreach (var p in room.Players)
-                    Consider(p);
-                foreach (var p in room.DeadPlayers)
-                    Consider(p);
-
-                ordered.AddRange(noClient);
-                ordered.AddRange(dead);
-                ordered.AddRange(alive);
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] EndReplay：挑服务端录制机位失败 — {ex.Message}");
-            }
-            return ordered;
         }
 
         /// <summary>
@@ -1960,22 +1814,10 @@ namespace HideAndSeek.Features.Rule
                     if (recorderId == 0 || !BySlot.TryGetValue(Slot(recorderId, c.RecordTime), out var clip))
                         return true;                // 不是我们的片段 → 交还原版
 
-                    // ★ 「自爆 / 巡礼 / 黑方」这三类幕**改用服务端录制**（客户端那卷要么根本没有 ——
-                    //   录制者已死或压根没请他们录 —— 要么只含自己视野内的帧）。
-                    //
-                    //   但我们**不丢弃**它，而是 `return true` **交还原版直发**（不裁剪、不改造）：
-                    //     · 服务端合成成功时，我们的磁带会在 `SendPlaceholders` 阶段（更晚）用**同一个
-                    //       RecordTime** 广播 ⇒ 客户端 `_playTapes[key]` 是"后到者覆盖"⇒ 合成版生效；
-                    //     · 合成失败时（找不到"不在画面里的机位"）就靠这一卷原版磁带顶上 ——
-                    //       这正是用户定的**降级＝原版渲染**，代价是黑方那一侧保留原版黑遮罩。
-                    //   以前这里 `return false` 直接吞掉，等于把降级路径也一起吞了。
-                    if (NeedsHostTape(clip))
-                    {
-                        Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 收到客户端磁带"
-                            + $"（{c.SnapShots.Count} 帧）⇒ **原样交还原版直发**（合成成功时会被同 key 的服务端版覆盖）。");
-                        clip.Filled = true;
-                        return true;
-                    }
+                    // ★ **优先客户端磁带**（用户定的口径）：包括「自爆 / 巡礼 / 黑方」这几类 ——
+                    //   它们现在同样是"向录制者本人索取"的普通片段（每人一段、按人数平分窗口），
+                    //   所以走**正常的重裁 → 广播**这条路，不再丢弃、也不再"交还原版直发"。
+                    //   只有这一段迟迟没收到时，`SendPlaceholders` 才会用服务端合成兜底。
 
                     var trimmed = TrimTape(c.SnapShots.ToList(), clip);
                     if (trimmed.Count < 2)
@@ -2050,10 +1892,28 @@ namespace HideAndSeek.Features.Rule
                 }
             }
 
+            // ★ 没有锚点 ⇒ 用**磁带末尾**当事件时刻。这正是"被处决者那一段"的情形：
+            //   他在死亡那一刻 `Recording()` 就停了（`!IsAlive` 守卫），`ReserveSaveTape` 里那两枚
+            //   edit 因此**写不进去**；而他的缓冲末尾**就是**他倒下的时刻（≈爆炸那一刻）
+            //   ⇒ 取"末尾前 Before 秒"正好就是我们要的窗口（`Before = 总窗口÷人数`）。
             if (anchor == null)
             {
-                Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】找不到时间锚点，按原样播放。");
-                return StripBombCorpseAdds(tape);
+                float tail = 0f;
+                foreach (var s in tape)
+                {
+                    if (s.TimeStamp > tail)
+                        tail = s.TimeStamp;
+                }
+
+                if (tail <= 0f)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】找不到时间锚点，按原样播放。");
+                    return StripBombCorpseAdds(tape);
+                }
+
+                Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】没有时间锚点（被处决者的带子"
+                    + $"——死后写不进 edit）⇒ 用**磁带末尾** {tail:F2} 当事件时刻，取末尾前 {clip.Before:F1}s。");
+                anchor = tail;
             }
 
             // 录制者是谁：磁带首帧的 Spawn 就是他（客户端 `BeginTape` 也据此决定镜头跟随谁）。
