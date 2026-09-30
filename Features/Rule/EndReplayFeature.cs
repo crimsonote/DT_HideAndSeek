@@ -921,10 +921,22 @@ namespace HideAndSeek.Features.Rule
         /// 这些补丁只在本机装了插件时生效 —— 远程客户端本来也不该被要求装。
         /// </summary>
         /// <summary>
-        /// 客户端侧诊断：把"回放宿主 UI 到底建没建"直接记下来。
-        /// 这一条是针对实测暴露的核心问题 —— 客户端换状态是异步的
-        /// （`Handle_S_CHANGE_GAME_STATE` 只调 `StartLoading`，:42386），
-        /// 过渡走完才轮到 `ShowTrialUI()`（:38706）。
+        /// 客户端侧：记录"回放宿主 UI 到底建没建"，并**清掉字幕行里烘死的默认文字**。
+        ///
+        /// 为什么必须清（实测诊断定位，见 `.tmps`）：
+        ///   `UI_TrialEvent` 的字幕行 `SlideLine/SlideText` 在预制体里**烘了一段默认文字** ——
+        ///   官方中文包没有对应条目，所以中文客户端上会直接显示成韩文「논의 시작」。
+        ///   原版流程会在 `StartState(Discuss)` 里跑开场字幕，序列收尾时 `slideText.SetActive(false)` 把它收掉；
+        ///   而我们的回放**从没调用过 `StartState(Discuss)`**（客户端收到的第一个状态就是 Replay），
+        ///   `StartReplay()` 里的 `ResetSlideVisual()` 又把它设成完全不透明
+        ///   ⇒ 在"进 Trial → 等入场演出 → 推 Replay"这十几秒里，它一直挂在画面正中（实测截图确认）。
+        ///
+        ///   清成空串之后：等待期间什么都不显示；随后回放自己的标题卡
+        ///   （`StartReplay` 的字幕回调写入 `ReplayTrial`＝「公开真相」）照常出现。
+        ///
+        /// ⚠ 这一步**只能在客户端侧做** —— 服务端没有任何包能隐藏/清空这个字幕元素
+        ///   （我已把 `S_TRIAL_STATE{VoteResult}` 之类的相位手段都试过：那只能收掉 `VoteResult` 面板，
+        ///   而诊断显示那个面板本来就是关着的）。开关沿用 `ClearTrialLabels`。
         /// </summary>
         [HarmonyPatch(typeof(UI_GameScene), nameof(UI_GameScene.ShowTrialUI))]
         internal static class ClientShowTrialUiHook
@@ -935,11 +947,45 @@ namespace HideAndSeek.Features.Rule
                 try
                 {
                     Plugin.Log.LogInfo($"[HS] EndReplay（客户端）：ShowTrialUI 已执行，回放宿主 UI {( __instance.TrialUI != null ? "建立成功" : "仍然为空")}。");
+                    ClearSlideText(__instance.TrialUI);
                 }
                 catch (Exception ex)
                 {
                     Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：诊断日志失败 — {ex.Message}");
                 }
+            }
+        }
+
+        /// <summary>清掉审判 UI 字幕行（`SlideText`）里烘死的默认文字 —— 见 <see cref="ClientShowTrialUiHook"/> 的说明。</summary>
+        private static void ClearSlideText(UnityEngine.Component trialUi)
+        {
+            try
+            {
+                if (!(ClearTrialLabels?.Value ?? true) || trialUi == null)
+                    return;
+
+                var slide = Util.FindChild<UnityEngine.Transform>(trialUi.gameObject, "SlideText", true);
+                if (slide == null)
+                {
+                    Plugin.Log.LogWarning("[HS] EndReplay（客户端）：找不到字幕行 SlideText，无法清掉烘死的默认文字。");
+                    return;
+                }
+
+                foreach (var c in slide.GetComponents<UnityEngine.Component>())
+                {
+                    if (c == null)
+                        continue;
+                    var p = c.GetType().GetProperty("text");
+                    if (p == null || p.PropertyType != typeof(string) || !p.CanWrite)
+                        continue;
+                    p.SetValue(c, "");
+                    Plugin.Log.LogInfo("[HS] EndReplay（客户端）：已清空审判 UI 字幕行烘死的默认文字（那行韩文）。");
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay（客户端）：清字幕行失败 — {ex.Message}");
             }
         }
 
@@ -1008,6 +1054,20 @@ namespace HideAndSeek.Features.Rule
                     var ui = __instance as UnityEngine.Component;
                     if (ui == null)
                         return;
+
+                    // ★ 黑方就是"你自己"时，原版回放会把自己的昵称关掉
+                    //   （`RecordManager.BeginSession`：`MyPlayer.NameTag.gameObject.SetActive(false)`）
+                    //   ⇒ 你自己的屏幕上永远看不到那个红名。我们刚广播过 `S_NOTIFY_BLACK`，
+                    //   所以只在"我确实是被标记的黑幕"时把它重新打开 —— 对白方玩家没有影响。
+                    var my = Managers.Player.MyPlayer;
+                    if ((RevealBlackName?.Value ?? true) && my?.PublicInfo != null && my.NameTag != null
+                        && !my.NameTag.gameObject.activeSelf
+                        && Managers.Player.KnownBlackIds.Contains(my.PublicInfo.PlayerId))
+                    {
+                        my.NameTag.gameObject.SetActive(true);
+                        Plugin.Log.LogInfo("[HS] EndReplay（客户端）：黑方就是本机玩家 ⇒ 已重新打开自己的昵称"
+                            + "（原版回放会关掉它），于是本机也能看到红色昵称。");
+                    }
 
                     int hits = 0;
                     foreach (var tr in ui.gameObject.GetComponentsInChildren<UnityEngine.Transform>(true))
