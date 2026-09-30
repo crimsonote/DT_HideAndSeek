@@ -56,14 +56,7 @@ namespace HideAndSeek.Features.UI
                 // 对局结束时（因刀杀死亡的人数超过白方阈值）在结算前为所有人播一段回放：
                 // 黑方拿刀 → 每次刀杀 → 最后时段各存活者的行动。窗口长度由 [EndReplay] 的
                 // *BeforeSec/*AfterSec 配置。热开关，改后即时生效。
-                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => EndReplayFeature.PlayOnEnd),
-
-                // 自爆回放的「全屏面板 + 心跳声」：段 [EndReplay].BombPanel（默认关）。
-                // 它走客户端 `MineBombVfx`（`UI_DespairBombEffect` 全屏弹层 + `MineBombSfx`），
-                // ⚠ **实测会残留到大厅**（回放结束时收不干净，重进房间即消失）⇒ 想做"吓人"效果再开。
-                // 另有全屏压暗（`BombBlackout`，默认开）客户端 3 秒后自己还原，不在这里暴露。
-                LobbySettingItem.Toggle("bomb_panel", "自爆回放：全屏面板+心跳声（会残留到大厅）",
-                    () => EndReplayFeature.BombPanel));
+                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => EndReplayFeature.PlayOnEnd));
         }
     }
 }

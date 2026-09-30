@@ -100,13 +100,9 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> BlackTailSec;
 
         [ConfigField(true, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`，原版自带 3 秒后自动还原）。" +
-            "让「人凭空消失」变成一个有节拍的收尾；关掉就只剩人消失本身。")]
+            "让「人凭空消失」变成一个有节拍的收尾；关掉就只剩人消失本身。" +
+            "（另一个「全屏面板 + 心跳声」效果不参与回放，改由命令 `hs_panel` 单独放一次。）")]
         public static ConfigEntry<bool> BombBlackout;
-
-        [ConfigField(false, "「自爆」瞬间放一次**全屏面板 + 心跳声**（客户端 `MineBombVfx`）。" +
-            "⚠ 默认关：它是一个 UI 弹层（`UI_DespairBombEffect`），实测**会残留到大厅**" +
-            "（回放结束时收不干净，重进房间即消失）。想当「吓人」效果玩就打开，接受这一点。")]
-        public static ConfigEntry<bool> BombPanel;
 
         [ConfigField(2f, "「白方各段」：白胜结局里幸存者那段的**判定前**秒数。" +
             "每段都取**同一段时间**（判定前本项 ~ 判定后后项），只是视角不同、依次播放。" +

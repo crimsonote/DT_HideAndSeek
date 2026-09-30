@@ -250,24 +250,33 @@ namespace HideAndSeek.Console
             return DummyManager.TryParseCharacterName(text, out charaId);
         }
 
-        // ── /hs_panel [on|off] ──────────────────────────────────────
-        // 自爆回放的「全屏面板 + 心跳声」（客户端 `MineBombVfx`）。
-        // ⚠ 默认关：它是 UI 弹层（`UI_DespairBombEffect`），实测**会残留到大厅**（重进房间即消失）。
+        // ── /hs_panel ───────────────────────────────────────────────
+        // **直接放一次**「全屏面板 + 心跳声」（客户端 `MineBombVfx`）—— 纯表现，用来玩/吓人。
+        // 与「自爆回放」无关：回放那边只放全屏压暗（`BlackOutVfx`），不插这个效果。
+        // ⚠ 它是 UI 弹层（`UI_DespairBombEffect`），实测**可能残留到大厅**（重进房间即消失）。
         private static string Panel(string[] args)
         {
-            var entry = HideAndSeek.Features.Rule.EndReplayFeature.BombPanel;
-            if (entry == null)
-                return Error("回放功能未加载");
+            var room = GameRoom.Instance;
+            if (room == null)
+                return Error("不在房间里");
 
-            if (args.Length == 0)
-                return $"{{\"ok\":true,\"bombPanel\":{Bool(entry.Value)}}}";
+            if (args.Length > 0)
+                return Error("用法: hs_panel（直接放一次全屏面板+心跳声；它是一次性效果，⚠ 可能残留到大厅）");
 
-            bool? on = ParseBool(args[0]);
-            if (on == null)
-                return Error("用法: hs_panel <on|off>（自爆回放的全屏面板+心跳声；⚠ 开启后可能残留到大厅）");
-
-            entry.Value = on.Value;
-            return $"{{\"ok\":true,\"bombPanel\":{Bool(entry.Value)}}}";
+            try
+            {
+                room.Broadcast(new S_PLAY_EFFECT
+                {
+                    Type = EEffectType.MineBombVfx,
+                    DeviceId = 0
+                });
+                Plugin.Log.LogInfo("[HS] hs_panel：已放一次「全屏面板 + 心跳声」（MineBombVfx）。");
+                return "{\"ok\":true,\"bombPanel\":true}";
+            }
+            catch (Exception ex)
+            {
+                return Error("放特效失败: " + ex.Message);
+            }
         }
 
         // ── /hs_flash [on|off] ──────────────────────────────────────
