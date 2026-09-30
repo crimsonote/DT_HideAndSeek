@@ -52,10 +52,18 @@ namespace HideAndSeek.Features.Replay
         /// <param name="subjectId">本幕主角（镜头要拍的人）—— 他**不能**被选中。</param>
         /// <param name="rosterIds">本幕"会出现在画面里的人"的 id（含主角）。</param>
         /// <param name="windowStart">窗口起点 —— 用来取各人当时的位置（算"离镜头多远"）。</param>
-        public static Result Resolve(int subjectId, ICollection<int> rosterIds, float windowStart)
+        /// <param name="excludeIds">
+        /// **绝不能当剪影的人**。除了主角，还必须包含**本幕的事件参与者（受害者）**——
+        /// 剪影槽位会被 `ChangeSilhouette(true)` 涂黑/幽灵化，受害者一旦被选中就"死前没人影、
+        /// 死后才冒出尸体"（实测：三幕里 `Kill#3` 的受害者恰好是剪影 `#5`，另外两幕不是 ⇒ 只有它坏）。
+        /// </param>
+        public static Result Resolve(int subjectId, ICollection<int> rosterIds, float windowStart,
+            ICollection<int> excludeIds = null)
         {
             if (subjectId <= 0)
                 return new Result { Id = 0, Why = "主角无效" };
+
+            bool Banned(int id) => id == subjectId || (excludeIds != null && excludeIds.Contains(id));
 
             try
             {
@@ -69,7 +77,7 @@ namespace HideAndSeek.Features.Replay
                 foreach (var p in room.DeadPlayers)
                 {
                     int id = p?.PublicInfo?.PlayerId ?? 0;
-                    if (id <= 0 || id == subjectId)
+                    if (id <= 0 || Banned(id))
                         continue;
                     // 本机客户端缓存里还有他 ⇒ 其他客户端的 `_cache` 里也有
                     //（"加入"包发过、没发过"离开"包）⇒ `ChangeMyPlayer` 的直接索引不会抛。
@@ -94,7 +102,7 @@ namespace HideAndSeek.Features.Replay
                 foreach (var p in room.Players)
                 {
                     int id = p?.PublicInfo?.PlayerId ?? 0;
-                    if (id <= 0 || id == subjectId)
+                    if (id <= 0 || Banned(id))
                         continue;
                     if (rosterIds != null && rosterIds.Contains(id))
                         continue;                       // 他在本幕画面里 ⇒ 剪影落上去会多一个黑块
