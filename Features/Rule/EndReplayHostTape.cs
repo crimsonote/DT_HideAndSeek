@@ -252,6 +252,7 @@ namespace HideAndSeek.Features.Rule
 
             int bombAdded = 0;
             int goneAdded = 0;
+            int boomFxAdded = 0;
             var bombIds = new List<int>();
             foreach (var b in Bombs)
             {
@@ -293,13 +294,61 @@ namespace HideAndSeek.Features.Rule
                     });
                     goneAdded++;
                 }
+
+                // ③ **爆炸观感**（纯表现，**零崩溃风险**，让"人消失"变成一下真正的爆炸）：
+                //
+                //    · `MineBombVfx`  ⇒ `Sound.PlaySystem("MineBombSfx")` + 全屏"绝望炸弹"面板
+                //      （`DeviceManager.PlayEffect` 里**不读 DeviceId / 不碰世界对象**）
+                //    · `BlackOutVfx`  ⇒ 全屏压暗 ~2s（余韵）
+                //
+                //    ⚠ **绝不能**用 `FlashVfx` / `ScopeVfx` / `ArmbandVfx` 做"闪光爆炸"：它们无条件
+                //      解引用 `GetPlayerCache(effect.DeviceId)`（而 `ApplyEffect` 会把"本机观众自己"的
+                //      id 改写成 0，0 号替身是半成品）⇒ 与 `Corpse.SetInfo` 同类的空引用 ⇒
+                //      **整段回放卡死**（同一枚帧每帧重试）。焦尸（`AddShot`）同样不可用。
+                //    ⚠ 每段至多两枚（爆炸声 + 压暗各一），多人同时炸时不叠加成一串。
+                if (boomFxAdded < 2)
+                {
+                    float mineAt = goneAt - 0.2f;      // 先"砰"一声
+                    if (mineAt >= from && mineAt <= to)
+                    {
+                        into.Add(new SnapShot
+                        {
+                            Type = ESnapShotType.EffectShot,
+                            TimeStamp = mineAt,
+                            Effect = new EffectSnapShot
+                            {
+                                Type = EEffectType.MineBombVfx,
+                                DeviceId = b.DeviceId,
+                                Pos = b.Pos?.Clone()
+                            }
+                        });
+                        boomFxAdded++;
+                    }
+
+                    float darkAt = goneAt + 0.1f;      // 再压暗作余韵
+                    if (darkAt >= from && darkAt <= to)
+                    {
+                        into.Add(new SnapShot
+                        {
+                            Type = ESnapShotType.EffectShot,
+                            TimeStamp = darkAt,
+                            Effect = new EffectSnapShot
+                            {
+                                Type = EEffectType.BlackOutVfx,
+                                DeviceId = b.DeviceId,
+                                Pos = b.Pos?.Clone()
+                            }
+                        });
+                        boomFxAdded++;
+                    }
+                }
             }
 
-            // 诊断：本段触发了几次闪烁、移走了几个人（触发一次即全程闪 5.875s，跨段）。
+            // 诊断：本段触发了几次闪烁、移走了几个人、放了几枚爆炸特效（触发一次即全程闪 5.875s，跨段）。
             Plugin.Log.LogInfo($"[HS] EndReplayHostTape：兜底段 镜头=#{cameraTargetId} 剪影=#{ghost.Id}"
                 + $" 窗口=[{from:F2},{to:F2}] ⇒ 触发闪烁 {bombAdded} 枚"
                 + (bombAdded > 0 ? $"（DeviceId=[{string.Join(",", bombIds)}]）" : "（沿用前段已触发的闪烁）")
-                + $"，本段移走 {goneAdded} 人，本色出场上限 {visibleUntil.Count} 人，"
+                + $"，本段移走 {goneAdded} 人，爆炸特效 {boomFxAdded} 枚，本色出场上限 {visibleUntil.Count} 人，"
                 + $"缓冲内自爆记录 {Bombs.Count} 条。");
 
             return into.Count;
