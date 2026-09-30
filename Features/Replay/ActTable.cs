@@ -84,6 +84,26 @@ namespace HideAndSeek.Features.Replay
         ///     所以"谁在画面里"同样由帧决定，而不是另行推断。
         /// </summary>
         /// <param name="excludeId">要排除的人（首帧/剪影槽位 —— 他不算"画面里的人"）。</param>
+        /// <summary>
+        /// 本幕"录制者看得到的人"。
+        ///
+        /// ★ 判据是「**在窗口附近有 `MoveShot`（位置更新）**」—— **不能**用 `SpawnShot` 判断。
+        ///
+        /// 为什么（2026-10 用真实 dump 实测）：
+        ///   客户端 `RecordAllType` 每秒把**本地认识的全体玩家**各记一枚 `SpawnShot`
+        ///   （`foreach (Managers.Player.Players.Values)`），而它认识所有人（`S_ADD_PLAYER` 发过）
+        ///   ⇒ **AOI 外的人同样有一串 `SpawnShot`**，只是位置冻结、永远不会有 `MoveShot`。
+        ///   实测那一卷"拿刀"磁带（录制者=黑方 #1，视野里只该有他自己）：
+        ///       #1  SpawnShot=15  MoveShot=134     ⇒ 在画面里
+        ///       #2  SpawnShot=9   MoveShot=0       ⇒ 不在
+        ///       #3  SpawnShot=12  MoveShot=0
+        ///       #4  SpawnShot=7   MoveShot=0
+        ///       #5  SpawnShot=7   MoveShot=0
+        ///       #6  SpawnShot=7   MoveShot=0
+        ///   ⇒ 用 `SpawnShot` 判断会把他们全当成"在画面里" ⇒ "不在画面里的人"候选为空
+        ///     ⇒ 剪影无处可选、降级到主角 ⇒ 主角被涂黑＋隐形（观众只看到"隐形的人在拿刀"）。
+        ///   ⇒ 所以必须改用"有位置更新"这条判据 —— 它说的才是"服务端把 AOI 内的动态广播给了录制者"。
+        /// </summary>
         public static List<int> VisibleIn(List<SnapShot> frames, float windowStart, int excludeId)
         {
             var best = new Dictionary<int, float>();
@@ -91,15 +111,13 @@ namespace HideAndSeek.Features.Replay
             {
                 foreach (var s in frames)
                 {
-                    if (s?.Type != ESnapShotType.SpawnShot || s.Spawn == null)
-                        continue;
-                    int id = s.Spawn.PlayerId;
-                    if (id <= 0 || id == excludeId)
+                    var mv = s?.Move;
+                    if (mv == null || mv.PlayerId <= 0 || mv.PlayerId == excludeId)
                         continue;
                     float d = Math.Abs(s.TimeStamp - windowStart);
-                    if (best.TryGetValue(id, out float prev) && prev <= d)
+                    if (best.TryGetValue(mv.PlayerId, out float prev) && prev <= d)
                         continue;                       // 已有更近的
-                    best[id] = d;
+                    best[mv.PlayerId] = d;
                 }
             }
             return new List<int>(best.Keys);

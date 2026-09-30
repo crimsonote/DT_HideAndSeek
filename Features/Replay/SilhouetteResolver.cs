@@ -104,6 +104,10 @@ namespace HideAndSeek.Features.Replay
                 //
                 //     ① 他在本幕画面里 ⇒ 还必须"起点即幽灵"（整段不可见）才算数
                 //     ② 他不在画面里   ⇒ 不会被 `ApplySpawn` 装配，一定看不见
+                // 两档候选（"在画面里"的判据已由 `ActTable.VisibleIn` 修正为"有 MoveShot"）：
+                //   ① `inScene`  起点即幽灵 + 在画面里 ⇒ 客户端 RefreshGhostVisual 把他关掉，看不见 ✓
+                //   ② `offScene` 不在画面里            ⇒ 不会被 ApplySpawn 装配，看不见 ✓
+                //   ③ 都不行 ⇒ 退回主角（接受他被涂黑）—— 此时会打 Warning，便于发现判据又出问题。
                 var inScene = new List<int>();
                 var offScene = new List<int>();
 
@@ -146,6 +150,7 @@ namespace HideAndSeek.Features.Replay
                 pick = Farthest(offScene, subjectId, windowStart);
                 if (pick > 0)
                     return new Result { Id = pick, Why = "已死·不在画面（不会被 ApplySpawn 装配 ⇒ 一定看不见）" };
+
 
                 // ② 本幕 roster 之外的人 —— 不会被 ApplySpawn 装配到画面里
                 var outside = new List<int>();
@@ -202,6 +207,7 @@ namespace HideAndSeek.Features.Replay
             return best;
         }
 
+        /// <summary>降级：退回主角自己。**必须留下痕迹** —— 他会被涂黑，而且配合下面的日志能立刻发现"候选判据又坏了"。</summary>
         private static Result Fallback(int subjectId, string why)
             => new Result { Id = subjectId, Why = why + " ⇒ 退回当事人自己", FellBackToSubject = true };
     }

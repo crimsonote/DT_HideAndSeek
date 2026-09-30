@@ -784,6 +784,11 @@ namespace HideAndSeek.Features.Replay
             var head = own.Clone();
             head.PlayerId = silhouetteId;
             head.State = EPlayerState.Idle;
+            // ★ `IsGhost = true`：剪影槽位必须是**看不见的**。
+            //   他的"不可见"靠两条：客户端 `ChangeSilhouette(true)` 涂黑 ＋ `RefreshGhostVisual` 关掉骨架。
+            //   ⚠ 前提是**剪影绝不能是主角** —— 否则观众会看到"隐形的人在挥刀"。
+            //   那个前提现在由 `ActTable.VisibleIn` 的判据（有 MoveShot 才算在画面里）保证；
+            //   一旦它又坏掉，`SilhouetteResolver.Fallback` 会打 Warning。
             head.IsGhost = true;
 
             if (subject?.Pos != null)
