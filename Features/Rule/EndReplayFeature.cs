@@ -741,6 +741,46 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 【临时诊断】按"文本值"反查"文本键"。
+        ///
+        /// 用途：确定界面上的某行字到底来自哪个键。判据来自 `Managers.GetText` 的实现：
+        ///     缺键时它会 `Debug.LogError("[Text] Missing TextData key: …")` 并**直接返回键名**，
+        ///     所以"中文界面上出现韩文"只能说明**中文表里那一行的值本来就没翻译**，不是缺键。
+        ///     知道键名就能反查是哪个界面元素在显示它。
+        ///
+        /// 挂在 `DataManager.InitLanguageText` 之后：**每次启动 / 切语言都会跑一次，不需要打对局**。
+        /// 结论拿到后本类即可删除。
+        /// </summary>
+        [HarmonyPatch(typeof(DataManager), "InitLanguageText")]
+        internal static class TextKeyProbeHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix()
+            {
+                try
+                {
+                    int hits = 0;
+                    foreach (var kv in Managers.Data.TextDic)
+                    {
+                        string v = kv.Value?.Text;
+                        if (string.IsNullOrEmpty(v))
+                            continue;
+                        if (v.IndexOf("投票结果", global::System.StringComparison.Ordinal) < 0
+                            && v.IndexOf("논의 시작", global::System.StringComparison.Ordinal) < 0)
+                            continue;
+                        hits++;
+                        Plugin.Log.LogWarning($"[HS][诊断] 界面文字『{v}』← 文本键 {kv.Key}（DataId={kv.Value.DataId}）");
+                    }
+                    Plugin.Log.LogInfo($"[HS][诊断] 文本表扫描完成：共 {Managers.Data.TextDic.Count} 条，命中 {hits} 条。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS][诊断] 文本表扫描失败 — {ex.Message}");
+                }
+            }
+        }
+
         [HarmonyPatch]
         internal static class ClientTrialStateHook
         {
