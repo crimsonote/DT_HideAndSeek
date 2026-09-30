@@ -94,6 +94,24 @@ namespace HideAndSeek.Features.Rule
             "（前 7.5s 为白方多机位巡礼）⇒ 整段约 8s。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> SelfDestructAfterSec;
 
+        [ConfigField(3f, "「黑方收尾」幕：镜头落到黑方之后停留的秒数（**另起一幕**，与白方巡礼分开）。" +
+            "黑胜时窗口是 爆炸后 0.5s 起、长 N 秒，用**断电视野**；白胜时窗口结束于胜负判定那一刻。" +
+            "上限约 7s —— 原版 `GameOver` 末尾是 `PushAfter(7500, ChangeGameState(TotalResult))`，" +
+            "爆炸后只有这么多素材。", Min = 0f, Max = 7f)]
+        public static ConfigEntry<float> BlackTailSec;
+
+        [ConfigField(7.5f, "「白方巡礼」（白胜结局的幸存者巡礼）：判定前秒数。与自爆幕同构 —— " +
+            "先在这段时间里逐个拍幸存者，再由「黑方收尾」幕收尾。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> TourBeforeSec;
+
+        [ConfigField(0.5f, "「白方巡礼」：判定后秒数。", Min = 0f, Max = 30f)]
+        public static ConfigEntry<float> TourAfterSec;
+
+        [ConfigField(0.2f, "运镜：机位在两方之间**直线平移**所用的秒数（不是瞬移 —— 平移期间机位角色自己" +
+            "在高速移动，镜头自然跟过去）。人越多、或窗口越紧，会被自动压缩并记日志。",
+            Min = 0.02f, Max = 2f)]
+        public static ConfigEntry<float> CameraPanSec;
+
         [ConfigField(12, "最多播放几段，取段顺序为 拿刀 → 杀人 → 最后时段。段数越多回放越长。",
             Min = 1f, Max = 40f)]
         public static ConfigEntry<int> MaxClips;
@@ -179,6 +197,9 @@ namespace HideAndSeek.Features.Rule
             public float At;
             /// <summary>真的收到磁带了吗 —— 没收到时会在推 Replay 前补一段"占位磁带"（见 <c>SendPlaceholders</c>）。</summary>
             public bool Filled;
+            /// <summary>运镜要逐个拍的对象（白方巡礼）。**必须在事件发生时就记下来** ——
+            /// 合成磁带时（事件后 7.5s）这些人已经死了，`AlivePlayers` 是空的。</summary>
+            public List<int> Subjects;
         }
 
         private static readonly List<Clip> Clips = new List<Clip>();
@@ -193,6 +214,61 @@ namespace HideAndSeek.Features.Rule
 
         private static long Slot(int playerId, int key) => ((long)playerId << 32) | (uint)key;
 
+        // ── 结算类片段的 key 偏移 ───────────────────────────────────────
+        // 结算那一刻 `SurviveTime` **已经停走** ⇒ 所有请求拿到同一个 base（实测日志里全是 570）。
+        // 而客户端 `_playTapes` 是 `Dictionary<int, List<SnapShot>>`、**只以 RecordTime 为键**：
+        // 同键的多段会互相覆盖、只剩最后一幕。所以必须自己加偏移区分，而偏移量同时决定**播放顺序**：
+        //     最后时段 = base + 1 + 序号   <   白方巡礼 = base + 100   <   黑方收尾 = base + 101
+        // 与 `BuildPlan` 的排片顺序一致：拿刀 → 杀人 → 最后时段 → 白方巡礼 → 黑方收尾。
+        private const int KeyWhiteTour = 100;
+        private const int KeyBlackAct = 101;
+
+        private static int BaseKey
+        {
+            get
+            {
+                try
+                {
+                    return TimeManager.Instance?.SurviveTime ?? 0;
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+        }
+
+        private static bool HasKind(string kind)
+        {
+            foreach (var c in Clips)
+            {
+                if (c.Kind == kind)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>当前还活着的白方（排除黑方与旁观者）—— 巡礼要逐个拍的对象。</summary>
+        private static List<int> SurvivingWhites(GameRoom room, int blackId)
+        {
+            var list = new List<int>();
+            try
+            {
+                foreach (var p in room.AlivePlayers.ToList())
+                {
+                    int id = p?.PublicInfo?.PlayerId ?? 0;
+                    if (id <= 0 || id == blackId || p.IsSpectator)
+                        continue;
+                    list.Add(id);
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] EndReplay：统计巡礼对象失败 — {ex.Message}");
+            }
+            return list;
+        }
+
         internal static void ResetRound()
         {
             Clips.Clear();
@@ -205,7 +281,8 @@ namespace HideAndSeek.Features.Rule
             EndReplayHostTape.Clear();
         }
 
-        private static bool AddClip(int key, int recorderId, string kind, float before, float after)
+        private static bool AddClip(int key, int recorderId, string kind, float before, float after,
+            List<int> subjects = null, float atOffset = 0f)
         {
             if (key == 0 || recorderId == 0)
                 return false;
@@ -221,11 +298,14 @@ namespace HideAndSeek.Features.Rule
                 Kind = kind,
                 Before = before,
                 After = after,
-                At = Managers.Game.ClientTime
+                At = Managers.Game.ClientTime + atOffset,
+                Subjects = subjects
             };
             Clips.Add(clip);
             BySlot[slot] = clip;
-            Plugin.Log.LogInfo($"[HS] EndReplay：登记片段【{kind}】录制者=#{recorderId} key={key} 窗口={before:F1}s前/{after:F1}s后");
+            Plugin.Log.LogInfo($"[HS] EndReplay：登记片段【{kind}】录制者=#{recorderId} key={key} "
+                + $"窗口={before:F1}s前/{after:F1}s后 时刻={clip.At:F2}"
+                + (subjects != null ? $" 对象={subjects.Count} 人" : ""));
             return true;
         }
 
@@ -418,6 +498,41 @@ namespace HideAndSeek.Features.Rule
             {
                 _ending = "结算前（白方胜利）";
                 _whiteWin = true;
+
+                // ★ 白胜也走「运镜两幕」：幸存者巡礼（服务端录制，逐个快速平移）+ 黑方失败收尾（断电视野）。
+                //   窗口锚点：巡礼 = 判定那一刻前后（同自爆幕的 7.5/0.5）；黑方那一幕**结束于判定那一刻**
+                //   —— 白胜是立刻推 `TotalResult`（不像黑胜还有 7.5s 结算演出），判定之后没有素材可拍，
+                //   所以取 [判定−N, 判定]：观众刚看完"活着的那些人"，镜头再落回"输掉的那一个"。
+                try
+                {
+                    var room = GameRoom.Instance;
+                    if (room == null || HasKind("巡礼"))
+                        return;
+
+                    int blackId = FindBlackId(room);
+                    var subjects = SurvivingWhites(room, blackId);
+                    int rec = blackId > 0 ? blackId : (subjects.Count > 0 ? subjects[0] : 0);
+                    if (rec == 0)
+                    {
+                        Plugin.Log.LogWarning("[HS] EndReplay：白胜运镜找不到可用录制者，跳过。");
+                        return;
+                    }
+
+                    float before = TourBeforeSec?.Value ?? 7.5f;
+                    float after = TourAfterSec?.Value ?? 0.5f;
+                    float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
+
+                    AddClip(BaseKey + KeyWhiteTour, rec, "巡礼", before, after, subjects);
+                    AddClip(BaseKey + KeyBlackAct, rec, "黑方", 0f, tail, null, -tail);
+
+                    Plugin.Log.LogInfo($"[HS] EndReplay：白方胜利 ⇒ 登记两幕：幸存者巡礼 {subjects.Count} 人"
+                        + $"（{before:F1}s 前 / {after:F1}s 后）+ 黑方失败收尾 {tail:F1}s"
+                        + $"（窗口落在判定前 {tail:F1}s，断电视野）。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS] EndReplay：登记白胜运镜失败 — {ex.Message}");
+                }
             }
         }
 
@@ -492,40 +607,28 @@ namespace HideAndSeek.Features.Rule
                     EndReplayHostTape.NoteBomb(
                         Managers.Game.ClientTime, __instance.PublicInfo.PlayerId, __instance.PublicInfo.Pos);
 
-                    // ① 被处决者本人优先（他的客户端会记下"自己眼前"的爆炸 VFX）。
-                    // ② 再请**其他活着的真人**各录一段做兜底：假人没有客户端 ⇒ 录不了像
-                    //    （实测上一局自爆段的录制者恰好是假人 ⇒ 一段都没拿到，回放里看不到自爆）。
-                    //    多个录制者 ⇒ 我们的计划里就会多出几幕"自爆"（不同视角），上限 4 段。
-                    int key = TimeManager.Instance.SurviveTime;
-                    float before = SelfDestructBeforeSec?.Value ?? 2f;
-                    float after = SelfDestructAfterSec?.Value ?? 1f;
-                    int asked = 0;
-
-                    if (!__instance.IsDummy
-                        && RequestRecord(__instance, key, "自爆", before, after))
+                    // ★ 自爆幕与黑方收尾幕**都由服务端录制**，不再请客户端录：
+                    //   · 被处决者那一刻就死了，客户端 `Recording()` 的 `!IsAlive` 守卫直接 return；
+                    //   · 假人更是没有客户端（实测两次都栽在这里：一次一段都没拿到，一次拿到的是假人视角）。
+                    //   所以这里只做两件事：登记两幕 + 记下爆炸时刻（供服务端缓冲取素材）。
+                    //   ⚠ 项圈自爆会对每个存活白方各调一次本钩子 ⇒ 必须用 `HasKind` 保证只登记一次，
+                    //     否则计划里会出现 N 幕一模一样的巡礼。
+                    if (!HasKind("自爆"))
                     {
-                        asked++;
-                    }
-                    else
-                    {
-                        Plugin.Log.LogWarning($"[HS] EndReplay：被处决者 #{__instance.PublicInfo.PlayerId} "
-                            + (__instance.IsDummy ? "是假人" : "没有客户端") + "，自爆段改由目击者录。");
-                    }
+                        int blackId = FindBlackId(room);
+                        int rec = blackId > 0 ? blackId : __instance.PublicInfo.PlayerId;
+                        var subjects = SurvivingWhites(room, blackId);
 
-                    foreach (var witness in room.AlivePlayers.ToList())
-                    {
-                        if (asked >= 4)
-                            break;
-                        if (witness?.PublicInfo == null || witness.Session == null
-                            || witness.IsSpectator || witness.IsDummy)
-                            continue;
-                        if (witness.PublicInfo.PlayerId == __instance.PublicInfo.PlayerId)
-                            continue;
-                        if (RequestRecord(witness, key, "自爆", before, after))
-                            asked++;
-                    }
+                        float before = SelfDestructBeforeSec?.Value ?? 7.5f;
+                        float after = SelfDestructAfterSec?.Value ?? 0.5f;
+                        float tail = Math.Max(0f, BlackTailSec?.Value ?? 3f);
 
-                    Plugin.Log.LogInfo($"[HS] EndReplay：自爆片段共请 {asked} 个客户端录制（被处决者 + 存活目击者）。");
+                        AddClip(BaseKey + KeyWhiteTour, rec, "自爆", before, after, subjects);
+                        AddClip(BaseKey + KeyBlackAct, rec, "黑方", 0f, tail, null, after);
+
+                        Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记两幕：白方巡礼 {subjects.Count} 人"
+                            + $"（{before:F1}s 前 / {after:F1}s 后，服务端录制）+ 黑方收尾 {tail:F1}s（断电视野）。");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -735,8 +838,14 @@ namespace HideAndSeek.Features.Rule
                 plan.Add(clip);
             }
 
-            // 「自爆」排在「最后时段」之后：它是整局的收尾（黑方胜利时白方被处决）。
-            foreach (var c in Clips.Where(c => c.Kind == "自爆"))
+            // 「白方巡礼」/「自爆」⇒「黑方收尾」：排片顺序就是播放顺序（见 key 偏移那一段的说明）。
+            foreach (var c in Clips.Where(c => c.Kind == "巡礼" || c.Kind == "自爆"))
+            {
+                if (plan.Count >= max) break;
+                plan.Add(c);
+            }
+
+            foreach (var c in Clips.Where(c => c.Kind == "黑方"))
             {
                 if (plan.Count >= max) break;
                 plan.Add(c);
@@ -745,7 +854,11 @@ namespace HideAndSeek.Features.Rule
             if (blackClip != null && plan.Count < max)
             {
                 plan.Add(blackClip);
-                Plugin.Log.LogInfo("[HS] EndReplay：白方胜利 ⇒ 已把黑方的「最后时段」挪到最后一屏。");
+                // ⚠ 只是把它挪到**排片表**末尾；实际播放顺序由 `RecordTime`（key）决定，
+                //   而这幕的 key 是 `base+1+序号`（小于巡礼/黑方收尾）⇒ 它其实播在巡礼之前。
+                //   真正的"最后一屏"现在是「黑方收尾」幕。
+                Plugin.Log.LogInfo("[HS] EndReplay：白方胜利 ⇒ 已把黑方的「最后时段」排到排片表末尾"
+                    + "（实际播放顺序仍按 key；最后一幕是「黑方收尾」）。");
             }
 
             return plan;
@@ -809,6 +922,11 @@ namespace HideAndSeek.Features.Rule
             var byRecorder = new Dictionary<int, List<int>>();
             foreach (var clip in plan)
             {
+                // 服务端合成的幕（巡礼 / 自爆 / 黑方收尾）不需要向任何客户端索取磁带 ——
+                // 它们的数据来自房主自己的缓冲，向客户端要只会白跑一趟。
+                if (NeedsHostTape(clip))
+                    continue;
+
                 if (!byRecorder.TryGetValue(clip.RecorderId, out var list))
                     byRecorder[clip.RecorderId] = list = new List<int>();
                 list.Add(clip.Key);
@@ -1070,7 +1188,7 @@ namespace HideAndSeek.Features.Rule
         /// 远处那些爆炸根本不在它的磁带里。
         /// </summary>
         private static bool NeedsHostTape(Clip clip)
-            => clip.Kind == "自爆";
+            => clip.Kind == "自爆" || clip.Kind == "巡礼" || clip.Kind == "黑方";
 
         /// <summary>
         /// 用房主侧缓冲（<see cref="EndReplayHostTape"/>）给这一段合成磁带并广播出去。
@@ -1092,7 +1210,23 @@ namespace HideAndSeek.Features.Rule
                 int camId = FindBlackId(room);
 
                 var shots = new List<SnapShot>();
-                int n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, true);
+                int n;
+                if (clip.Kind == "黑方")
+                {
+                    // 镜头切到黑方、转断电视野，跟着他走 `BlackTailSec` 秒
+                    n = EndReplayHostTape.BuildBlackAct(shots, from, to, anchorId, camId);
+                }
+                else if (NeedsHostTape(clip))
+                {
+                    // 白方巡礼：机位沿贪心"最近未拍摄"顺序直线高速平移，全程非断电
+                    n = EndReplayHostTape.BuildWhiteTour(shots, from, to, anchorId, clip.Subjects,
+                        Math.Max(0.02f, CameraPanSec?.Value ?? 0.2f));
+                }
+                else
+                {
+                    // 普通兜底：镜头钉在镜头目标上（AreaShot），世界照采样铺开
+                    n = EndReplayHostTape.Build(shots, from, to, anchorId, camId, true);
+                }
                 if (n < 2)
                 {
                     Plugin.Log.LogWarning($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 想用服务端录制，"
@@ -1105,8 +1239,14 @@ namespace HideAndSeek.Features.Rule
                 room.Broadcast(pkt);
                 clip.Filled = true;
 
+                string look = clip.Kind == "黑方" ? "断电视野" : "非断电";
+                string how = clip.Kind == "黑方"
+                    ? "跟着黑方（移动插值 20Hz）"
+                    : (NeedsHostTape(clip) ? "白方巡礼（贪心最近未拍摄 + 直线高速平移）" : "镜头钉在目标上");
+
                 Plugin.Log.LogInfo($"[HS] EndReplay：片段【{clip.Kind}】key={clip.Key} 由**服务端录制**合成 {n} 帧"
-                    + $"（窗口=[{from:F2},{to:F2}] 锚点=#{anchorId} 镜头=#{camId} 非断电）⇒ 假人/已死者也能进回放。");
+                    + $"（窗口=[{from:F2},{to:F2}] 锚点=#{anchorId} 镜头=#{camId} {look} / {how}）"
+                    + "⇒ 假人/已死者也能进回放。");
                 return true;
             }
             catch (Exception ex)

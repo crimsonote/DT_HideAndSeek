@@ -36,6 +36,9 @@ namespace HideAndSeek.Features.Rule
         /// <summary>爆炸后多久把被处决者从场上拿掉（他们死后是幽灵，留在场上会"站着不动"）。</summary>
         private const float BombDespawnDelay = 0.05f;
 
+        /// <summary>移动帧的插值频率：采样只有 5Hz，镜头要跟人走就必须插值到更密，否则一顿一顿。</summary>
+        private const float MoveHz = 20f;
+
         private sealed class Row
         {
             public float Time;
@@ -251,6 +254,285 @@ namespace HideAndSeek.Features.Rule
                 }
             }
             return best;
+        }
+
+        // ── 运镜合成（P2/P3）────────────────────────────────────────────
+        /// <summary>
+        /// 合成「白方巡礼」：机位（隐形幽灵）沿**贪心最近未拍摄**的顺序在白方之间走，
+        /// 站间是**直线高速平移**（不是瞬移 —— 平移期间机位角色自己在动，镜头自然跟过去），
+        /// 全程 `IsLight = true`（非断电视野）。
+        ///
+        /// 每站停留 `(窗口 − (N−1)×平移) ÷ N` 秒 ⇒ **人越多切得越急**。
+        /// 镜头目标就是这具机位自己（一枚 `AreaShot` 钉住即可），所以整个巡礼只有一次"切镜头"。
+        /// </summary>
+        public static int BuildWhiteTour(List<SnapShot> into, float from, float to,
+            int anchorId, List<int> subjects, float panSec)
+        {
+            into.Clear();
+            if (Rows.Count == 0 || to <= from || subjects == null || subjects.Count == 0)
+                return 0;
+
+            var anchor = Pick(anchorId, from) ?? Pick(subjects[0], from);
+            if (anchor == null)
+                return 0;
+
+            var stops = OrderTour(subjects, from);
+            if (stops.Count == 0)
+                return 0;
+
+            var head = anchor.Info.Clone();
+            head.State = EPlayerState.Idle;
+            head.IsGhost = true;
+
+            into.Add(new SnapShot { Type = ESnapShotType.SpawnShot, TimeStamp = from, Spawn = head });
+
+            var area = MakeArea(from, anchor.Id, true);
+            if (area != null)
+                into.Add(area);
+
+            EmitWorld(into, from, to, anchor.Id, null);
+            EmitTour(into, from, to, anchor.Id, stops, panSec);
+            return into.Count;
+        }
+
+        /// <summary>
+        /// 合成「黑方收尾」：镜头切到黑方、`IsLight = false`（**断电视野**），跟着他走 N 秒。
+        /// 镜头目标的移动会按 <see cref="MoveHz"/> 插值（采样只有 5Hz，不插值镜头会顿）。
+        /// </summary>
+        public static int BuildBlackAct(List<SnapShot> into, float from, float to, int anchorId, int blackId)
+        {
+            into.Clear();
+            if (Rows.Count == 0 || to <= from)
+                return 0;
+
+            var anchor = Pick(anchorId, from) ?? Pick(blackId, from) ?? Pick(Rows[0].Id, from);
+            if (anchor == null)
+                return 0;
+
+            int cam = (blackId > 0 && Pick(blackId, from) != null) ? blackId : anchor.Id;
+
+            var head = anchor.Info.Clone();
+            head.State = EPlayerState.Idle;
+            head.IsGhost = true;
+
+            into.Add(new SnapShot { Type = ESnapShotType.SpawnShot, TimeStamp = from, Spawn = head });
+
+            var area = MakeArea(from, cam, false);
+            if (area != null)
+                into.Add(area);
+
+            EmitWorld(into, from, to, anchor.Id, new HashSet<int> { cam });
+            EmitInterpolated(into, from, to, cam);
+            return into.Count;
+        }
+
+        /// <summary>
+        /// 把世界里的玩家铺成一串帧：第一次见到发 `SpawnShot`（带完整信息），之后发 `MoveShot`。
+        /// <paramref name="omitAnchor"/> 是首帧锚点（已由 head 帧装配好）；
+        /// <paramref name="omit"/> 里的玩家整个跳过（例如由我们自己的机位路径/插值驱动的那个）。
+        /// </summary>
+        private static void EmitWorld(List<SnapShot> into, float from, float to, int omitAnchor, HashSet<int> omit)
+        {
+            var seen = new HashSet<int> { omitAnchor };
+            if (omit != null)
+            {
+                foreach (var id in omit)
+                    seen.Add(id);
+            }
+
+            foreach (var r in Rows)
+            {
+                if (r.Time < from)
+                    continue;
+                if (r.Time > to)
+                    break;
+                if (omit != null && omit.Contains(r.Id))
+                    continue;
+
+                if (seen.Add(r.Id))
+                {
+                    into.Add(new SnapShot
+                    {
+                        Type = ESnapShotType.SpawnShot,
+                        TimeStamp = r.Time,
+                        Spawn = r.Info.Clone()
+                    });
+                }
+                else
+                {
+                    into.Add(new SnapShot
+                    {
+                        Type = ESnapShotType.MoveShot,
+                        TimeStamp = r.Time,
+                        Move = new MoveSnapShot
+                        {
+                            PlayerId = r.Id,
+                            Pos = r.Info.Pos?.Clone(),
+                            LookLeft = r.Info.LookLeft,
+                            Velocity = r.Velocity,
+                            IsMove = true
+                        }
+                    });
+                }
+            }
+        }
+
+        /// <summary>
+        /// 贪心「最近且还没拍过」：从当前机位位置出发，每次挑离得最近、尚未到访的人。
+        /// （点名要的路线 —— 也是"直线飞过去"最自然的顺序。）
+        /// </summary>
+        private static List<int> OrderTour(List<int> subjects, float at)
+        {
+            var cand = new List<int>();
+            foreach (var id in subjects)
+            {
+                if (id <= 0 || cand.Contains(id))
+                    continue;
+                if (Pick(id, at) == null)
+                    continue;
+                cand.Add(id);
+            }
+
+            var order = new List<int>();
+            PosInfo cur = null;
+            while (cand.Count > 0)
+            {
+                int bestIdx = 0;
+                float bestD = float.MaxValue;
+                for (int i = 0; i < cand.Count; i++)
+                {
+                    float d = Dist(cur, Pick(cand[i], at)?.Info?.Pos);
+                    if (d < bestD)
+                    {
+                        bestD = d;
+                        bestIdx = i;
+                    }
+                }
+
+                int chosen = cand[bestIdx];
+                cand.RemoveAt(bestIdx);
+                order.Add(chosen);
+                cur = Pick(chosen, at)?.Info?.Pos;
+            }
+            return order;
+        }
+
+        /// <summary>巡礼机位的时间表：每站停留 + 站间直线平移；窗口不够时压缩平移，保证每站都有停留。</summary>
+        private static void EmitTour(List<SnapShot> into, float from, float to, int dollyId, List<int> stops, float panSec)
+        {
+            float span = to - from;
+            int n = stops.Count;
+            float pan = Math.Max(0.05f, panSec);
+            float dwell = (span - (n - 1) * pan) / n;
+            if (dwell < 0.1f)
+            {
+                pan = Math.Max(0.02f, span / n * 0.25f);
+                dwell = Math.Max(0.02f, (span - (n - 1) * pan) / n);
+            }
+
+            var pos = Pick(stops[0], from)?.Info?.Pos;
+            float t = from;
+
+            if (pos != null)
+                EmitPath(into, dollyId, from, from, pos, null);        // 开场先把机位摆到第一个目标
+
+            for (int i = 0; i < n; i++)
+            {
+                if (pos != null)
+                {
+                    EmitPath(into, dollyId, t, t + dwell, pos, null);  // 停留（原地）
+                    t += dwell;
+                }
+
+                if (i + 1 >= n)
+                    break;
+
+                var next = Pick(stops[i + 1], from)?.Info?.Pos;
+                if (next == null)
+                    continue;
+
+                EmitPath(into, dollyId, t, t + pan, pos, next);        // 直线高速平移
+                t += pan;
+                pos = next;
+            }
+        }
+
+        /// <summary>
+        /// 给"镜头相关的那个人"补移动帧：从 <paramref name="a"/> 到 <paramref name="b"/> 按 20Hz 插值。
+        /// <paramref name="b"/> 为 null ＝ 原地停留（只发一枚定位帧）。
+        /// </summary>
+        private static void EmitPath(List<SnapShot> into, int id, float t0, float t1, PosInfo a, PosInfo b)
+        {
+            if (a == null)
+                return;
+
+            if (b == null)
+            {
+                into.Add(MoveAt(id, t0, a));
+                return;
+            }
+
+            int steps = Math.Max(1, (int)Math.Round((t1 - t0) * MoveHz));
+            for (int i = 1; i <= steps; i++)
+            {
+                float k = i / (float)steps;
+                into.Add(MoveAt(id, t0 + (t1 - t0) * k, new PosInfo
+                {
+                    X = a.X + (b.X - a.X) * k,
+                    Y = a.Y + (b.Y - a.Y) * k
+                }));
+            }
+        }
+
+        private static SnapShot MoveAt(int id, float t, PosInfo pos)
+        {
+            return new SnapShot
+            {
+                Type = ESnapShotType.MoveShot,
+                TimeStamp = t,
+                Move = new MoveSnapShot
+                {
+                    PlayerId = id,
+                    Pos = pos,
+                    LookLeft = false,
+                    Velocity = 0f,
+                    IsMove = true
+                }
+            };
+        }
+
+        /// <summary>把某个玩家在窗口内的样本插值到 <see cref="MoveHz"/>（镜头跟着他走时才需要）。</summary>
+        private static void EmitInterpolated(List<SnapShot> into, float from, float to, int id)
+        {
+            var pts = new List<Row>();
+            foreach (var r in Rows)
+            {
+                if (r.Id != id)
+                    continue;
+                if (r.Time < from - 1f)
+                    continue;
+                if (r.Time > to + 1f)
+                    break;
+                pts.Add(r);
+            }
+
+            for (int i = 0; i + 1 < pts.Count; i++)
+            {
+                float t0 = Math.Max(from, pts[i].Time);
+                float t1 = Math.Min(to, pts[i + 1].Time);
+                if (t1 <= t0)
+                    continue;
+                EmitPath(into, id, t0, t1, pts[i].Info.Pos, pts[i + 1].Info.Pos);
+            }
+        }
+
+        private static float Dist(PosInfo a, PosInfo b)
+        {
+            if (a == null || b == null)
+                return float.MaxValue;
+            float dx = a.X - b.X;
+            float dy = a.Y - b.Y;
+            return dx * dx + dy * dy;
         }
 
         private static void AddRows(List<GamePlayer> players, float now)
