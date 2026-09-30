@@ -76,6 +76,19 @@ namespace HideAndSeek.Features.Rule
             if (room.ResultType == EResultType.BlackWin)
                 return;                            // 已经结算过，避免重复触发
 
+            // ★★ **已经判白胜了就必须退出** —— 否则会把白胜覆盖成黑胜、并把存活白方全部项圈自爆。
+            //
+            //   为什么会在同一 tick 撞上：本钩子挂在 `GameRoom.SurvivalTick` 的 **Postfix**，
+            //   而 `WhiteWinFeature` 判白胜是 `SurvivalTick` 的 **Prefix 返回 false**
+            //   —— `return false` 只跳过**原方法体**，Harmony **仍会执行 Postfix**。
+            //   于是时间归零那一刻：Prefix 先设 `ResultType = WhiteWin` 并返回，
+            //   Postfix（本方法）紧接着跑；若此时判据为真（`OnlyLunaSideAlive` 只要求
+            //   "不存在普通白方"，**空集合也算真**），就会再调一次 `GameOver()`
+            //   ⇒ `EndClass` 提示 + `ResultType = BlackWin` + 存活白方 `OnDeadCollarBomb()`
+            //   ⇒ 玩家看到"白胜却冒出黑方的【特别课程结束】"、白方还被炸。
+            if (room.ResultType == EResultType.WhiteWin)
+                return;
+
             if (!OnlyLunaSideAlive(room))
                 return;
 
