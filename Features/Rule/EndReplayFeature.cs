@@ -127,6 +127,15 @@ namespace HideAndSeek.Features.Rule
             "补回这一轮即消除该风险，**观感不变**（补的都是原版磁带里本来就有的帧）。")]
         public static ConfigEntry<bool> RosterFrames;
 
+        [ConfigField(true, "推回放前先补一包 `VoteResult` 相位，让客户端把审判 UI 里那个「投票结果」面板收掉。" +
+            "背景（实测诊断确认）：那行「投票结果」是文本键 `VoteResultTrial` 的值，只有审判 UI 的 " +
+            "`InitText()` 会给它赋值（`Texts[4] VoteResultText`）；对应面板是 `GameObjects[3] VoteResult`， " +
+            "原版靠**离开 VoteResult 相位**时的 `EndVoteResult()`（`SetActive(false)`）关闭它。" +
+            "而我们的回放是**直接跳进 Replay** 的，从没经过那个相位 ⇒ 没人关它 ⇒ 面板一直挂在画面上" +
+            "（回放越长越明显，所以只有「片段多」的局面才看得清）。补这一包就是让客户端把收尾处理器跑一遍。" +
+            "关掉本项可回到旧行为（面板会一直显示），用于对照。")]
+        public static ConfigEntry<bool> ClearTrialLabels;
+
         // ── 片段登记 ────────────────────────────────────────────────────
         private sealed class Clip
         {
@@ -663,6 +672,21 @@ namespace HideAndSeek.Features.Rule
                 // 用原版同款等待：第一个回执到达后再宽限一小会儿就推进；超时也会强制推进。
                 room.WaitCompletePacket(() => FinishReplay("客户端回执/超时"), room.CompleteWaitCount(), budget, 4000);
 
+                // ★ 先补一包 `VoteResult` 再推 `Replay`：让客户端执行 `EndVoteResult()`
+                //   （`GetObject(3) VoteResult` → `SetActive(false)`）把那个默认挂着的「投票结果」面板收掉。
+                //
+                //   实测诊断依据：界面上的「投票结果」= 文本键 `VoteResultTrial`（中文表里有），
+                //   而全工程只有审判 UI 的 `InitText()` 会把它赋给 `Texts[4] VoteResultText`；
+                //   与之配对的 `GameObjects[3] VoteResult` 面板由 `StartVoteResult()` 打开、
+                //   由 `EndVoteResult()`（离开该相位时）关闭。原版流程会经过那个相位，
+                //   我们的回放**直接跳进 Replay** ⇒ 收尾处理器从没跑过 ⇒ 面板一直挂着。
+                //   两包同一帧发出，客户端按顺序处理 ⇒ 最多闪一帧。
+                if (ClearTrialLabels?.Value ?? true)
+                {
+                    room.Broadcast(new S_TRIAL_STATE { State = ETrialState.VoteResult });
+                    Plugin.Log.LogInfo("[HS] EndReplay：已先补一包 VoteResult（触发客户端的 EndVoteResult，收掉那个「投票结果」面板）。");
+                }
+
                 room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Replay });
             }
             catch (Exception ex)
@@ -777,6 +801,73 @@ namespace HideAndSeek.Features.Rule
                 catch (Exception ex)
                 {
                     Plugin.Log.LogWarning($"[HS][诊断] 文本表扫描失败 — {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// 【临时诊断】回放开始时，把审判 UI 里"文字含「投票结果」或「논의 시작」"的元素找出来，
+        /// 打印它的名字 / 层级路径 / 自身与在层级中的激活状态 —— 用来确定那两行字到底是哪个元素、
+        /// 是"某个面板的一部分"还是"独立常显的标签"（决定该关谁）。结论拿到后本类即可删除。
+        /// </summary>
+        [HarmonyPatch]
+        internal static class TrialLabelProbeHook
+        {
+            private static MethodBase Target()
+                => AccessTools.Method(AccessTools.TypeByName("UI_TrialEvent"), "StartReplay");
+
+            [HarmonyPrepare]
+            private static bool Prepare() => Target() != null;
+
+            [HarmonyTargetMethod]
+            private static MethodBase TargetMethod() => Target();
+
+            [HarmonyPostfix]
+            private static void Postfix(object __instance)
+            {
+                try
+                {
+                    var ui = __instance as UnityEngine.Component;
+                    if (ui == null)
+                        return;
+
+                    int hits = 0;
+                    foreach (var tr in ui.gameObject.GetComponentsInChildren<UnityEngine.Transform>(true))
+                    {
+                        string text = null;
+                        foreach (var c in tr.GetComponents<UnityEngine.Component>())
+                        {
+                            if (c == null)
+                                continue;
+                            var p = c.GetType().GetProperty("text");
+                            if (p == null || p.PropertyType != typeof(string))
+                                continue;
+                            text = p.GetValue(c) as string;
+                            if (!string.IsNullOrEmpty(text))
+                                break;
+                        }
+
+                        if (string.IsNullOrEmpty(text))
+                            continue;
+                        if (text.IndexOf("投票结果", global::System.StringComparison.Ordinal) < 0
+                            && text.IndexOf("논의 시작", global::System.StringComparison.Ordinal) < 0)
+                            continue;
+
+                        var chain = new List<string>();
+                        var cur = tr;
+                        while (cur != null && cur != ui.transform)
+                        {
+                            chain.Insert(0, $"{cur.name}[self={cur.gameObject.activeSelf},hier={cur.gameObject.activeInHierarchy}]");
+                            cur = cur.parent;
+                        }
+                        Plugin.Log.LogWarning($"[HS][诊断] 审判UI文字『{text}』元素={tr.name} 路径={string.Join(" < ", chain)}");
+                        hits++;
+                    }
+                    Plugin.Log.LogInfo($"[HS][诊断] 审判UI文字扫描完成：命中 {hits} 个。");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[HS][诊断] 审判UI文字扫描失败 — {ex.Message}");
                 }
             }
         }
