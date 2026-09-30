@@ -761,7 +761,7 @@ namespace HideAndSeek.Features.Rule
                 try
                 {
                     Plugin.Log.LogInfo(
-                        $"[HS] EndReplay（客户端）：BeginTape 第 {__instance.PlayTapeCount} 段表 / 是否最后一段={(__instance.IsLastTape ? "是" : "否")}。");
+                        $"[HS] EndReplay（客户端）：BeginTape 开始（可用磁带 {__instance.PlayTapeCount} 段）/ 是否最后一段={(__instance.IsLastTape ? "是" : "否")}。");
                 }
                 catch (Exception ex)
                 {
@@ -997,19 +997,29 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 【阶段 1】采集"每个玩家在窗口起点时的样子"，用来合成一轮全员出场帧。
-        /// 取法：每位玩家在 `start` 之前最后一枚 SpawnShot 的信息 —— `RecordAllType` 每秒给在场者各记一枚
-        /// （ClientTime 基准）。录制者自己那批带 `isStartShot` 的帧是 SurvivalTime 基准（几百的剩余秒数），
-        /// 会被 `TimeStamp > start` 自然排除 ⇒ 由调用方用 `src` 显式补上。
+        /// 【阶段 1】采集"每个玩家在窗口起点前后的样子"，用来合成一轮全员出场帧。
+        ///
+        /// ⚠ 实测教训（1.4.0 第一版就错在这里）：**客户端交上来的磁带是它自己先裁过的**，
+        /// 里面只有 [窗口起点, 窗口终点] 那些帧 —— 根本没有"窗口起点之前"的帧，
+        /// 所以"取 start 之前最后一枚"只会捞到录制者自己 ⇒ 日志里 `出场帧 1`，等于空转。
+        /// 正确做法：**每位玩家都取"离 start 最近的那一枚"**（可能略晚于 start，最多差一轮点名的间隔），
+        /// 反正合成出来的帧时间戳一律盖成 `start`，位置最多"提前不到 1 秒"。
+        /// 用"离 start 的距离"挑还顺带避开录制者那批 SurvivalTime 基准的帧（数值差好几百，必然更远）。
         /// </summary>
         private static Dictionary<int, PublicPlayerInfo> BuildRoster(List<SnapShot> tape, float start)
         {
             var roster = new Dictionary<int, PublicPlayerInfo>();
+            var dist = new Dictionary<int, float>();
             foreach (var s in tape)
             {
-                if (s.Type != ESnapShotType.SpawnShot || s.Spawn == null || s.TimeStamp > start)
+                if (s.Type != ESnapShotType.SpawnShot || s.Spawn == null)
                     continue;
-                roster[s.Spawn.PlayerId] = s.Spawn;   // 后到的覆盖先到的 ⇒ 天然就是"最后一枚"
+                int id = s.Spawn.PlayerId;
+                float d = global::System.Math.Abs(s.TimeStamp - start);
+                if (dist.TryGetValue(id, out var prev) && prev <= d)
+                    continue;                      // 已有更近的（并列时保留先遇到的那枚，即更早的）
+                dist[id] = d;
+                roster[id] = s.Spawn;
             }
             return roster;
         }
@@ -1034,7 +1044,10 @@ namespace HideAndSeek.Features.Rule
         /// · **必须在每台客户端的 `_cache` 里** —— `ChangeMyPlayer` 是 `_cache[id]` 直接索引，
         ///   不存在会抛 `KeyNotFoundException`、整段回放被跳过。判据：**本局还在房间里**
         ///   （`room.DeadPlayers`）⇒ 宿主从没给他发过 S_LEAVE_GAME（那一条会 `_cache.Remove` 并 Destroy）。
-        /// · **必须是磁带里出现过的人** —— 说明录制那台客户端的在场表里有他。
+        /// · **优先"磁带里出现过的人"** —— 说明录制那台客户端的在场表里有他（更强的证据）。
+        ///   ⚠ 但**不能把它当必要条件**：磁带是客户端按窗口裁好的，**已死者通常死在窗口之前、根本不在磁带里**；
+        ///   第一版把它当必要条件，结果一个候选都没通过、每段都退回原版（实测 `出场帧 1`、`主视角=原版 #1`）。
+        ///   取不到"在磁带里"的候选时，退用"已死 + 仍在房间 + 窗口内无镜头"的人。
         /// · **必须已死亡** —— 死人在窗口内不会再有自己的 Move/State 镜头，否则那些镜头会把镜头焦点拽走。
         /// · **不能是录制者自己** —— 否则 `_blackId` 会被折成 0，等于没换。
         /// </summary>
@@ -1068,15 +1081,39 @@ namespace HideAndSeek.Features.Rule
                         busy.Add(id);
                 }
 
+                var deadIds = new List<string>();
+                int loose = 0;
                 foreach (var p in room.DeadPlayers)
                 {
                     int id = p?.PublicInfo?.PlayerId ?? 0;
                     if (id <= 0 || id == recorderId)
                         continue;
-                    if (!roster.ContainsKey(id) || busy.Contains(id))
+                    deadIds.Add(id.ToString());
+                    if (busy.Contains(id))
+                        continue;                       // 窗口内还有他自己的镜头 ⇒ 镜头会被他拽走
+                    // ★ 交叉验证：房主同时也是一台客户端。宿主本机的 `_cache` 里还有这个对象
+                    //   ⇒ "加入"包发过、且没发过"离开"包（那一条才会 `_cache.Remove` + Destroy）
+                    //   ⇒ 其他客户端的 `_cache` 里也还有他，`ChangeMyPlayer` 的 `_cache[id]` 不会抛。
+                    if (Managers.Player.GetPlayerCache(id) == null)
+                    {
+                        Plugin.Log.LogWarning($"[HS] EndReplay：已死者 #{id} 在本机客户端缓存里已不存在，跳过（不能当观察者）。");
                         continue;
-                    Plugin.Log.LogInfo($"[HS] EndReplay：挑到隐藏观察者 #{id}（已死亡、仍在房间、窗口内无自己的镜头）。");
-                    return id;
+                    }
+                    if (roster.ContainsKey(id))
+                    {
+                        Plugin.Log.LogInfo($"[HS] EndReplay：挑到隐藏观察者 #{id}（已死亡、仍在房间、窗口内无自己的镜头）。");
+                        return id;
+                    }
+                    if (loose == 0)
+                        loose = id;                     // 备选：已死 + 仍在房间，只是不在本段磁带里
+                }
+                if (loose > 0)
+                {
+                    // 已死者通常死在窗口之前 ⇒ 磁带里没有他（磁带是客户端按窗口裁好的，实测第一版就是
+                    // 因为把"必须在磁带里"当成必要条件，一个候选都没通过、每段都退回原版）。
+                    Plugin.Log.LogWarning(
+                        $"[HS] EndReplay：本段磁带里没有可用的已死者，改用仍在房间、且本机缓存里还在的已死亡玩家 #{loose} 当观察者。");
+                    return loose;
                 }
 
                 // 兜底：房间里仍在的人（活人几乎必然在窗口内有镜头，所以这条通常为空）
@@ -1085,13 +1122,18 @@ namespace HideAndSeek.Features.Rule
                     int id = kv.Key;
                     if (id <= 0 || id == recorderId || busy.Contains(id))
                         continue;
+                    if (Managers.Player.GetPlayerCache(id) == null)
+                        continue;
                     if (!room.Players.Any(p => p?.PublicInfo != null && p.PublicInfo.PlayerId == id))
                         continue;
                     Plugin.Log.LogWarning($"[HS] EndReplay：没有已死亡的候选，退而用仍在房间的 #{id} 当观察者。");
                     return id;
                 }
 
-                Plugin.Log.LogWarning("[HS] EndReplay：找不到合适的隐藏观察者，本段按原版主视角播（剪影会打在录制者身上）。");
+                Plugin.Log.LogWarning(
+                    $"[HS] EndReplay：找不到合适的隐藏观察者，本段按原版主视角播（剪影会打在录制者身上）。" +
+                    $"诊断：已死者=[{string.Join(",", deadIds)}] 窗口内有镜头的=[{string.Join(",", busy)}] " +
+                    $"磁带里有出场帧的=[{string.Join(",", roster.Keys)}] 录制者=#{recorderId}");
             }
             catch (Exception ex)
             {
