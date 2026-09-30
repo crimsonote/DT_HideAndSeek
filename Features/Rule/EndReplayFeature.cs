@@ -221,6 +221,32 @@ namespace HideAndSeek.Features.Rule
         private const int KeyWhiteTour = 100;
         private const int KeyBlackAct = 200;
 
+        /// <summary>
+        /// 「自爆开始 → 真正死亡（人消失）」的秒数 = 原版 `OnDeadCollarBomb` 里
+        /// `PushAfter(6000, OnDead)` 的 6000ms（`:176023`）。
+        ///
+        /// ★ 核心作用：**把合成窗口整体推到"自爆走完"这一侧，让触发帧落在自爆幕的第一段。**
+        ///
+        ///   `GamePlayer.OnDeadCollarBomb`（`:176007`）**不是"爆炸了"**，而是**"项圈开始自爆"**：
+        ///       t=0   广播 `S_PLAY_EFFECT{DyingVfx}` ⇒ 客户端 `PlayDying()`（`:17209`）
+        ///             = `_collar.SetActive(true)` + **`intensity = 0`**（亮着但看不见）
+        ///               + `NecklaceWork` 音效 + **`AppendInterval(1f)`** ⇒ **前 1.0 秒是"有声无光"的哑期**
+        ///       t=1.0 起 4 轮越来越快的闪烁（1.5 + 1.5 + 1.125 + 0.75 = 4.875s）
+        ///       t=5.875 `StopDying()` 关项圈
+        ///       t=6    `PushAfter(6000, …)` → `OnDead(null, CollarBomb)`：`CreateBombCorpse` +
+        ///              广播 `S_DESPAWN` ⇒ 视觉上的"爆炸"= **该玩家对象消失**（`:175990-175997`）
+        ///   ⇒ 闪烁总长 **5.875s**（**不是 2.5s**，之前注释写错了），与 6 秒只差 0.125s。
+        ///
+        ///   而登记时 `At = Managers.Game.ClientTime + atOffset` 原先用的是 **t=0** ⇒ 窗口
+        ///   `[At−7.5, At+0.5]` 的右端只到 **t+0.5** ⇒ 触发帧若被排到最后一段，**整段都落在 1.0s
+        ///   哑期里就被切走** ⇒ 实测症状：**听得到 `NecklaceWork`，画面却什么都没有**，闪烁直到
+        ///   下一幕（黑方收尾）才闪起来。
+        ///
+        ///   ⇒ 加上这 6 秒后，窗口 = `[t−1.5, t+6.5]`：触发帧落在**第 0 段**（t=0），
+        ///     中间几段用来播闪烁，最后的"消失"落在**最末段**（t+6），与 6 秒基准一致。
+        /// </summary>
+        private const float CollarToDeadSec = 6f;
+
         private static int BaseKey
         {
             get
@@ -693,12 +719,12 @@ namespace HideAndSeek.Features.Rule
                             bool ok;
                             if (p.IsDummy || p.Session == null)
                             {
-                                ok = AddClip(key, id, "自爆", segBefore, segAfter);
+                                ok = AddClip(key, id, "自爆", segBefore, segAfter, null, CollarToDeadSec);
                                 noClient++;
                             }
                             else
                             {
-                                ok = RequestRecord(p, key, "自爆", segBefore, segAfter);
+                                ok = RequestRecord(p, key, "自爆", segBefore, segAfter, CollarToDeadSec);
                             }
                             if (ok)
                                 seq++;
@@ -706,14 +732,17 @@ namespace HideAndSeek.Features.Rule
 
                         // 「黑方收尾」固定走服务端兜底（理由见 `WhiteWinNoteHook` 里的同一段注释：
                         // 观众通常就是凶手本人 ⇒ 原版丢弃"你自己"的移动帧 ⇒ 相机定格、他本人不入画）。
+                        // 窗口从"自爆走完 + after 秒"开始（不能从"自爆开始"算，见 `CollarToDeadSec`）。
                         var black = FindPlayerById(room, blackId);
                         if (black?.PublicInfo != null)
-                            AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail, null, after);
+                            AddClip(BaseKey + KeyBlackAct, black.PublicInfo.PlayerId, "黑方", 0f, tail,
+                                null, CollarToDeadSec + after);
 
                         float perTotal = (before + after) / Math.Max(1, segCount);
                         Plugin.Log.LogInfo($"[HS] EndReplay：自爆时刻 ⇒ 登记 {seq} 段白方视角"
-                            + $"（总窗口 {before + after:F1}s 平铺到 {segCount} 段、每人 {perTotal:F1}s，"
-                            + $"最后一段压到爆炸后 {after:F1}s；其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
+                            + $"（以**自爆走完** t+{CollarToDeadSec:F0}s 为基准，总窗口 {before + after:F1}s "
+                            + $"平铺到 {segCount} 段、每人 {perTotal:F1}s，最后一段压到爆炸后 {after:F1}s；"
+                            + $"其中 {noClient} 段没有客户端 ⇒ 服务端兜底）"
                             + $" + 黑方收尾 1 段（服务端兜底，{tail:F1}s 断电视野）。");
                     }
                 }

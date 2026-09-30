@@ -34,11 +34,20 @@ namespace HideAndSeek.Features.Rule
         private const float KeepSeconds = 45f;
 
         /// <summary>
-        /// ⚠ 已**移除**"爆炸后把被处决者移出场上"的那枚 `DespawnShot`（原 `BombDespawnDelay = 0.05f`）：
-        /// 它会在爆炸后 0.05s 就把对象 `SetActive(false)`，掐断仍在跑的项圈闪烁 DOTween
-        /// ⇒ 既不闪、也没有音效（实测：旧版能闪、新版全无，而爆炸帧的生成代码两版一模一样）。
-        /// 详见 <see cref="Build"/> 里爆炸循环处的完整说明。
+        /// 「自爆开始 → 真正死亡（人消失）」的秒数 = 原版 `OnDeadCollarBomb` 里
+        /// `PushAfter(6000, OnDead)` 的 6000ms（`:176023`）。与 `EndReplayFeature.CollarToDeadSec` 同义。
+        ///
+        /// ★ 这里曾写成 `0.05f`（"爆炸后 0.05s 把人移走"），**完全错的**：
+        ///   `PlayDying()` 的项圈闪烁总长 **5.875s**（含**前 1.0s 哑期**：`_collar` 亮起但
+        ///   `intensity=0` + 只响 `NecklaceWork`，`:17215-17224`），声音还挂在玩家自己的
+        ///   `AudioSource` 上（`Sound.PlayWorld(key, obj)` `:36498`）⇒ 0.05s 就把对象 `SetActive(false)`
+        ///   会**同时掐掉闪烁与音效**。真正的"爆炸"（人消失 + 生成焦尸）在 **t+6**（`:175990-175997`
+        ///   的 `CreateBombCorpse` + `S_DESPAWN`）⇒ 消失帧必须排在 `b.Time + 6f`。
+        ///
+        /// ⚠ 另一条误判也要纠正：曾把"看不到闪烁"归因于这枚 `DespawnShot`（`ff9b6a8` 干脆删掉它），
+        ///   但实测那一版**仍然看不到闪烁** ⇒ 不是它。真因见 <see cref="Build"/> 里爆炸循环处的说明。
         /// </summary>
+        private const float BombDespawnDelay = 6f;
 
         /// <summary>移动帧的插值频率：采样只有 5Hz，镜头要跟人走就必须插值到更密，否则一顿一顿。</summary>
         private const float MoveHz = 20f;
@@ -114,6 +123,16 @@ namespace HideAndSeek.Features.Rule
         /// <summary>
         /// 用房主缓冲合成一段磁带（**只在客户端磁带没到时兜底**），返回帧数（0＝没有可用样本）。
         ///
+        /// ★★ **术语先钉死（我反复搞混的两组概念）**
+        ///
+        ///   · **录制者（recorder）**：谁**录**了这卷磁带（收到 `S_RECORD_REPLAY`、回 `C_TAPE`）。
+        ///     只有**真人**才可能是录制者。
+        ///   · **被拍摄者（subject）**：我们想让**镜头拍**的那个人（本段的"主角"）。
+        ///
+        ///     客户端磁带路径：录制者 **就是** 被拍摄者本人（他录自己的视角）⇒ 两者重合。
+        ///     服务端兜底路径（假人）：**根本没有录制者**（假人没有客户端，磁带是本类合成的），
+        ///     只有被拍摄者 —— 调用方传进来的 `cameraTargetId` 就是他（**不是**录制者）。
+        ///
         /// ★ 这里有两个**必须分开**的角色 —— 之前把它们合成一个，两个方向都踩了坑：
         ///
         ///   · <paramref name="ghostId"/>：**首帧的玩家**（客户端 `BeginTape` 的硬要求），
@@ -121,20 +140,21 @@ namespace HideAndSeek.Features.Rule
         ///     打在真人身上就是"视角涂黑"，用户明确不要 ⇒ 这里必须是**另一个已死者**，
         ///     标成 `IsGhost = true`：回放期间 `Player.Update` 每帧 `RefreshGhostVisual()` 走
         ///     case 2（幽灵替身与骨架一起关）⇒ 他在画面上不可见，剪影落在他身上等于没落
-        ///     ⇒ 真人本色出场。**他只占"剪影槽位"，不承担镜头。**
+        ///     ⇒ 真人本色出场。**他只占"剪影槽位"，不承担镜头，且必须与镜头目标不是同一人。**
         ///
         ///   · <paramref name="cameraTargetId"/>：**镜头跟着谁**（`ApplyArea` 里
-        ///     `Managers.Game.CameraTarget = GetDevice(area.CameraTargetId)`）。
-        ///     必须指向**录制者本人** —— 他本人在哪个房间，镜头就在哪个房间；他走门换房间，
-        ///     `AreaShot` 是那一刻录下来的。**原版根本没有"把相机送到别的房间取景"的实现**
+        ///     `Managers.Game.CameraTarget = GetDevice(area.CameraTargetId)`）
+        ///     ⇒ 必须是**被拍摄者本人**（真人磁带那一路就是原磁带里的录制者）。
+        ///     他在哪个房间镜头就在哪个房间；他走门换房间，`AreaShot` 是那一刻录下来的。
+        ///     **原版根本没有"把相机送到别的房间取景"的实现**
         ///     （`ChangeArea`(:29605) 只有换房间 / 设相机目标 / 设黑灯，相机被约束在当前房间边界内），
         ///     自造跨房间机位必然"漂出去又被边界拽回"。
-        ///     （观众本人就是录制者时，客户端 `ApplyArea` 会把 `== _myPlayerId` 改写成 0
+        ///     （观众本人就是被拍摄者时，客户端 `ApplyArea` 会把 `== _myPlayerId` 改写成 0
         ///      ⇒ 镜头跟着 id 0 的本机替身，`ApplyMove` 同步改写 ⇒ 替身沿他的真实路径走 ✓ 原版行为。）
         ///
         ///   · <paramref name="lit"/>：`AreaShot.IsLight` ⇒ `Darkness = !IsLight`（黑方收尾幕要断电视野）。
         ///
-        /// ⚠ **录制者必须强制 `IsGhost = false`**：被处决者在服务端已是幽灵（`MakeSpectatorGhost` 置
+        /// ⚠ **被拍摄者必须强制 `IsGhost = false`**：被处决者在服务端已是幽灵（`MakeSpectatorGhost` 置
         /// `IsGhost=true`），照抄采样值会让客户端把他整段隐形 ⇒ 画面没人。客户端磁带里录制者那枚帧
         /// 也是显式清成 `false` 的（`RecordAllType` :31799）⇒ 这里对齐同一语义。
         /// </summary>
@@ -160,11 +180,30 @@ namespace HideAndSeek.Features.Rule
                 Spawn = head
             });
 
-            // 相机跟着**录制者本人**，房间取他那一刻所在的房间（不是幽灵的房间）。
+            // 相机跟着**被拍摄者**（不是剪影替身、也不是"录制者"——服务端兜底这条路没有录制者），
+            // 房间取他那一刻所在的房间。
             var camRow = Pick(cameraTargetId, from);
             var camShot = MakeArea(from, cameraTargetId, lit, camRow?.RoomId ?? ghost.RoomId);
             if (camShot != null)
                 into.Add(camShot);
+
+            // ★ 本幕"该被看见的人"（**带时间上限**，不能一刀切整幕）：
+            //
+            //   · 被拍摄者本人：整段本色出场（他就是这段的主角）。
+            //   · 正在自爆的人（`Bombs` 的 DeviceId）：**只在他"消失"之前**本色出场
+            //     （`r.Time <= b.Time + BombDespawnDelay`，即 t0+6 之前）。
+            //
+            //   为什么自爆者也要可见：闪烁靠 `EffectShot{DyingVfx}` 触发后，是一段**纯客户端 DOTween**
+            //   （`DOTween.To` 的目标是 lambda、不绑 GameObject ⇒ 段切换的 despawn/重新 spawn
+            //   **不会中断**它，唯一终止者是 5.875s 处的 `StopDying`）。但对象若被标成幽灵，
+            //   就"在闪却看不见"。而服务端在自爆那一刻起会把他们逐步标成 `IsGhost=true`，
+            //   采样值照抄就会让后面几段的人隐形 ⇒ 强制本色出场。
+            //
+            //   ⚠ **必须带上限**：否则到了「黑方收尾」那一段（t0+6.5 之后），他们会被重新 spawn 成
+            //   活人 ⇒ 看起来"炸完又站起来"。
+            var visibleUntil = new Dictionary<int, float>();
+            foreach (var b in Bombs)
+                visibleUntil[b.DeviceId] = b.Time + BombDespawnDelay;
 
             var spawned = new HashSet<int> { ghost.Id };
             foreach (var r in Rows)
@@ -177,9 +216,11 @@ namespace HideAndSeek.Features.Rule
                 if (spawned.Add(r.Id))
                 {
                     var info = r.Info.Clone();
-                    if (r.Id == cameraTargetId)
+                    bool show = r.Id == cameraTargetId
+                                || (visibleUntil.TryGetValue(r.Id, out float until) && r.Time <= until);
+                    if (show)
                     {
-                        // 录制者本色出场（他被处决后服务端标的是幽灵）
+                        // 本色出场（他们被处决后服务端标的是幽灵；但在"消失"之前这一段里还在闪）
                         info.IsGhost = false;
                         info.State = EPlayerState.Idle;
                     }
@@ -210,50 +251,56 @@ namespace HideAndSeek.Features.Rule
             }
 
             int bombAdded = 0;
+            int goneAdded = 0;
             var bombIds = new List<int>();
             foreach (var b in Bombs)
             {
-                if (b.Time < from || b.Time > to)
-                    continue;
-
-                into.Add(new SnapShot
+                // ① **触发帧**：只要"自爆开始"落在本段窗口内就发。
+                //    它必须落在**自爆幕的第一段**：`PlayDying()` 前 1.0s 是"有声无光"的哑期
+                //    （`_collar` 亮起但 intensity=0 + 只响 `NecklaceWork`，`:17215-17224`），
+                //    之后才逐轮闪起来（总长 5.875s）。如果它落在最后一段且那段只剩 0.5s，
+                //    整段都在哑期里就被切走 ⇒ **只听得见声音、画面什么都没有**（实测症状）。
+                if (b.Time >= from && b.Time <= to)
                 {
-                    Type = ESnapShotType.EffectShot,
-                    TimeStamp = b.Time,
-                    Effect = new EffectSnapShot
+                    into.Add(new SnapShot
                     {
-                        Type = EEffectType.DyingVfx,
-                        DeviceId = b.DeviceId,
-                        Pos = b.Pos?.Clone()
-                    }
-                });
+                        Type = ESnapShotType.EffectShot,
+                        TimeStamp = b.Time,
+                        Effect = new EffectSnapShot
+                        {
+                            Type = EEffectType.DyingVfx,
+                            DeviceId = b.DeviceId,
+                            Pos = b.Pos?.Clone()
+                        }
+                    });
+                    bombAdded++;
+                    bombIds.Add(b.DeviceId);
+                }
 
-                // ★ **不发 `DespawnShot`** —— 这就是"项圈闪烁不见了"的真凶（diff 实测）。
-                //
-                //   爆炸帧（`EffectShot{DyingVfx}`）只是**启动**一段客户端动画：`ApplyEffect`
-                //   → `PlayDying()` → DOTween 序列（`NecklaceWork` 音效 → 1s 停顿 → 4 轮**越来越快**的
-                //   项圈闪烁 → `StopDying()`，整段约 2.5s）。它全程持有玩家身上的 `_collar` 子物体。
-                //
-                //   而 `DespawnShot` → `ApplyDespawn` → `PlayerManager.Despawn(id)` → 对象
-                //   `SetActive(false)`。原本这枚帧排在爆炸后 0.05s，于是**动画刚启动就把项圈关掉** ⇒
-                //   既不闪、也没有音效（用户实测：旧版能闪、新版全无，而爆炸帧生成代码两版一模一样）。
-                //   旧版之所以没事：那一版的 `cameraTargetId` 是一具"幽灵机位"，被处决者压根没被 spawn，
-                //   `Despawn` 找不到人 ⇒ no-op ⇒ 项圈对象全程在场。
-                //
-                //   代价：被处决者会一直站在画面里（不会被自动移走）。这是**可接受的** ——
-                //   回放结束本来就会整体清场，而"能看到他被处决前站着的样子"正是这段的意义。
-
-                bombAdded++;
-                bombIds.Add(b.DeviceId);
+                // ② **消失帧**：真正死亡在 `b.Time + 6s`（`PushDown`→`OnDead`：`CreateBombCorpse`
+                //    + 广播 `S_DESPAWN`，`:175990-175997`）—— 回放里复现"人没了"只有这条安全路
+                //    （尸体 `AddShot` 会触发 `Corpse.SetInfo` 二次调用崩溃，绝不能用）。
+                //    ⚠ 它落在**与触发帧不同的一段**（通常是最末段），所以必须**独立判断窗口**，
+                //      不能用上面那个 `b.Time ∈ [from,to]` 的条件（否则永远发不出去）。
+                float goneAt = b.Time + BombDespawnDelay;
+                if (goneAt >= from && goneAt <= to)
+                {
+                    into.Add(new SnapShot
+                    {
+                        Type = ESnapShotType.DespawnShot,
+                        TimeStamp = goneAt,
+                        Despawn = b.DeviceId
+                    });
+                    goneAdded++;
+                }
             }
 
-            // 诊断：这一段窗口里到底有几枚爆炸帧、分别属于谁。爆炸帧靠 `DeviceId` 找**活着的
-            // 玩家对象**播放 `PlayDying()`（项圈闪烁 + NecklaceWork 音效），对象不在场就静默不出。
-            // 下一局日志据此一次分清"没生成"与"生成了但播不出来"，不再靠猜。
+            // 诊断：本段触发了几次闪烁、移走了几个人（触发一次即全程闪 5.875s，跨段）。
             Plugin.Log.LogInfo($"[HS] EndReplayHostTape：兜底段 镜头=#{cameraTargetId} 剪影=#{ghost.Id}"
-                + $" 窗口=[{from:F2},{to:F2}] ⇒ 爆炸帧 {bombAdded} 枚"
-                + (bombAdded > 0 ? $"（DeviceId=[{string.Join(",", bombIds)}]）" : "（本段不含爆炸时刻）")
-                + $"，缓冲内爆炸记录共 {Bombs.Count} 条。");
+                + $" 窗口=[{from:F2},{to:F2}] ⇒ 触发闪烁 {bombAdded} 枚"
+                + (bombAdded > 0 ? $"（DeviceId=[{string.Join(",", bombIds)}]）" : "（沿用前段已触发的闪烁）")
+                + $"，本段移走 {goneAdded} 人，本色出场上限 {visibleUntil.Count} 人，"
+                + $"缓冲内自爆记录 {Bombs.Count} 条。");
 
             return into.Count;
         }
