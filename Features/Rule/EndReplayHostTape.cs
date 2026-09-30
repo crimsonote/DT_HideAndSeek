@@ -581,6 +581,30 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
+        /// <summary>
+        /// 机位移动帧的 `Velocity`。**这一项以前写 `0f`，是"哑剧 + 镜头漂移被拽回"的真凶。**
+        ///
+        /// 客户端 `Player.UpdateMove()`（`FixedUpdate` 调用，:16892）是这样逼近 `TargetPos` 的：
+        ///     num = Velocity * DeltaTime;
+        ///     if (Velocity == 0 &amp;&amp; transform.position != target)
+        ///         num = Mathf.Max(_lastVelocity, 201.59999f) * DeltaTime;   // ← 速度被钉在 201.6/秒
+        ///     if (dist² &lt; num²) transform.position = target;                  // 够近才瞬移到位
+        ///     else               transform.position += dir * num;             // 否则一帧挪一点
+        ///
+        /// 而我们的机位帧要求它**一瞬间**跨越几千单位（开场从锚点位置跳到首站、站间 0.2s 直线平移、
+        /// `EmitInterpolated` 沿黑方路径飞），201.6/秒根本走不到 ⇒ 机位（＝`AreaShot.CameraTargetId`，
+        /// 镜头就是跟着它）**整幕都在半路上**：观众看到画面往别处"漂"，而每站那枚 `AreaShot` 又把
+        /// 镜头**立即**摆回房间内（客户端日志 `카메라 즉시 이동 → (x,y)` 就是它）⇒ 实测观感正是
+        /// "画面时不时往其他方向漂、然后被拽回原点"；同时镜头**从没到过演员那里** ⇒ 整幕像哑剧。
+        ///
+        /// 给一个"每物理帧都判定为够近"的值 ⇒ 客户端**逐帧精确贴合**我们 20Hz 的插值点，
+        /// 于是平移就是我们画的直线、停留就是真的停住。
+        /// ⚠ 只对**机位**这么干：`Velocity` 在客户端 `Player` 里只有 `UpdateMove` 读它
+        /// （`SetRigidBodyVelocity` 用的是 `Rigidbody.linearVelocity`，另一回事，已核对），
+        /// 所以调大没有任何其它副作用；真实演员仍用采样到的真实速度。
+        /// </summary>
+        private const float HostMoveVelocity = 1000000f;
+
         private static SnapShot MoveAt(int id, float t, PosInfo pos)
         {
             return new SnapShot
@@ -592,7 +616,7 @@ namespace HideAndSeek.Features.Rule
                     PlayerId = id,
                     Pos = pos,
                     LookLeft = false,
-                    Velocity = 0f,
+                    Velocity = HostMoveVelocity,
                     IsMove = true
                 }
             };
