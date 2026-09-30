@@ -84,12 +84,19 @@ namespace HideAndSeek.Features.Replay
                 // ★ 回放序列进行中：之后进来的每一次结算都必须继续拦下。
                 //   `BlackWinFeature.TryTrigger` 挂在每秒的 `SurvivalTick` 上，拦下第一次之后
                 //   它下一 tick 还会再调一次；若这里放行，真正的结算会在回放没播完时跑掉。
-                if (Current != Phase.Idle)
+                // ★ 回放序列进行中：之后进来的每一次结算都必须继续拦下（`BlackWinFeature.TryTrigger`
+                //   挂在每秒的 SurvivalTick 上，拦下第一次之后还会再来）。
+                //   ⚠ **但 `Done` 必须放行**：`Finish()` 已经调过 `ContinueSettlement()`，
+                //   而它内部正是调 `ChangeGameState(TotalResult)`；若这里还拦，结算就永远不会发生
+                //   —— 实测症状：日志里刷"继续拦截结算"，游戏卡在回放结束之后，只能大退。
+                if (Current == Phase.Preparing || Current == Phase.Screen || Current == Phase.Playing)
                 {
                     Plugin.Log.LogInfo($"[HS-Replay]（{ending}）回放进行中（{Current}），继续拦截结算。");
                     EnsureServerSurvive();
                     return true;
                 }
+                if (Current == Phase.Done)
+                    return false;
 
                 var room = GameRoom.Instance;
                 if (room == null || room.State != EGameState.Survive)
@@ -112,6 +119,18 @@ namespace HideAndSeek.Features.Replay
                 All.Clear();
                 foreach (var a in acts)
                     All.Add(new Planned { Act = a });
+
+                // ★ 排片顺序**就是**播放顺序（客户端 `_playTapes` 是字典，按 key 排序播）。
+                //   而 key 原本按**登记顺序**分配，可 `OnDead` 比击杀晚 1.4 秒 ⇒ 局内事件的登记顺序
+                //   可能与事件顺序不一致（实测：第 4 次刀杀被排到了自爆之后）。
+                //   ⇒ 按 (幕类型, 事件时刻) 重排，再重新分配 key；`S_RECORD_REPLAY` 用新 key 在索取前统一发。
+                All.Sort(delegate (Planned x, Planned y)
+                {
+                    int k = ((int)x.Act.Kind).CompareTo((int)y.Act.Kind);
+                    return k != 0 ? k : x.Act.Window.From.CompareTo(y.Act.Window.From);
+                });
+                for (int i = 0; i < All.Count; i++)
+                    All[i].Act.Key = i;
 
                 int max = ReplayFeature.MaxClips?.Value ?? 12;
                 if (All.Count > max)
@@ -168,6 +187,11 @@ namespace HideAndSeek.Features.Replay
                 if (act.RecorderId <= 0 || player?.Session == null)
                     continue;   // 假人/已退出：没有客户端可问，稍后走服务端合成
 
+                // ★ 必须先请它把当前时刻登记成这个 key 的可裁事件（客户端 `ReserveSaveTape`）。
+                //   没有这一步，客户端 `BuildUploadTape` 查不到这个 key 会回**空磁带** ——
+                //   实测症状：索取 5 段、一段都没回来（`客户端磁带 0/5`），然后全部降级到服务端合成。
+                //   （登记时刻与事件时刻无关：我们的窗口是房主侧算的**绝对区间**，客户端只负责"这个 key 有效"。）
+                player.Session.Send(new S_RECORD_REPLAY { RecordTime = act.Key });
                 Pending[Slot(act.RecorderId, act.Key)] = p;
                 player.Session.Send(new S_REQUEST_TAPE { RecordTime = act.Key });
                 _sent++;
@@ -197,7 +221,7 @@ namespace HideAndSeek.Features.Replay
                 var visibleIds = ActTable.VisibleIn(raw, act.Window.From, 0);
                 // 位置取自房主侧采样：录制者自己的帧是 SurvivalTime 基准，从磁带取会拿到几秒前的位置。
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
-                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
+                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, sil.Id);
@@ -341,7 +365,6 @@ namespace HideAndSeek.Features.Replay
                 {
                     plan.Tape = tape;
                     _synth++;
-                    Broadcast(room, act.Key, tape);
                     continue;
                 }
 
@@ -358,10 +381,23 @@ namespace HideAndSeek.Features.Replay
                 }
                 plan.Tape = ph;
                 _placeholder++;
-                Broadcast(room, act.Key, ph);
                 Plugin.Log.LogInfo($"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】合不上 ⇒ 补 2 帧占位磁带"
                     + $"（主视角=#{head.PlayerId}），客户端会走一次转场后跳过这一段。");
             }
+
+            // ★ **统一在这里广播**（而不是边补边发）：
+            //   · 顺序 = 幕序，与客户端按 key 排序播放的结果一致；
+            //   · 全部在 `S_TRIAL_STATE{Replay}` 之前 —— 客户端 `StartReplay → RecordManager.Play()`
+            //     会把 `_playTapes` **快照**进 `_session`，之后再补就进不了这一轮的播放列表。
+            int sent = 0;
+            foreach (var plan in All)
+            {
+                if (plan.Tape == null)
+                    continue;
+                Broadcast(room, plan.Act.Key, plan.Tape);
+                sent++;
+            }
+            Plugin.Log.LogInfo($"[HS-Replay] 已广播 {sent} 段磁带（客户端回传 {_got} / 服务端合成 {_synth} / 占位 {_placeholder}）。");
         }
 
         private static bool TrySynth(Act act, out List<SnapShot> tape)
@@ -382,7 +418,7 @@ namespace HideAndSeek.Features.Replay
 
                 var visibleIds = ActTable.VisibleIn(frames, act.Window.From, 0);
                 var visibleInfos = VisibleInfos(visibleIds, act.Window.From);
-                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds);
+                var sil = SilhouetteResolver.Resolve(act.SubjectId, visibleIds, act.Window.From);
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, sil.Id);
@@ -546,7 +582,7 @@ namespace HideAndSeek.Features.Replay
                 return act.SilhouetteId;
             if (HostRecorder.HasRows(act.RecorderId))
                 return act.RecorderId;
-            var sil = SilhouetteResolver.Resolve(act.SubjectId, new List<int>());
+            var sil = SilhouetteResolver.Resolve(act.SubjectId, new List<int>(), act.Window.From);
             act.SilhouetteId = sil.Id;
             return sil.Id;
         }

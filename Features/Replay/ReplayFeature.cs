@@ -170,13 +170,9 @@ namespace HideAndSeek.Features.Replay
             };
             Acts.Add(act);
 
-            // 请录制者在**此刻**把当前时刻登记成一个可裁事件：客户端 `ReserveSaveTape` 会把它记进
-            // `_killLocalTime[key]` 并插一枚 `NormalTimeEdit`。没有这一步，客户端 `BuildUploadTape`
-            // 查不到这个 key 会回**空磁带**（实测踩过）。
-            var p = FindPlayer(GameRoom.Instance, recorderId);
-            if (p?.Session != null)
-                p.Session.Send(new S_RECORD_REPLAY { RecordTime = act.Key });
-
+            // ⚠ 这里**不**发 `S_RECORD_REPLAY`：key 会在排片时按事件顺序重新分配，
+            //   所以统一在"索取之前"发一次即可（见 `ReplayDirector.FetchTapes`）。
+            //   客户端只关心"这个 key 有没有被登记过"，与登记的时刻无关。
             return act;
         }
 
@@ -437,6 +433,50 @@ namespace HideAndSeek.Features.Replay
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[HS-Replay] 回放后进入结算失败：{ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 收客户端回传的磁带 —— **只接我们自己登记的 key**，装配后由 `ReplayDirector` 统一广播。
+        ///
+        /// ⚠ 这个钩子**必须有**：没有它，客户端回的 `C_TAPE` 会落到原版的
+        /// `HostPacketHandler.Handle_C_TAPE`，而它直接 `Broadcast(S_TAPE)` ——
+        /// 原始**未裁剪**的磁带会进入所有客户端的 `_playTapes`（那就是回放的播放列表）
+        /// ⇒ 幕序被打乱、回放被拉长。实测症状：索取 5 段，客户端凭空多出 5 段
+        /// （`可用磁带 8 段` vs 我们广播的 5 段）。
+        /// </summary>
+        [HarmonyPatch(typeof(HostPacketHandler), nameof(HostPacketHandler.Handle_C_TAPE))]
+        internal static class TapeHook
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(IPacketSink session, Packet packet)
+            {
+                if (!Armed)
+                    return true;
+
+                var c = packet?.Pkt as C_TAPE;
+                if (c == null)
+                    return true;
+
+                int recorderId = ResolveRecorder(session);
+                if (recorderId <= 0)
+                    return true;
+
+                return !ReplayDirector.OnTape(recorderId, c.RecordTime, c.SnapShots.ToList());
+            }
+
+            /// <summary>包处理器只给到 session，用"哪个玩家的 Session 就是它"反查 id。</summary>
+            private static int ResolveRecorder(IPacketSink session)
+            {
+                var room = GameRoom.Instance;
+                if (room == null || session == null)
+                    return 0;
+                foreach (var p in room.Players)
+                {
+                    if (p?.PublicInfo != null && ReferenceEquals(p.Session, session))
+                        return p.PublicInfo.PlayerId;
+                }
+                return 0;
             }
         }
 
