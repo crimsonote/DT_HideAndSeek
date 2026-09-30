@@ -100,16 +100,21 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> BlackTailSec;
 
         [ConfigField(true, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`，原版自带 3 秒后自动还原）。" +
-            "让「人凭空消失」变成一个有节拍的收尾；关掉就只剩人消失本身。" +
-            "（曾经的 `MineBombVfx` 全屏面板已移除：实测像心跳声、且是屏幕覆盖层、还会残留到大厅。）")]
+            "让「人凭空消失」变成一个有节拍的收尾；关掉就只剩人消失本身。")]
         public static ConfigEntry<bool> BombBlackout;
 
-        [ConfigField(7.5f, "「白方各段」：白胜结局里幸存者那几段的总窗口（判定前秒数）。" +
-            "**按人数平分**：N 个幸存者各录一段自己的视角，每人拿到 (前+后)÷N 秒；" +
-            "拿不到客户端磁带的才用服务端兜底。", Min = 0f, Max = 30f)]
+        [ConfigField(false, "「自爆」瞬间放一次**全屏面板 + 心跳声**（客户端 `MineBombVfx`）。" +
+            "⚠ 默认关：它是一个 UI 弹层（`UI_DespairBombEffect`），实测**会残留到大厅**" +
+            "（回放结束时收不干净，重进房间即消失）。想当「吓人」效果玩就打开，接受这一点。")]
+        public static ConfigEntry<bool> BombPanel;
+
+        [ConfigField(2f, "「白方各段」：白胜结局里幸存者那段的**判定前**秒数。" +
+            "每段都取**同一段时间**（判定前本项 ~ 判定后后项），只是视角不同、依次播放。" +
+            "⚠ 总时长 = 幸存者人数 × (本项 + 后项) ⇒ 人越多越长，默认 2+0.5 秒/人（5 人 ≈ 12.5 秒）。",
+            Min = 0f, Max = 30f)]
         public static ConfigEntry<float> TourBeforeSec;
 
-        [ConfigField(0.5f, "「白方各段」：判定后秒数（同上，并入平分的总窗口）。", Min = 0f, Max = 30f)]
+        [ConfigField(0.5f, "「白方各段」：判定后秒数（与上一项一起构成每段的时间段）。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> TourAfterSec;
 
         [ConfigField(12, "最多播放几段，取段顺序为 拿刀 → 杀人 → 最后时段。段数越多回放越长。",

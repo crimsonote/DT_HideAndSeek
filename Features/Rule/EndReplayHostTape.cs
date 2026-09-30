@@ -295,28 +295,46 @@ namespace HideAndSeek.Features.Rule
                     goneAdded++;
                 }
 
-                // ③ **爆炸的余韵：只放一次全屏压暗**（用户定的口径）。
+                // ③ **爆炸的余韵**（两个都可在配置里单独关；选效果的标准 = "原版自己有清理逻辑"）：
                 //
-                //    · `BlackOutVfx` ⇒ 客户端 `EffectManager.PlayBlackOut`（`:15015-15028`）：
-                //      DOTween 序列"开 → 等 3 秒 → 关"，**3 秒后自己还原**，不需要我们做清理。
+                //    · `BlackOutVfx`（默认**开**）⇒ 客户端 `EffectManager.PlayBlackOut`（`:15015-15028`）：
+                //      DOTween「开 → 等 3 秒 → 关」，**3 秒后自己还原**，不需要我们清理。
+                //    · `MineBombVfx`（默认**关**）⇒ `Sound.PlaySystem("MineBombSfx")`（听感像心跳）
+                //      + 全屏「绝望炸弹」面板 `UI_DespairBombEffect.Play()`。它是 **UI 弹层**，
+                //      实测**会残留到大厅**（回放结束时收不干净）⇒ 所以放在开关后面、默认不开，
+                //      想当「吓人」效果玩再打开。
                 //
-                //    ⚠ **不要**再放 `MineBombVfx`（`Sound.PlaySystem("MineBombSfx")` + 全屏"绝望炸弹"
-                //      面板 `UI_DespairBombEffect.Play()`）：用户实测"像心跳声、且是屏幕覆盖层，
-                //      还继承到了大厅"——那是 UI 弹层的生命周期问题，回放结束时收不干净。已移除。
-                //    ⚠ **绝不能**用 `FlashVfx` / `ScopeVfx` / `ArmbandVfx` 做"闪光爆炸"：它们无条件
-                //      解引用 `GetPlayerCache(effect.DeviceId)`（而 `ApplyEffect` 会把"本机观众自己"的
-                //      id 改写成 0，0 号替身是半成品）⇒ 与 `Corpse.SetInfo` 同类的空引用 ⇒
+                //    ⚠ **绝不能**用 `FlashVfx` / `ScopeVfx` / `ArmbandVfx`：它们无条件解引用
+                //      `GetPlayerCache(effect.DeviceId)`（而 `ApplyEffect` 会把「本机观众自己」的 id
+                //      改写成 0，0 号替身是半成品）⇒ 与 `Corpse.SetInfo` 同类的空引用 ⇒
                 //      **整段回放卡死**（同一枚帧每帧重试）。焦尸（`AddShot`）同样不可用。
-                //    ⚠ 每段至多一枚，多人同时炸时不叠加成一串。
-                if (boomFxAdded < 1 && (EndReplayFeature.BombBlackout?.Value ?? true))
+                //    ⚠ 每类至多一枚，多人同时炸时不叠加成一串。
+                if (boomFxAdded < 2)
                 {
-                    float darkAt = goneAt + 0.1f;
-                    if (darkAt >= from && darkAt <= to)
+                    if ((EndReplayFeature.BombPanel?.Value ?? false)
+                        && goneAt - 0.2f >= from && goneAt - 0.2f <= to)
                     {
                         into.Add(new SnapShot
                         {
                             Type = ESnapShotType.EffectShot,
-                            TimeStamp = darkAt,
+                            TimeStamp = goneAt - 0.2f,
+                            Effect = new EffectSnapShot
+                            {
+                                Type = EEffectType.MineBombVfx,
+                                DeviceId = b.DeviceId,
+                                Pos = b.Pos?.Clone()
+                            }
+                        });
+                        boomFxAdded++;
+                    }
+
+                    if ((EndReplayFeature.BombBlackout?.Value ?? true)
+                        && goneAt + 0.1f >= from && goneAt + 0.1f <= to)
+                    {
+                        into.Add(new SnapShot
+                        {
+                            Type = ESnapShotType.EffectShot,
+                            TimeStamp = goneAt + 0.1f,
                             Effect = new EffectSnapShot
                             {
                                 Type = EEffectType.BlackOutVfx,
