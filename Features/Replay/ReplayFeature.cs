@@ -212,30 +212,37 @@ namespace HideAndSeek.Features.Replay
         ///   拍成快照并**长期保存**，所以结算时（可能已是几分钟后）索取仍能拿回事件周围的素材。
         ///   如果拖到索取前才发，只会拿到"当前 14 秒缓冲" ⇒ 早期事件已经滚出缓冲。
         /// </summary>
+        /// <summary>
+        /// 把"新 key"告知**录制者客户端** —— 客户端靠它在 9 秒后把"事件周围的缓冲"
+        /// 拍成**持久快照**（`ReserveSaveTape`），结算时（可能几分钟后）索取才拿得回素材。
+        ///
+        /// ★ **只有这一处发**。曾经散在两处（`HitHook` 与 `Add`），于是诊断只加进了一处、
+        ///   另一处发失败时静默跳过 —— 排查时"日志里什么都没有"反而把人引偏。
+        ///   现在两处都调这里，成功/失败都留痕，便于和客户端的
+        ///   `S_REQUEST_TAPE: no tape for RecordTime=N. Sending empty tape.` 对账。
+        /// </summary>
+        private static void NotifyRecorder(int key, int recorderId, string what)
+        {
+            var p = FindPlayer(GameRoom.Instance, recorderId);
+            if (p?.Session != null)
+            {
+                p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+                Plugin.Log.LogInfo($"[HS-Replay/诊断] key={key} 已发 S_RECORD_REPLAY → 录制者 #{recorderId}（{what}）");
+                return;
+            }
+
+            Plugin.Log.LogWarning($"[HS-Replay/诊断] ⚠ key={key} **未能发出 S_RECORD_REPLAY**"
+                + $"（{what}，recorderId=#{recorderId}："
+                + (p == null ? "找不到该玩家" : "他的 Session 为空（已掉线/假人/已退出）")
+                + "）⇒ 客户端不会有这一幕的快照，结算时只能走服务端合成。");
+        }
+
         private static Act Add(ActKind kind, int subjectId, int recorderId, ReplayWindow.Span window, string note)
         {
             int key = _nextKey++;
             var act = AddWithKey(key, kind, subjectId, recorderId, window, note);
 
-            var p = FindPlayer(GameRoom.Instance, recorderId);
-            if (p?.Session != null)
-            {
-                p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
-
-                // 诊断：**这条必须发出去**，否则客户端不会在 9 秒后把"事件周围的缓冲"
-                // 拍成持久快照 ⇒ 结算时它只会回一段**空带**（客户端日志：
-                // `S_REQUEST_TAPE: no tape for RecordTime=N. Sending empty tape.`）
-                // ⇒ 该幕只能降级成服务端合成。所以成功与失败都要留痕，便于对账。
-                Plugin.Log.LogInfo($"[HS-Replay/诊断] key={key} 已发 S_RECORD_REPLAY → 录制者 #{recorderId}"
-                    + $"（{ActTable.Name(kind)}，窗口={window}）");
-            }
-            else
-            {
-                Plugin.Log.LogWarning($"[HS-Replay/诊断] ⚠ key={key} **未能发出 S_RECORD_REPLAY**"
-                    + $"（{ActTable.Name(kind)}，recorderId=#{recorderId}："
-                    + (p == null ? "找不到该玩家" : "他的 Session 为空（已掉线/假人/已退出）")
-                    + "）⇒ 客户端不会有这一幕的快照，结算时只能走服务端合成。");
-            }
+            NotifyRecorder(key, recorderId, $"{ActTable.Name(kind)} 窗口={window}");
 
             return act;
         }
@@ -389,9 +396,10 @@ namespace HideAndSeek.Features.Replay
                 PendingHit[victim] = new Hit { Time = Now(), Key = key, Victim = victim };
 
                 // 录制者 = 凶手本人（客户端磁带录的是他自己的视角）
-                var rec = FindPlayer(GameRoom.Instance, attacker.PublicInfo.PlayerId);
-                if (rec?.Session != null)
-                    rec.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+                // ⚠ 走 `NotifyRecorder` —— 全模块**只有那一处**发 `S_RECORD_REPLAY`，
+                //   成功/失败都留痕（曾散成两处，导致诊断漏了一半、排查时反被误导）。
+                NotifyRecorder(key, attacker.PublicInfo.PlayerId,
+                    $"杀人 #{attacker.PublicInfo.PlayerId} → #{victim}");
             }
         }
 
