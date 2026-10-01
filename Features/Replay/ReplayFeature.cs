@@ -212,14 +212,37 @@ namespace HideAndSeek.Features.Replay
         ///   拍成快照并**长期保存**，所以结算时（可能已是几分钟后）索取仍能拿回事件周围的素材。
         ///   如果拖到索取前才发，只会拿到"当前 14 秒缓冲" ⇒ 早期事件已经滚出缓冲。
         /// </summary>
+        /// <summary>
+        /// 把"新 key"告知**录制者客户端** —— 客户端靠它在 9 秒后把"事件周围的缓冲"
+        /// 拍成**持久快照**（`ReserveSaveTape`），结算时（可能几分钟后）索取才拿得回素材。
+        ///
+        /// ★ **只有这一处发**。曾经散在两处（`HitHook` 与 `Add`），于是诊断只加进了一处、
+        ///   另一处发失败时静默跳过 —— 排查时"日志里什么都没有"反而把人引偏。
+        ///   现在两处都调这里，成功/失败都留痕，便于和客户端的
+        ///   `S_REQUEST_TAPE: no tape for RecordTime=N. Sending empty tape.` 对账。
+        /// </summary>
+        private static void NotifyRecorder(int key, int recorderId, string what)
+        {
+            var p = FindPlayer(GameRoom.Instance, recorderId);
+            if (p?.Session != null)
+            {
+                p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+                Plugin.Log.LogInfo($"[HS-Replay/诊断] key={key} 已发 S_RECORD_REPLAY → 录制者 #{recorderId}（{what}）");
+                return;
+            }
+
+            Plugin.Log.LogWarning($"[HS-Replay/诊断] ⚠ key={key} **未能发出 S_RECORD_REPLAY**"
+                + $"（{what}，recorderId=#{recorderId}："
+                + (p == null ? "找不到该玩家" : "他的 Session 为空（已掉线/假人/已退出）")
+                + "）⇒ 客户端不会有这一幕的快照，结算时只能走服务端合成。");
+        }
+
         private static Act Add(ActKind kind, int subjectId, int recorderId, ReplayWindow.Span window, string note)
         {
             int key = _nextKey++;
             var act = AddWithKey(key, kind, subjectId, recorderId, window, note);
 
-            var p = FindPlayer(GameRoom.Instance, recorderId);
-            if (p?.Session != null)
-                p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+            NotifyRecorder(key, recorderId, $"{ActTable.Name(kind)} 窗口={window}");
 
             return act;
         }
@@ -355,6 +378,36 @@ namespace HideAndSeek.Features.Replay
         ///   第三件是关键：客户端 9 秒后会把当时的缓冲拍成**持久快照**，
         ///   结算时（几分钟后）索取仍能拿回事件周围的素材。
         /// </summary>
+        /// <summary>
+        /// 登记"一次杀人事件的时刻与 key"，并**立刻把 key 告知录制者客户端**。
+        ///
+        /// ★ 为什么要有这个共用方法：**刀杀有两条路径**，只有一条经过 `OnDamaged`：
+        ///   · 普通刀杀：`UseWeapon` → `OnDamaged`（其内部再调 `OnDead`）—— 由 `HitHook` 走这里；
+        ///   · **DT 刀杀**：`ExecuteCabinet/Pond/OccultTrick` → `StartDeadlyTrickCommon` → `OnDead`
+        ///     —— **完全不经过 `OnDamaged`**，所以 `HitHook` 对它无效。
+        ///   实测症状：一局里 2 幕杀人**全是 DT** ⇒ `HitHook` 一次都没跑 ⇒ 客户端手里只有
+        ///   原版自己发的那份快照（key = `SurviveTime`），而我们索取时用的是 `_nextKey`
+        ///   ⇒ `no tape for RecordTime=0` ⇒ 全部降级成服务端合成。
+        ///
+        /// ⇒ **key 一律由 mod 分配**，不用原版的 `RecordTime` —— 这样"每个事件点由 mod 登记、
+        ///   结算时用同一个 key 索取"是唯一规则，不依赖原版实现细节（原版也会发它自己那份，
+        ///   多存一份无害）。这也是"独立性与解释性"的取舍：宁可多一份快照，也不要两套 key 混用。
+        /// </summary>
+        private static void NoteHit(int victim, int attackerId, string what)
+        {
+            if (victim <= 0 || attackerId <= 0)
+                return;
+            if (PendingHit.ContainsKey(victim))
+                return;                       // 同一受害者只记第一次（多段伤害会重复触发）
+
+            int key = _nextKey++;
+            PendingHit[victim] = new Hit { Time = Now(), Key = key, Victim = victim };
+            NotifyRecorder(key, attackerId, what);
+        }
+
+        /// <summary>
+        /// 「普通刀杀」—— `UseWeapon` → `OnDamaged`。它内部会调 `OnDead`，所以这一刻就是事件时刻。
+        /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "OnDamaged")]
         internal static class HitHook
         {
@@ -363,19 +416,37 @@ namespace HideAndSeek.Features.Replay
             {
                 if (!Armed)
                     return;
-                int victim = __instance?.PublicInfo?.PlayerId ?? 0;
-                if (victim <= 0 || attacker?.PublicInfo == null)
+                if (attacker?.PublicInfo == null)
                     return;
-                if (PendingHit.ContainsKey(victim))
-                    return;                       // 同一受害者只记第一次（多段伤害会重复触发）
+                int victim = __instance?.PublicInfo?.PlayerId ?? 0;
+                NoteHit(victim, attacker.PublicInfo.PlayerId,
+                    $"普通刀杀 #{attacker.PublicInfo.PlayerId} → #{victim}");
+            }
+        }
 
-                int key = _nextKey++;
-                PendingHit[victim] = new Hit { Time = Now(), Key = key, Victim = victim };
-
-                // 录制者 = 凶手本人（客户端磁带录的是他自己的视角）
-                var rec = FindPlayer(GameRoom.Instance, attacker.PublicInfo.PlayerId);
-                if (rec?.Session != null)
-                    rec.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+        /// <summary>
+        /// 「**DT 刀杀**」—— 它**不经过 `OnDamaged`**，必须单独补登记点。
+        ///
+        /// 服务端入口是 `Player.UseDeadlyTrick(C_DEADLY_TRICK)`（:176314）：它构造
+        /// `S_DEADLY_TRICK` 广播、并走 `StartDeadlyTrickCommon` ⇒ 约 1.8 秒后 `OnDead`。
+        /// 而 `OnDead` 正是 `KillHook` 登记幕的地方 ⇒ 只要在这里把 key 备好，
+        /// `KillHook` 就能取到 mod 自己那个（否则它会走 `else` 分支另分配一个，
+        /// 而客户端手里没有那个 key ⇒ 该幕拿不到磁带）。
+        ///
+        /// ⚠ **拖尸**（`UseCorpseDeadlyTrick`）不在这里登记：那条路径上人**早就死了**、
+        ///   `OnDead` 不会再触发 ⇒ 分配出去的 key 没人消费，只会让 `PendingHit` 留垃圾。
+        ///   拖尸的"帧"由 `BroadcastHook` 记 `S_DEADLY_TRICK` 负责，与"幕"无关。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "UseDeadlyTrick", new[] { typeof(C_DEADLY_TRICK) })]
+        internal static class DeadlyTrickRecordHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance, C_DEADLY_TRICK pkt)
+            {
+                if (!Armed || pkt == null || __instance?.PublicInfo == null)
+                    return;
+                NoteHit(pkt.TargetId, __instance.PublicInfo.PlayerId,
+                    $"DT 刀杀 #{__instance.PublicInfo.PlayerId} → #{pkt.TargetId}");
             }
         }
 
@@ -416,7 +487,7 @@ namespace HideAndSeek.Features.Replay
                 }
 
                 var act = AddWithKey(key, ActKind.Kill, id, id,
-                    ActTable.Plain(at, KillBeforeSec?.Value ?? 3f, KillAfterSec?.Value ?? 1f), $"#{id} → #{victim}");
+                    ActTable.Plain(at, KillBeforeSec?.Value ?? 2f, KillAfterSec?.Value ?? 2.2f), $"#{id} → #{victim}");
 
                 // ★ 受害者是**事件参与者**：他要被强制放进本幕的"画面名单"。
                 //   roster 只来自磁带里出现过的人，而磁带录的是"录制者当时看得到的人" ——
