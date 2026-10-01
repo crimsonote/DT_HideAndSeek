@@ -447,6 +447,12 @@ namespace HideAndSeek.Features.Replay
                 }
                 Plugin.Log.LogInfo($"[HS-Replay] {rep.Line()}"
                     + $" 密度={rep.FramesOut / Math.Max(0.01f, act.Window.Length):F1}帧/秒（服务端合成）");
+                    // ★ **合成路也落盘**：`TapeDump` 原先只在收到客户端磁带时写文件，而巡礼/自爆常走服务端合成
+                    //   ⇒ 那条路一直不可观测（三局 dump 里一次都没有）。这里补上，文件名带"(合成)"以便区分。
+                    //   只写文件，不改任何行为。
+                    if (ReplayFeature.DumpTapes?.Value ?? false)
+                        TapeDump.Save(act.RecorderId, act.Key, ActTable.Name(act.Kind) + "(合成)",
+                            act.Window.From, 0f, act.Window.Length, frames, tape, $"服务端合成 剪影=#{sil.Id}");
                 return true;
             }
             catch (Exception ex)
