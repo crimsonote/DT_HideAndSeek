@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using BepInEx.Configuration;
 using DummyClient;
@@ -102,7 +103,8 @@ namespace HideAndSeek.Features.Rule
             "Desc_refresh = 刷新网络连接 CD{cd}\n" +
             "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
             "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
-            "Desc_repair = 立即恢复供电，耗{cost}%任务进度\n" +
+            "Desc_repair = 强制重启电力系统（会导致任务记录数据丢失）\n" +
+            "Desc_selftest = 电力系统自检（不消耗任务进度）CD{cd}\n" +
             "Desc_lock = 锁住附近的门 CD{cd}\n" +
             "Desc_teleport = 3 秒后传送到目标处 [玩家ID] CD{cd}\n" +
             "Desc_disconnect = 破坏电闸 CD{cd}\n" +
@@ -129,6 +131,21 @@ namespace HideAndSeek.Features.Rule
             "StasisDone = 已冻结黑方 {sec} 秒。\n" +
             "RepairNoOutage = 当前没有断电，无需修复。\n" +
             "RepairDone = 已立即恢复供电（修复 {n} 处）。\n" +
+            // ── 电力系统自检（多阶段流程）──
+            // `[000000]` 是**格式占位**（六位数字的样子），真正要求输入的是那条算式的答案。
+            "SelfTestRecv = 系统已收到电力系统自检命令，正在验证操作者权限，请耐心等待。\n" +
+            "SelfTestDenied = 权限验证失败。\n" +
+            "SelfTestPrompt = 已验证权限，操作者为{name}#{id}，于{room}进行操作。请输入一次性授权码[000000]进行二次操作确认\n" +
+            "为防止误操作，请计算{q}，并将其作为一次性授权码发送。\n" +
+            "SelfTestBadCode = 授权码错误，操作失败。\n" +
+            "SelfTestExpired = 操作已过期。\n" +
+            "SelfTestBusy = 已有其他操作者正在进行电力系统自检，请稍后再试。\n" +
+            "SelfTestBusyElsewhere = 此操作当前正在{room}由{name}#{id}进行操作，请耐心等待。\n" +
+            "SelfTestWrongArea = 你已离开操作区域（{room}），授权码无效，操作失败。\n" +
+            "SelfTestRunning = 已完成二次确认，电力自检已开始，请耐心等待，预计{sec}s完成自检。\n" +
+            "SelfTestOk = 自检完成，当前电力系统工作正常。\n" +
+            "SelfTestRestored = 电力系统已排除{n}个故障，电力系统已恢复。\n" +
+            "SelfTestUnavailable = 电力自检当前不可用。\n" +
             "RefreshPending = 网络刷新中\n" +
             "RefreshDone = [刷新完成]\n" +
             "RefreshFailed = 网络连接异常，刷新失败。\n" +
@@ -841,6 +858,10 @@ namespace HideAndSeek.Features.Rule
                     special = true;
                     return DoRepair(room, player, deviceId, channel);
 
+                case "selftest":
+                    special = true;
+                    return DoSelfTest(room, player, deviceId, channel, arg);
+
                 case "lock":
                     special = true;
                     return LockNearby(player, deviceId, channel);
@@ -976,6 +997,18 @@ namespace HideAndSeek.Features.Rule
                     Side = CommandSide.White, Channel = CommandChannel.Public,
                     Action = "Repair", UsesPerPlayer = true, QuietWhenBlocked = true,
                     IsAvailable = () => AllowRepair == null || AllowRepair.Value
+                },
+                new CommandDef
+                {
+                    // 「电力系统自检」——不消耗任务进度，但流程繁琐（3 秒验证 → 一次性授权码 → 10~24 秒自检）。
+                    // 次数**不限**（`MaxUses = 0`）；冷却**全房共享**（`UsesPerPlayer = false`
+                    // 在原注释里的语义就是"次数按全房算、冷却也全房共用"）。
+                    Name = "selftest", Aliases = new[] { "check", "st" },
+                    Side = CommandSide.White, Channel = CommandChannel.Public,
+                    Action = "SelfTest", UsesPerPlayer = false, MaxUses = 0,
+                    QuietWhenBlocked = true,
+                    Cooldown = (int)(PowerSelfTestFeature.Cooldown?.Value ?? 180f),
+                    IsAvailable = () => PowerSelfTestFeature.Armed
                 },
                 new CommandDef
                 {
@@ -1827,6 +1860,335 @@ namespace HideAndSeek.Features.Rule
             Reply(player, deviceId, channel, T("RepairDone", "n", fixedCount.ToString()));
             // 不公开：只有执行者自己知道（回执已发给他），避免向黑方暴露白方动用了消耗手段。
             return true;
+        }
+
+        // ══ 电力系统自检（多阶段流程）══════════════════════════════════
+        //
+        // 口径（房主给的）：**不消耗任务进度**，但流程繁琐 ——
+        //     收到命令 → 等 3 秒验证权限 → 要求输入"一次性授权码"（一道随机算式的答案，
+        //     难度按"让人至少要在终端前待 10 秒"设计）→ 超时 20 秒 → 答对后等 10~24 秒随机
+        //     → 结果分两种：电力正常（电箱下线 45 秒）/ 电力中断（修好电箱）。
+        //
+        // **同一时间只允许一个玩家处于流程中**，其他人拿到 "已有其他操作者" 的拒绝。
+        //
+        // 三个定时阶段都用 `GameRoom.PushAfter`，每个回调先核对**代次号** `Gen` ——
+        // 因为流程可能被"退局 / 新一轮 / 答对"提前终结，而排出去的定时器无法撤销；
+        // 不核代次的话，上一轮的定时器会打断新一轮（或对已结束的流程发消息）。
+        //
+        // 授权码走**同一个命令的第二次调用**（`/selftest <答案>`），所以不需要在聊天入口
+        // 做特殊拦截：进到这里时看 `WaitingCode` 就知道这次输入是授权码。
+
+        private sealed class SelfTestSession
+        {
+            public int PlayerId;
+            public int DeviceId;
+            public CommandChannel Channel;
+            public int Gen;
+            public int Answer;
+            public bool WaitingCode;
+
+            /// <summary>发起时所在房间（`RoomData.DataId`）—— 地缘约束的判据。</summary>
+            public int AreaRoomId;
+            /// <summary>发起时的房间显示名（文案/日志用）。</summary>
+            public string AreaName;
+        }
+
+        /// <summary>某人此刻所在房间的 `DataId`；取不到返回 0。</summary>
+        private static int AreaRoomIdOf(GamePlayer player)
+        {
+            try { return player?.CurrentArea?.Data?.DataId ?? 0; }
+            catch { return 0; }
+        }
+
+        private static SelfTestSession _selfTest;
+        private static int _selfTestGen;
+        private static global::System.Random _selfTestRng;
+
+        private static global::System.Random SelfTestRng()
+            => _selfTestRng ?? (_selfTestRng = new global::System.Random());
+
+        private static void SelfTestClear()
+        {
+            _selfTest = null;
+            _selfTestGen++;                 // 让所有已排出的回调作废
+        }
+
+        private static GamePlayer FindPlayerById(GameRoom room, int id)
+        {
+            if (room?.Players == null)
+                return null;
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)
+                    return p;
+            }
+            return null;
+        }
+
+        /// <summary>角色显示名 —— 与客户端 `Player.DisplayName`(:15428) 同源。</summary>
+        private static string RoleNameOf(GamePlayer player)
+        {
+            try
+            {
+                var ch = Managers.Data?.CharacterDic?.Values
+                    .FirstOrDefault(x => x.DataId == player.CharacterId);
+                if (ch == null)
+                    return "#" + player.CharacterId;
+                string t = Managers.GetText(ch.Name);
+                return string.IsNullOrEmpty(t) ? ch.Name : t;
+            }
+            catch { return "#" + (player?.CharacterId ?? 0); }
+        }
+
+        /// <summary>房间显示名 —— 与客户端 :47082 同源（`GetText(ERoomType 名)`）。</summary>
+        private static string AreaNameOf(GamePlayer player)
+        {
+            try
+            {
+                var data = player?.CurrentArea?.Data;
+                if (data == null)
+                    return "未知区域";
+                string key = global::System.Enum.GetName(typeof(ERoomType), data.Type);
+                string t = Managers.GetText(key);
+                return string.IsNullOrEmpty(t) ? key : t;
+            }
+            catch { return "未知区域"; }
+        }
+
+        /// <summary>
+        /// 随机出一道算式，并给出答案。
+        /// 难度取向：**要心算几步**（两位数加减、或三数运算），让人不能在几秒内随手打完
+        /// —— 但答案不超过 200，避免算错得莫名其妙。
+        /// </summary>
+        private static string BuildQuestion(out int answer)
+        {
+            var r = SelfTestRng();
+            switch (r.Next(3))
+            {
+                case 0:
+                {
+                    int a = r.Next(13, 98), b = r.Next(13, 98);
+                    answer = a + b;
+                    return a + " + " + b + " = ？";
+                }
+                case 1:
+                {
+                    int a = r.Next(41, 150), b = r.Next(12, 39);
+                    answer = a - b;
+                    return a + " - " + b + " = ？";
+                }
+                default:
+                {
+                    int a = r.Next(16, 79), b = r.Next(11, 61), c = r.Next(9, 48);
+                    answer = a + b - c;
+                    return a + " + " + b + " - " + c + " = ？";
+                }
+            }
+        }
+
+        /// <summary>自检耗时：在 [下限, 上限] 之间取一个**真随机**整数（含两端）。</summary>
+        private static int RandomActivateSec()
+        {
+            int lo = (int)(PowerSelfTestFeature.ActivateMinSec?.Value ?? 10f);
+            int hi = (int)(PowerSelfTestFeature.ActivateMaxSec?.Value ?? 24f);
+            if (hi < lo)
+            {
+                int t = lo;
+                lo = hi;
+                hi = t;
+            }
+            if (hi <= lo)
+                return global::System.Math.Max(1, lo);
+            return SelfTestRng().Next(lo, hi + 1);
+        }
+
+        private static bool DoSelfTest(GameRoom room, GamePlayer player, int deviceId,
+                                       CommandChannel channel, string arg)
+        {
+            if (!PowerSelfTestFeature.Armed)
+            {
+                Reply(player, deviceId, channel, T("SelfTestUnavailable"));
+                return false;
+            }
+
+            var info = player?.PublicInfo;
+            if (info == null)
+                return false;
+
+            int pid = info.PlayerId;
+
+            // ① 正在等这个玩家交授权码 ⇒ 这次输入就是授权码（一次性：无论对错都作废）
+            if (_selfTest != null && _selfTest.PlayerId == pid && _selfTest.WaitingCode)
+            {
+                var s = _selfTest;
+                s.WaitingCode = false;
+                int gen = s.Gen;
+
+                // ★ 地缘约束：授权码**只能在发起时的那个房间**提交。
+                //   中途可以离开（验证 / 等待期间都不检查），但提交这一刻必须回到原房间 ——
+                //   这正是"全程在同一房间操作"的落点，也让"异区的人替你交码"不可能成立。
+                if (PowerSelfTestFeature.RequireSameArea?.Value ?? true)
+                {
+                    if (AreaRoomIdOf(player) != s.AreaRoomId)
+                    {
+                        string area = s.AreaName ?? "原区域";
+                        SelfTestClear();
+                        Reply(player, deviceId, channel, T("SelfTestWrongArea", "room", area));
+                        return true;
+                    }
+                }
+
+                if (!int.TryParse((arg ?? "").Trim(), out int v) || v != s.Answer)
+                {
+                    SelfTestClear();
+                    Reply(player, deviceId, channel, T("SelfTestBadCode"));
+                    return true;
+                }
+
+                int sec = RandomActivateSec();
+                Reply(player, deviceId, channel, T("SelfTestRunning", "sec", sec.ToString()));
+
+                room.PushAfter(sec * 1000, delegate { SelfTestActivate(gen); });
+                return true;
+            }
+
+            // ② 别人正在流程中（含"别人卡的授权码"）⇒ 拒绝。
+            //    ★ 地缘约束开着时，**异区**的拒绝要说清"正在哪个房间、由谁操作"，
+            //      让异区玩家明白"不是不让你用，是这里正有人在用"。
+            //      同区则沿用普通的"已被占用"（同一时间只能一人，与他站哪儿无关）。
+            if (_selfTest != null)
+            {
+                var s0 = _selfTest;
+                bool geo = PowerSelfTestFeature.RequireSameArea?.Value ?? true;
+
+                if (geo && AreaRoomIdOf(player) != s0.AreaRoomId)
+                {
+                    var owner = FindPlayerById(room, s0.PlayerId);
+                    string text = T("SelfTestBusyElsewhere")
+                        .Replace("{room}", s0.AreaName ?? "其他区域")
+                        .Replace("{name}", owner != null ? RoleNameOf(owner) : "其他操作者")
+                        .Replace("{id}", s0.PlayerId.ToString());
+                    Reply(player, deviceId, channel, text);
+                    return true;
+                }
+
+                Reply(player, deviceId, channel, T("SelfTestBusy"));
+                return true;
+            }
+
+            // ③ 开一轮新的
+            string q = BuildQuestion(out int answer);
+            var session = new SelfTestSession
+            {
+                PlayerId = pid,
+                DeviceId = deviceId,
+                Channel = channel,
+                Gen = ++_selfTestGen,
+                Answer = answer,
+                WaitingCode = false,
+                // 地缘约束的两个判据：发起房间 id（提交授权码时核对）
+                // 与房间显示名（异区拒绝的消息里要报出来）
+                AreaRoomId = AreaRoomIdOf(player),
+                AreaName = AreaNameOf(player),
+            };
+            _selfTest = session;
+
+            Reply(player, deviceId, channel, T("SelfTestRecv"));
+
+            int verifyMs = (int)((PowerSelfTestFeature.VerifySec?.Value ?? 5f) * 1000f);
+            int sgen = session.Gen;
+            room.PushAfter(verifyMs, delegate { SelfTestVerify(sgen, q); });
+            return true;
+        }
+
+        /// <summary>阶段②：3 秒后判定阵营。黑方在这里被拒（演出效果，不是权限系统）。</summary>
+        private static void SelfTestVerify(int gen, string question)
+        {
+            var s = _selfTest;
+            if (s == null || s.Gen != gen)
+                return;
+
+            var room = GameRoom.Instance;
+            var player = FindPlayerById(room, s.PlayerId);
+            if (player == null)
+            {
+                SelfTestClear();                        // 退局 ⇒ 释放占用
+                return;
+            }
+
+            if (player.Color != EPlayerColor.White)
+            {
+                int dev = s.DeviceId;
+                var ch = s.Channel;
+                SelfTestClear();
+                Reply(player, dev, ch, T("SelfTestDenied"));
+                return;
+            }
+
+            s.WaitingCode = true;
+
+            string text = T("SelfTestPrompt")
+                .Replace("{name}", RoleNameOf(player))
+                .Replace("{id}", s.PlayerId.ToString())
+                .Replace("{room}", AreaNameOf(player))
+                .Replace("{q}", question);
+            Reply(player, s.DeviceId, s.Channel, text);
+
+            int timeoutMs = (int)((PowerSelfTestFeature.CodeTimeoutSec?.Value ?? 20f) * 1000f);
+            room?.PushAfter(timeoutMs, delegate { SelfTestExpire(gen); });
+        }
+
+        /// <summary>阶段③超时：长时间没交授权码。</summary>
+        private static void SelfTestExpire(int gen)
+        {
+            var s = _selfTest;
+            if (s == null || s.Gen != gen || !s.WaitingCode)
+                return;                                 // 已答对 / 已作废 ⇒ 不打扰
+
+            int dev = s.DeviceId;
+            var ch = s.Channel;
+            int pid = s.PlayerId;
+            SelfTestClear();
+
+            var player = FindPlayerById(GameRoom.Instance, pid);
+            if (player != null)
+                Reply(player, dev, ch, T("SelfTestExpired"));
+        }
+
+        /// <summary>阶段④：自检结束，按当前电力状态落地效果。</summary>
+        private static void SelfTestActivate(int gen)
+        {
+            var s = _selfTest;
+            if (s == null || s.Gen != gen)
+                return;
+
+            int dev = s.DeviceId;
+            var ch = s.Channel;
+            int pid = s.PlayerId;
+            SelfTestClear();
+
+            var player = FindPlayerById(GameRoom.Instance, pid);
+            if (player == null)
+                return;                                 // 退局 ⇒ 不施加效果
+
+            int broken = 0;
+            try { broken = Server.Game.DeviceManager.Instance?.GetDisconnectFuseCount() ?? 0; }
+            catch { }
+
+            if (broken > 0)
+            {
+                // 电力中断 ⇒ 修好所有电箱。文案里的 [1-3] 是房主给的口径，
+                // 所以对外只说 1~3，不暴露真实数量（真实值进日志）。
+                int n = PowerSelfTestFeature.ApplyRestore();
+                int shown = global::System.Math.Min(3, global::System.Math.Max(1, n));
+                Reply(player, dev, ch, T("SelfTestRestored", "n", shown.ToString()));
+            }
+            else
+            {
+                // 电力正常 ⇒ 电箱下线一段时间（已派发的收回，未派发的把那次派发顺延）
+                PowerSelfTestFeature.ApplyNormal();
+                Reply(player, dev, ch, T("SelfTestOk"));
+            }
         }
 
         // ══ 任务进度读写 ══════════════════════════════════════════════
