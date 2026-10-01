@@ -704,11 +704,8 @@ namespace HideAndSeek.Features.Replay
                 //      （实测算出 2101 > 900 ⇒ 受害者被判"不在画面里" ⇒ 剪影落到他身上 ⇒ 隐形）。
                 //    ★ 两边都用 `HostRecorder` 的权威采样（`EverWithin` 内部保证同源）——
                 //      拿 `SpawnShot` 里的旧位置去减实时位置是两个基准相减，结论没有意义。
-                if (HostRecorder.At(id, act.Window.From) == null)
-                {
-                    ids.Add(id);          // 那一刻取不到他的采样 ⇒ 不排除（宁可多留，也不要漏掉画面里的人）
-                    continue;
-                }
+                //    ⚠ **不做"取不到就放行"的兜底**：取不到采样说明缓冲有问题，
+                //      那种情况正好由下面的 `far` 日志暴露；兜底只会把它盖住（判据见 `HostRecorder` 头部）。
                 if (HostRecorder.EverWithin(act.SubjectId, id, act.Window.From, act.Window.To, range))
                     ids.Add(id);
                 else
