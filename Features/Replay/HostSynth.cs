@@ -41,12 +41,6 @@ namespace HideAndSeek.Features.Replay
                 return shots;
 
             var samples = HostRecorder.Range(window.From, window.To);
-            // ★ 诊断：把"这次到底取到多少采样、缓冲本身覆盖到哪"打出来。
-            //   实测症状——自爆幕的 7 帧时间戳**全是窗口起点**（跨度 0.00s）、一枚 MoveShot 都没有，
-            //   而 `Roster()` 却取到了 4 个人 ⇒ 缓冲里有数据、但都早于窗口起点。
-            //   ⇒ 这一行能一次区分：① 缓冲没覆盖到窗口（采样停了）；② 缓冲覆盖了但 `Range` 取不到（取帧有 bug）。
-            Plugin.Log.LogInfo($"[HS-Replay/诊断] 合成取采样 窗口=[{window.From:F2},{window.To:F2}] "
-                + $"取到 {samples.Count} 条 ｜ 缓冲 {HostRecorder.Stats()}");
 
             // ── 窗口起点的"全员出场帧" ──────────────────────────────────
             // 它有两个作用：
@@ -176,6 +170,18 @@ namespace HideAndSeek.Features.Replay
 
             // 稳定排序：同时间戳保持插入顺序（客户端 `BeginTape` 硬要求首帧是 SpawnShot，
             // 而首帧由 `TapeAssembler` 负责；这里只需要保证自己内部不逆序）。
+                // ★ **保证帧铺满整个窗口**。
+                //   客户端的段时长 = 最后一帧时间戳 − 第一帧时间戳（`RecordManager.Update` 按时间戳推进），
+                //   **不是**我们给的窗口。而采样可能整段取不到（实测那局：自爆#1 的窗口内 0 条采样，
+                //   7 帧时间戳全是窗口起点 ⇒ 跨度 0.00s ⇒ 观众看到"这一段一闪而过"）。
+                //   ⇒ 末尾补一枚相机帧：把跨度钉到窗口长度。画面在此期间是静止的（本来也没有素材），
+                //     但"该播多久"是对的。同房间同目标时 ChangeRoom 有守卫、另两项同值 ⇒ 无害。
+                if (shots.Count > 0 && shots[shots.Count - 1].TimeStamp < window.To - 0.01f)
+                {
+                    AddArea(shots, window.To, subjectId, LightFor(subjectId, window.To, dark),
+                        RoomOrFallback(subjectId, window.To, samples));
+                }
+
             // ⚠ 用 `OrderBy` 而不是 `List<T>.Sort` —— 后者不稳定，而原版磁带里**同一时间戳的帧顺序是有意义的**
             //   （实测：刀架在同一时刻先"还在"后"被取走"，排反了就看到"刀没被拿走"）。
             shots = global::System.Linq.Enumerable.ToList(
