@@ -45,11 +45,19 @@ namespace HideAndSeek.Features.Replay
             public int Id;
             /// <summary>为什么挑了他（写进日志）。</summary>
             public string Why;
-            /// <summary>是否是"退回当事人自己"（他会变成黑块，属于降级）。</summary>
+            /// <summary>
+            /// 是否是"退回当事人自己"（镜头宿主本人当剪影）。
+            ///
+            /// ★ 这**不是异常，而是原版方案**：客户端 `BeginTape` 本来就是把首帧那个人的 id 当
+            ///   `_blackId`，再 `ChangeSilhouette(true)` 涂黑他 —— 观众透过他看世界。
+            ///   所以走到这一步**不该报警**：它只在"本幕所有人都在场上、找不到一个不可见的人"时发生，
+            ///   而那时它恰好是**唯一不让人凭空消失**的选择
+            ///   （把在场的活人涂黑 = 那个人从画面里消失，那才是 bug）。
+            /// </summary>
             public bool FellBackToSubject;
 
             public override string ToString()
-                => $"#{Id}（{Why}{(FellBackToSubject ? " ⚠降级" : "")}）";
+                => $"#{Id}（{Why}{(FellBackToSubject ? " —— 原版方案：镜头宿主本人（预期，非异常）" : "")}）";
         }
 
         /// <summary>
@@ -104,10 +112,13 @@ namespace HideAndSeek.Features.Replay
                 //
                 //     ① 他在本幕画面里 ⇒ 还必须"起点即幽灵"（整段不可见）才算数
                 //     ② 他不在画面里   ⇒ 不会被 `ApplySpawn` 装配，一定看不见
-                // 两档候选（"在画面里"的判据已由 `ActTable.VisibleIn` 修正为"有 MoveShot"）：
+                // 候选池由 `ActTable.KnownIn`（只取 id）+ `ReplayDirector.SceneIds` 的距离判据给出：
                 //   ① `inScene`  起点即幽灵 + 在画面里 ⇒ 客户端 RefreshGhostVisual 把他关掉，看不见 ✓
                 //   ② `offScene` 不在画面里            ⇒ 不会被 ApplySpawn 装配，看不见 ✓
-                //   ③ 都不行 ⇒ 退回主角（接受他被涂黑）—— 此时会打 Warning，便于发现判据又出问题。
+                //   ③ `outside`  本幕不在场            ⇒ 同上 ✓
+                //   ④ 都不行 ⇒ **退回镜头宿主本人** —— 那是**原版方案**（客户端 `BeginTape` 就是拿
+                //      首帧那个人当 `_blackId`），观众透过他看世界。它保证"不会有人凭空消失"，
+                //      所以是**预期行为、不打警告**（把在场的活人涂黑才会让人消失，那才是 bug）。
                 var inScene = new List<int>();
                 var offScene = new List<int>();
 
@@ -207,8 +218,15 @@ namespace HideAndSeek.Features.Replay
             return best;
         }
 
-        /// <summary>降级：退回主角自己。**必须留下痕迹** —— 他会被涂黑，而且配合下面的日志能立刻发现"候选判据又坏了"。</summary>
+        /// <summary>
+        /// 退回**镜头宿主本人**当剪影 —— 这是**原版方案，不是降级、不该报警**。
+        ///
+        /// 客户端 `BeginTape` 本来就是 `_blackId = 首帧那个人的 id` + `ChangeSilhouette(true)`：
+        /// 镜头挂在他身上、身体被涂黑 ⇒ 观众看的是**他的视角**。
+        /// 所以当本幕"所有人都在场上、找不到一个不可见的人"时，选他恰好是**唯一不让人凭空消失**的做法：
+        /// 若改用某个在场的活人当剪影，那个人就会被涂黑、从画面里消失 —— 那才是 bug。
+        /// </summary>
         private static Result Fallback(int subjectId, string why)
-            => new Result { Id = subjectId, Why = why + " ⇒ 退回当事人自己", FellBackToSubject = true };
+            => new Result { Id = subjectId, Why = why + " ⇒ 由镜头宿主本人担任（原版方案）", FellBackToSubject = true };
     }
 }
