@@ -425,8 +425,19 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPostfix]
             private static void Postfix(EGameState state)
             {
-                if (state == EGameState.Survive)
-                    SelfTestClear();
+                if (state != EGameState.Survive)
+                    return;
+
+                // ① 丢上一局残留的流程（静态字段，否则新局所有人敲 /maint 都被"占用"，
+                //    而且已排出的 SelfTestActivate 可能在新局开局施加效果）。
+                SelfTestClear();
+
+                // ② 丢上一局残留的两个"绝对时刻"。它们**不能**靠 ClientTime 换局归零自愈 ——
+                //    归零只会让上一局的 `T0 + 180` / `T0 + 45` 在新局里显得更久：
+                //      实测 `_roomCdUntil`：上局 T0=100 ⇒ 280；新局到 60 时读出 220
+                //      （而配置的 CD 只有 180）—— 房主看到的正是 "CD220"；
+                //      `_suppressUntil` 同理 ⇒ 新局电箱迟迟不派发、`/brk` 无事可做。
+                PowerSelfTestFeature.ResetRoundState();
             }
         }
 

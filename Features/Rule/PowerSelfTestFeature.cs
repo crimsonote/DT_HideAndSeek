@@ -67,9 +67,31 @@ namespace HideAndSeek.Features.Rule
         /// 中途可能被拒/超时/算错而根本没产生效果。房主的口径是
         /// "**一次有效流程完成后**才进 CD"，所以起点必须由 <see cref="StartCooldown"/> 手动打。
         ///
-        /// 用 `Managers.Game.ClientTime`（每局从 0 重新计）⇒ **换局自动失效**，不需要额外重置。
+        /// ⚠ **不能靠"换局时 `ClientTime` 归零"来失效** —— 那是反的：
+        ///   这两个字段存的是**绝对时刻**（`Now() + 秒数`），而归零意味着
+        ///   上一局的 `T0 + 180` 在新局里要等 `ClientTime` 涨过 180 才作废。
+        ///   实测：上一局 T0=100 ⇒ `_roomCdUntil=280`，新局跑到 60 时读出
+        ///   `280 − 60 = 220` 秒冷却（配置只有 180）—— 房主看到的正是这个。
+        ///   ⇒ 必须由 <see cref="ResetRoundState"/> 在换局时显式清掉。
         /// </summary>
         private static float _roomCdUntil = -1f;
+
+        /// <summary>
+        /// **换局清理**：把两个"绝对时刻"归零。
+        ///
+        /// 由 `CommandFeature.RoundResetHook`（`ChangeGameState` 进 `Survive`）调用。
+        ///
+        /// 不清会怎样（都是实测过的症状）：
+        ///   · `_roomCdUntil` 残留 ⇒ 新局 `/maint` 报出**比配置值更大**的冷却
+        ///     （上一局 T0 越大、残留越久，因为 `ClientTime` 归零后要从 0 重新爬）；
+        ///   · `_suppressUntil` 残留 ⇒ 新局 `StartFuseboxSabotage` 被莫名顺延，
+        ///     表现为"**电箱迟迟不派发、`/brk` 无事可做**"，最长可达上一局的 T0 + 45 秒。
+        /// </summary>
+        public static void ResetRoundState()
+        {
+            _suppressUntil = -1f;
+            _roomCdUntil = -1f;
+        }
 
         /// <summary>剩余冷却秒数；返回 0 表示不在冷却中。</summary>
         public static float RemainingCooldown()
