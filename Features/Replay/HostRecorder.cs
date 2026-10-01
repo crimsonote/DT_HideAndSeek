@@ -125,7 +125,42 @@ namespace HideAndSeek.Features.Replay
                 if (_snaps[i].Key == key)
                     return;
             }
-            _snaps.Add(new Snap { Key = key, From = from, To = to });
+
+            var snap = new Snap { Key = key, From = from, To = to };
+
+            // ★★ **回填"事件之前"那几秒** —— 这一步不能省。
+            //    登记发生在**事件当时**，而窗口起点是 `事件 − before` ⇒ 那一段**已经过去了**，
+            //    快照若从此刻才开始收帧，就永远缺"事件前"的素材。
+            //    实测（`before` 越大缺得越多）：窗口 4s、`before=3` 的杀人幕只收到 15 帧
+            //    （应约 144），而 `before=0` 的自爆幕反而是好的 ⇒ 症状正是"第一幕没有出刀动画、
+            //    没有人死掉"（那些帧都在缺掉的那一段里）。
+            //    主缓冲此刻仍保有那段（`KeepSeconds` 内），直接把它灌进来即可。
+            float now = Now();
+            foreach (var kv in ById)
+            {
+                var rows = kv.Value;
+                int n = rows.Count;
+                if (n == 0)
+                    continue;
+                List<Row> dst = null;
+                for (int i = 0; i < n; i++)
+                {
+                    var r = rows[i];
+                    if (r.Time < from)
+                        continue;
+                    if (r.Time > now)
+                        break;
+                    if (dst == null)
+                    {
+                        if (!snap.Rows.TryGetValue(kv.Key, out dst))
+                            snap.Rows[kv.Key] = dst = new List<Row>(64);
+                    }
+                    dst.Add(r);
+                    snap.Count++;
+                }
+            }
+
+            _snaps.Add(snap);
         }
 
         /// <summary>快照积累情况的诊断行（写日志用）。</summary>
