@@ -170,17 +170,6 @@ namespace HideAndSeek.Features.Replay
 
             // 稳定排序：同时间戳保持插入顺序（客户端 `BeginTape` 硬要求首帧是 SpawnShot，
             // 而首帧由 `TapeAssembler` 负责；这里只需要保证自己内部不逆序）。
-                // ★ **保证帧铺满整个窗口**。
-                //   客户端的段时长 = 最后一帧时间戳 − 第一帧时间戳（`RecordManager.Update` 按时间戳推进），
-                //   **不是**我们给的窗口。而采样可能整段取不到（实测那局：自爆#1 的窗口内 0 条采样，
-                //   7 帧时间戳全是窗口起点 ⇒ 跨度 0.00s ⇒ 观众看到"这一段一闪而过"）。
-                //   ⇒ 末尾补一枚相机帧：把跨度钉到窗口长度。画面在此期间是静止的（本来也没有素材），
-                //     但"该播多久"是对的。同房间同目标时 ChangeRoom 有守卫、另两项同值 ⇒ 无害。
-                if (shots.Count > 0 && shots[shots.Count - 1].TimeStamp < window.To - 0.01f)
-                {
-                    AddArea(shots, window.To, subjectId, LightFor(subjectId, window.To, dark),
-                        RoomOrFallback(subjectId, window.To, samples));
-                }
 
             // ⚠ 用 `OrderBy` 而不是 `List<T>.Sort` —— 后者不稳定，而原版磁带里**同一时间戳的帧顺序是有意义的**
             //   （实测：刀架在同一时刻先"还在"后"被取走"，排反了就看到"刀没被拿走"）。

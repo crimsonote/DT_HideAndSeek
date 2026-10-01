@@ -287,11 +287,17 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
-        /// 窗口内的**全部采样**，按时间升序 —— 合成世界帧（`HostSynth`）的数据源。
+        /// 取 [from, to] 区间内**每人**的采样，按时间升序 —— 合成世界帧（`HostSynth`）的数据源。
         ///
-        /// ⚠ 它只返回"窗口内**真的发生过**的移动"，**不含**"谁站在那里"的起点信息。
-        ///   起点由调用方用 <see cref="Roster"/>(窗口起点) 铺 —— 那是 `TapeAssembler` 的"全员出场帧"。
-        ///   这个分工必须清楚，否则同一个人会被发两枚 SpawnShot。
+        /// ★ **必须先放"窗口起点的那一帧"（AtOrBefore(from)）** —— 这是最容易漏的一环：
+        ///   `NoteMove` 在状态不变时会把**最后一帧的 Time 往后推**（last.Time = now），
+        ///   所以一帧的 Time 表示"**这个状态持续到的最新时刻**"，而不是"状态开始时刻"。
+        ///   ⇒ 缓冲里常见的情形是某人的序列形如 [… , t=117]，而那枚 117 实际代表
+        ///     "从更早某个时刻起位置就没变过"。
+        ///   ⇒ 若只按 r.Time ∈ [from, to] 线性筛，117 > to 会直接 break，
+        ///     于是**这一段一条采样都取不到**（实测：自爆三幕的 samples 全为空 ⇒
+        ///     装配出的帧只剩窗口起点那几枚 ⇒ 段时长趋近 0 ⇒ 观众看到"一闪而过"）。
+        ///   锚帧本身就是"窗口起点时他在哪"，正是这一段唯一需要的素材。
         /// </summary>
         public static List<Sample> Range(float from, float to)
         {
@@ -300,6 +306,21 @@ namespace HideAndSeek.Features.Replay
             {
                 var rows = kv.Value;
                 int n = rows.Count;
+
+                // ① 窗口起点的锚帧（AtOrBefore 在"没有更早的帧"时兜底返回 rows[0]）
+                var anchor = AtOrBefore(rows, from);
+                if (anchor != null)
+                {
+                    var a = ToSample(anchor);
+                    // ★ **必须钳到 `from`**：锚帧原始的 `Time` 可能已被 `SameState` 的
+                    //   `last.Time = now` 推到很后面（实测见过 t=117）。它的语义是
+                    //   "窗口起点时他在哪"，所以时间就是 `from`；照搬原值会让帧落到窗口之外
+                    //   ⇒ 跨度被撑成 6.6s、客户端干等到那一刻才结束这一段。
+                    a.Time = from;
+                    list.Add(a);
+                }
+
+                // ② 区间内的帧（rows 按 Time 升序，break 保留；锚帧已单独处理）
                 for (int i = 0; i < n; i++)
                 {
                     var r = rows[i];
@@ -307,21 +328,22 @@ namespace HideAndSeek.Features.Replay
                         continue;
                     if (r.Time > to)
                         break;
-
-                    list.Add(new Sample
-                    {
-                        Time = r.Time,
-                        Id = r.Id,
-                        Info = r.Info,
-                        Velocity = r.Velocity,
-                        RoomId = r.RoomId,
-                        IsLight = r.IsLight,
-                    });
+                    list.Add(ToSample(r));
                 }
             }
             list.Sort((a, b) => a.Time.CompareTo(b.Time));
             return list;
         }
+
+        private static Sample ToSample(Row r) => new Sample
+        {
+            Time = r.Time,
+            Id = r.Id,
+            Info = r.Info,
+            Velocity = r.Velocity,
+            RoomId = r.RoomId,
+            IsLight = r.IsLight,
+        };
 
         /// <summary>缓冲里记下的自爆（时刻 / 谁 / 在哪）——合成"自爆幕"时要用。</summary>
         public static List<(float Time, int DeviceId, PosInfo Pos)> BombList()
