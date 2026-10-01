@@ -406,6 +406,31 @@ namespace HideAndSeek.Features.Rule
         // ══ 入口 ══════════════════════════════════════════════════════
 
         /// <summary>
+        /// **换局清理**：进入新的 `Survive` 时，丢掉上一局残留的"电力系统自检"流程状态。
+        ///
+        /// 为什么必须有：`_selfTest` 是静态字段，而它原有的 6 个清理点**全在流程内部**
+        /// （换位置 / 算错 / 退局 / 黑方 / 超时 / 激活）—— **没有一个是"换局"**。
+        /// 于是上一局没走完的流程会留到下一局：
+        ///   · 所有人敲 `/maint` 都得到"已有其他操作者…"；
+        ///   · 那个已排出的 `SelfTestActivate` 定时器若跨局生效，还会在新局开局
+        ///     就"电箱下线 45 秒"或"修好所有电箱"（行为取决于 job 是否被换局清掉，不可依赖）。
+        ///
+        /// ⚠ `PowerSelfTestFeature` 里的 `_suppressUntil` / `_roomCdUntil` **不需要**在这里清：
+        ///   它们以 `Managers.Game.ClientTime` 为基准，而那个值换局会归零（`InitGame` / 回大厅），
+        ///   所以"电箱下线"与"冷却"都不会跨局。这里只需要管 `_selfTest`。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
+        internal static class RoundResetHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(EGameState state)
+            {
+                if (state == EGameState.Survive)
+                    SelfTestClear();
+            }
+        }
+
+        /// <summary>
         /// 两条频道共用一个钩子：按 EChatType 分流。
         /// 密聊 → 只认 ch=secret/both 的命令；公开/设备聊天 → 只认 ch=pub/both。
         /// </summary>
