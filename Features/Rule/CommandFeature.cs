@@ -104,7 +104,7 @@ namespace HideAndSeek.Features.Rule
             "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
             "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
             "Desc_repair = 强制重启电力系统，会损失{cost}%任务进度\n" +
-            "Desc_maint = 电力系统自检（不消耗任务进度）CD{cd}\n" +
+            "Desc_maint = 电力系统自检（按提示作答，用 /maint 加答案提交；不消耗任务进度）CD{cd}\n" +
             "Desc_lock = 锁住附近的门 CD{cd}\n" +
             "Desc_teleport = 3 秒后传送到目标处 [玩家ID] CD{cd}\n" +
             "Desc_disconnect = 破坏电闸 CD{cd}\n" +
@@ -132,11 +132,13 @@ namespace HideAndSeek.Features.Rule
             "RepairNoOutage = 当前没有断电，无需修复。\n" +
             "RepairDone = 已立即恢复供电（修复 {n} 处）。\n" +
             // ── 电力系统自检（多阶段流程）──
-            // `[000000]` 是**格式占位**（六位数字的样子），真正要求输入的是那条算式的答案。
+            // ⚠ 这段文案**不能出现 `[000000]` 之类的格式占位**：实测玩家会照抄它当授权码输入。
+            //   要输入的是那条算式的**答案**，所以文案必须把"算什么 + 怎么发"说全。
+            // ⚠ 整段折行后要控制在 3 个渲染行内（`Reply` 每 3 行一条，超了会拆成多条）。
             "SelfTestRecv = 系统已接收请求，正在验证操作者权限，请耐心等待。\n" +
             "SelfTestDenied = 权限验证失败。\n" +
-            "SelfTestPrompt = 已验证权限，操作者为{name}#{id}，于{room}进行操作。请输入一次性授权码[000000]进行二次操作确认\n" +
-            "为防止误操作，请计算{q}，并将其作为一次性授权码发送。\n" +
+            "SelfTestPrompt = 已验证权限，操作者 {name}#{id}，于{room}进行操作。\n" +
+            "为防止误操作，请计算 {q}，再发送「/maint 答案」完成确认。\n" +
             "SelfTestBadCode = 授权码错误，操作失败。\n" +
             "SelfTestExpired = 操作已过期。\n" +
             "SelfTestBusy = 已有其他操作者正在进行电力系统自检，请稍后再试。\n" +
@@ -378,6 +380,16 @@ namespace HideAndSeek.Features.Rule
 
         /// <summary>单行最大显示宽度（半角单位，中文按 2 计，40 = 20 个汉字）。超了客户端会自动折行。</summary>
         private const int MaxWidthPerLine = 40;
+
+        /// <summary>
+        /// 回执被拆成多条时的**段间隔**（毫秒）。
+        ///
+        /// 不能在同一帧把多条 `S_CHAT_MESSAGE` 一起发 —— 客户端对"同一时刻刷出的多条"
+        /// 只保留一条（`DefaultTexts` 里"多条消息一次性刷出、前面的会被顶掉"说的就是这个）。
+        /// 实测踩过：自检的授权码提示折行后 4 行 ⇒ 拆 2 条 ⇒ 含算式的那条被顶掉，
+        /// 玩家看不到该算什么，只能照抄文案里的格式占位 ⇒ 必然"授权码错误"。
+        /// </summary>
+        private const int ReplyChunkGapMs = 900;
 
         private static List<CommandDef> _parsed;
         private static string _parsedFrom;
@@ -2018,6 +2030,61 @@ namespace HideAndSeek.Features.Rule
             return SelfTestRng().Next(lo, hi + 1);
         }
 
+        /// <summary>
+        /// 核对并消费授权码 —— **两条输入路径共用**：
+        ///   · `/maint <答案>`：`DoSelfTest` 进来后发现 `WaitingCode` ⇒ 走后一段
+        ///   · **裸数字**：玩家直接发一条纯数字聊天，由 `ChatMessageHook` 拦下（见 `TryConsumeCodeInput`）
+        ///
+        /// 为什么要有"裸数字"这条：提示写的是"把答案**发送**过来"，玩家的直觉就是直接发那串数字。
+        /// 只认命令形式的话，裸数字会当普通聊天广播出去、而玩家以为已经提交了 ——
+        /// 实测房主正是这么踩的（发了 `000000`，等来"授权码错误"）。
+        ///
+        /// 一次性：无论对错都把 `WaitingCode` 置回 false，不给无限重试。
+        /// </summary>
+        private static bool HandleCodeInput(GamePlayer player, int deviceId, CommandChannel channel, string arg)
+        {
+            var s = _selfTest;
+            if (s == null || player?.PublicInfo == null
+                || s.PlayerId != player.PublicInfo.PlayerId || !s.WaitingCode)
+                return false;                       // 没在等 ⇒ 不是授权码，交回调用方按原语义处理
+
+            s.WaitingCode = false;
+            int gen = s.Gen;
+
+            // ★ 地缘约束：**操作位置不可变更** —— 授权码只能在发起时的那个房间提交。
+            //   游戏里能敲命令的只有四个通讯台所在的位置，所以"换了房间"等于"换了通讯台"。
+            //   验证与等待期间不检查（那两阶段本就无事可做），判据只在**提交**这一瞬；
+            //   这也让"异区的人替你交码"不可能成立。
+            if (PowerSelfTestFeature.RequireSameArea?.Value ?? true)
+            {
+                if (AreaRoomIdOf(player) != s.AreaRoomId)
+                {
+                    string area = s.AreaName ?? "原区域";
+                    SelfTestClear();
+                    Reply(player, deviceId, channel, T("SelfTestWrongArea", "room", area));
+                    return true;
+                }
+            }
+
+            if (!int.TryParse((arg ?? "").Trim(), out int v) || v != s.Answer)
+            {
+                SelfTestClear();
+                Reply(player, deviceId, channel, T("SelfTestBadCode"));
+                return true;
+            }
+
+            int sec = RandomActivateSec();
+            Reply(player, deviceId, channel, T("SelfTestRunning", "sec", sec.ToString()));
+            GameRoom.Instance?.PushAfter(sec * 1000, delegate { SelfTestActivate(gen); });
+            return true;
+        }
+
+        // ⚠ 曾经想在这里加一个"裸数字也算授权码"的入口拦截（玩家直接发纯数字聊天就当提交），
+        //   最后**没有采用**：`ChatMessageHook` 是所有聊天的公共入口，为一条命令在那里吞消息，
+        //   影响面不成比例（等待期间发个 "123" 会被莫名吃掉），而且那属于"猜玩家意图"。
+        //   ⇒ 改为**把输入方式写进文案**（`SelfTestPrompt` 与 `Desc_maint`），
+        //     并在帮助里说明"要带 /maint 前缀"。命令形式是引擎既有语义，不会误伤聊天。
+
         private static bool DoSelfTest(GameRoom room, GamePlayer player, int deviceId,
                                        CommandChannel channel, string arg)
         {
@@ -2053,40 +2120,7 @@ namespace HideAndSeek.Features.Rule
 
             // ① 正在等这个玩家交授权码 ⇒ 这次输入就是授权码（一次性：无论对错都作废）
             if (_selfTest != null && _selfTest.PlayerId == pid && _selfTest.WaitingCode)
-            {
-                var s = _selfTest;
-                s.WaitingCode = false;
-                int gen = s.Gen;
-
-                // ★ 地缘约束：**操作位置不可变更** —— 授权码只能在发起时的那个房间提交。
-                //   游戏里能敲命令的只有四个通讯台所在的位置，所以"换了房间"就等于
-                //   "换了通讯台"：提交这一刻不在原房间 ⇒ 流程中断（文案：你只能在 X 进行操作…）。
-                //   验证与等待期间不检查（那两个阶段本就无事可做），判据只在**提交**这一瞬。
-                //   这也让"异区的人替你交码"不可能成立。
-                if (PowerSelfTestFeature.RequireSameArea?.Value ?? true)
-                {
-                    if (AreaRoomIdOf(player) != s.AreaRoomId)
-                    {
-                        string area = s.AreaName ?? "原区域";
-                        SelfTestClear();
-                        Reply(player, deviceId, channel, T("SelfTestWrongArea", "room", area));
-                        return true;
-                    }
-                }
-
-                if (!int.TryParse((arg ?? "").Trim(), out int v) || v != s.Answer)
-                {
-                    SelfTestClear();
-                    Reply(player, deviceId, channel, T("SelfTestBadCode"));
-                    return true;
-                }
-
-                int sec = RandomActivateSec();
-                Reply(player, deviceId, channel, T("SelfTestRunning", "sec", sec.ToString()));
-
-                room.PushAfter(sec * 1000, delegate { SelfTestActivate(gen); });
-                return true;
-            }
+                return HandleCodeInput(player, deviceId, channel, arg);
 
             // ② 别人正在流程中（含"别人卡的授权码"）⇒ 拒绝。
             //    ★ 地缘约束开着时，**异区**的拒绝要说清"正在哪个房间、由谁操作"，
@@ -2426,6 +2460,13 @@ namespace HideAndSeek.Features.Rule
             foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
                 wrapped.AddRange(WrapByWidth(raw));
 
+            // ★ 段与段之间**必须留间隔**：同一帧连发多条 `S_CHAT_MESSAGE` 时，
+            //   客户端只保留一条（`DefaultTexts` 里那句"多条消息一次性刷出、前面的会被顶掉"
+            //   说的就是这个坑）。
+            //   实测踩过：自检的授权码提示折行后是 4 行 ⇒ 拆成 2 条 ⇒ **第 2 条（含算式）被顶掉**，
+            //   玩家永远看不到"该算什么"，只能去照抄文案里的格式占位（于是必然报"授权码错误"）。
+            //   第 1 条立即发（保持回执的即时感），其余按间隔排出去。
+            int delayMs = 0;
             for (int start = 0; start < wrapped.Count; start += MaxLinesPerMessage)
             {
                 int count = wrapped.Count - start < MaxLinesPerMessage
@@ -2434,23 +2475,51 @@ namespace HideAndSeek.Features.Rule
 
                 string chunk = string.Join("\n", wrapped.GetRange(start, count));
 
-                try
+                if (delayMs <= 0)
                 {
-                    player.Session.Send(new S_CHAT_MESSAGE
+                    if (!SendChat(player, type, deviceId, chunk))
+                        return;
+                }
+                else
+                {
+                    var captured = chunk;
+                    int delay = delayMs;
+                    try
                     {
-                        Type = type,
-                        DeviceId = deviceId,
-                        Text = chunk,
-                        PlayerId = player.PublicInfo?.PlayerId ?? 0,
-                        Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
-                        IsDead = false
-                    });
+                        GameRoom.Instance?.PushAfter(delay, delegate { SendChat(player, type, deviceId, captured); });
+                    }
+                    catch (global::System.Exception ex)
+                    {
+                        Plugin.Log.LogWarning($"[HS] 命令：回执延迟发送失败 — {ex.Message}");
+                    }
                 }
-                catch (global::System.Exception ex)
+
+                delayMs += ReplyChunkGapMs;
+            }
+        }
+
+        /// <summary>一条回执的实际发送。返回 false 表示发送失败（调用方据此中止后续分段）。</summary>
+        private static bool SendChat(GamePlayer player, EChatType type, int deviceId, string text)
+        {
+            if (player?.Session == null || string.IsNullOrEmpty(text))
+                return false;
+            try
+            {
+                player.Session.Send(new S_CHAT_MESSAGE
                 {
-                    Plugin.Log.LogWarning($"[HS] 命令：回执失败 — {ex.Message}");
-                    return;
-                }
+                    Type = type,
+                    DeviceId = deviceId,
+                    Text = text,
+                    PlayerId = player.PublicInfo?.PlayerId ?? 0,
+                    Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+                    IsDead = false
+                });
+                return true;
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] 命令：回执失败 — {ex.Message}");
+                return false;
             }
         }
 
