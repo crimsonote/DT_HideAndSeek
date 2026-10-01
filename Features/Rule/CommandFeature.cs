@@ -103,8 +103,8 @@ namespace HideAndSeek.Features.Rule
             "Desc_refresh = 刷新网络连接 CD{cd}\n" +
             "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
             "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
-            "Desc_repair = 强制重启电力系统，会损失{cost}%任务进度\n" +
-            "Desc_maint = 电力系统自检（按提示作答，用 /maint 加答案提交；不消耗任务进度）CD{cd}\n" +
+            "Desc_repair = 强制重启电力系统，预损失{cost}%进度\n" +
+            "Desc_maint = 电力系统自检维护，CD{cd}\n" +
             "Desc_lock = 锁住附近的门 CD{cd}\n" +
             "Desc_teleport = 3 秒后传送到目标处 [玩家ID] CD{cd}\n" +
             "Desc_disconnect = 破坏电闸 CD{cd}\n" +
@@ -1452,8 +1452,16 @@ namespace HideAndSeek.Features.Rule
         /// <summary>把说明模板里的占位符换成实际值。</summary>
         private static string FillDesc(string template, CommandDef def, string action)
         {
+            // ★ `{cd}` 必须**在这里一次算好**，不能"先统一填 def.Cooldown、再在下面按动作补" ——
+            //   那样第一次就把 `{cd}` 换成了 "-"（或数字），后面的按动作替换永远找不到目标。
+            //   实测踩过：`/maint` 的冷却由功能自管（引擎字段刻意留 0，好把记账点延后到"流程完成"），
+            //   于是 /help 里一直显示 "CD-"，看起来像"这条命令没有冷却"。
+            string cdText = action == "maint"
+                ? (PowerSelfTestFeature.Cooldown?.Value ?? 180f).ToString("F0")
+                : (def.Cooldown > 0 ? def.Cooldown.ToString() : "-");
+
             string text = template
-                .Replace("{cd}", def.Cooldown > 0 ? def.Cooldown.ToString() : "-")
+                .Replace("{cd}", cdText)
                 .Replace("{uses}", def.MaxUses > 0 ? def.MaxUses.ToString() : "-")
                 .Replace("{name}", def.Name);
 
@@ -1466,11 +1474,6 @@ namespace HideAndSeek.Features.Rule
 
             if (action == "repair")
                 return text.Replace("{cost}", (RepairCostPercent?.Value ?? 10f).ToString("F0"));
-
-            // 「电力系统自检」的冷却由功能自管（引擎字段留 0，好把记账点延后到"流程完成"），
-            // 所以 {cd} 必须拿配置值来填，否则 /help 里会显示成 "-"。
-            if (action == "maint")
-                return text.Replace("{cd}", (PowerSelfTestFeature.Cooldown?.Value ?? 180f).ToString("F0"));
 
             return text;
         }
