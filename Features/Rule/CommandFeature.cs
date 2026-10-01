@@ -104,7 +104,7 @@ namespace HideAndSeek.Features.Rule
             "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
             "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
             "Desc_repair = 强制重启电力系统，会损失{cost}%任务进度\n" +
-            "Desc_selftest = 电力系统自检（不消耗任务进度）CD{cd}\n" +
+            "Desc_maint = 电力系统自检（不消耗任务进度）CD{cd}\n" +
             "Desc_lock = 锁住附近的门 CD{cd}\n" +
             "Desc_teleport = 3 秒后传送到目标处 [玩家ID] CD{cd}\n" +
             "Desc_disconnect = 破坏电闸 CD{cd}\n" +
@@ -858,7 +858,7 @@ namespace HideAndSeek.Features.Rule
                     special = true;
                     return DoRepair(room, player, deviceId, channel);
 
-                case "selftest":
+                case "maint":
                     special = true;
                     return DoSelfTest(room, player, deviceId, channel, arg);
 
@@ -1003,9 +1003,14 @@ namespace HideAndSeek.Features.Rule
                     // 「电力系统自检」——不消耗任务进度，但流程繁琐（3 秒验证 → 一次性授权码 → 10~24 秒自检）。
                     // 次数**不限**（`MaxUses = 0`）；冷却**全房共享**（`UsesPerPlayer = false`
                     // 在原注释里的语义就是"次数按全房算、冷却也全房共用"）。
-                    Name = "selftest", Aliases = new[] { "check", "st" },
-                    Side = CommandSide.White, Channel = CommandChannel.Public,
-                    Action = "SelfTest", UsesPerPlayer = false, MaxUses = 0,
+                    //
+                    // ★ `Side = Any`（**公共组**），**不能**设成 `White`：
+                    //   `SideAllows` 不匹配时命令直接"找不到"（:606），黑方就敲不进来 ——
+                    //   而需求要的正是"黑方敲了、3 秒后得到『权限验证失败』"这个演出。
+                    //   所以它是公共命令：黑方看得到、敲得动，只是流程里会被拒。
+                    Name = "maint", Aliases = new[] { "maintenance", "mnt" },
+                    Side = CommandSide.Any, Channel = CommandChannel.Public,
+                    Action = "Maint", UsesPerPlayer = false, MaxUses = 0,
                     QuietWhenBlocked = true,
                     Cooldown = (int)(PowerSelfTestFeature.Cooldown?.Value ?? 180f),
                     IsAvailable = () => PowerSelfTestFeature.Armed
@@ -1875,7 +1880,7 @@ namespace HideAndSeek.Features.Rule
         // 因为流程可能被"退局 / 新一轮 / 答对"提前终结，而排出去的定时器无法撤销；
         // 不核代次的话，上一轮的定时器会打断新一轮（或对已结束的流程发消息）。
         //
-        // 授权码走**同一个命令的第二次调用**（`/selftest <答案>`），所以不需要在聊天入口
+        // 授权码走**同一个命令的第二次调用**（`/maint <答案>`），所以不需要在聊天入口
         // 做特殊拦截：进到这里时看 `WaitingCode` 就知道这次输入是授权码。
 
         private sealed class SelfTestSession
