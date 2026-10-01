@@ -62,7 +62,19 @@ namespace HideAndSeek.Features.Replay
         /// <summary>一次采样 —— 某个玩家在某个时刻的样子。</summary>
         private sealed class Row
         {
+            /// <summary>`ClientTime` 基准 —— **本机自增、从不联网同步**（客户端 `ClientTime += DeltaTime`，decomp:28993）。</summary>
             public float Time;
+            /// <summary>
+            /// **存活秒数**（`TimeManager.SurviveTime`）—— **整秒、且全网同步**（服务端每秒广播 `S_TIME`）。
+            ///
+            /// ★ 为什么要单独记：客户端录制磁带时用的是
+            ///   `shot.TimeStamp = isStartShot ? SurvivalTime : ClientTime`（decomp:31836）
+            ///   ⇒ **同一份 guest 磁带里混着两种时间基**。
+            ///   而我们用房主的 `ClientTime` 窗口去过滤它 ⇒ 两台机器时钟差多少、窗口就偏多少
+            ///   ⇒ 过滤后 0 帧 ⇒ 装配失败 ⇒ 占位磁带（实测症状："只播第一段、后两段坏"）。
+            ///   这一列是**跨机对齐的锚点**：等拿到 guest 日志量出偏移量，就用它改过滤逻辑。
+            /// </summary>
+            public int Survive;
             public int Id;
             public PublicPlayerInfo Info;   // 已 Clone，调用方拿到的一定是新实例
             public float Velocity;
@@ -318,6 +330,7 @@ namespace HideAndSeek.Features.Replay
                 var row = new Row
                 {
                     Time = now,
+                    Survive = SurviveNow(),
                     Id = info.PlayerId,
                     Info = info.Clone(),
                     Velocity = p.Velocity,
@@ -680,6 +693,24 @@ namespace HideAndSeek.Features.Replay
         {
             try { return Managers.Game.ClientTime; }
             catch { return 0f; }
+        }
+
+        /// <summary>
+        /// 服务端的**存活秒数**（`TimeManager.SurviveTime`）—— 整秒，而且**全网同步**
+        /// （服务端每秒广播 `S_TIME`，客户端据此设 `Managers.Game.SurvivalTime`）。
+        ///
+        /// ★ 与 `Now()`（本机自增的 `ClientTime`）的区别正是"跨机对齐"的关键：
+        ///   客户端录制磁带用的是 `isStartShot ? SurvivalTime : ClientTime`（decomp:31836）
+        ///   ⇒ **同一份 guest 磁带里混着两种时间基**，所以"用房主的 `ClientTime` 窗口去过滤它"
+        ///   这个假设不成立（两机时钟差多少、窗口就偏多少 ⇒ 0 帧 ⇒ 装配失败 ⇒ 占位磁带）。
+        ///   而 `SurviveTime` 两边一致 ⇒ 可以当锚点。
+        ///
+        /// ⚠ 目前只**记录**（`Row.Survive`），判定仍走原路 —— 等拿到 guest 日志量出偏移量再改过滤。
+        /// </summary>
+        private static int SurviveNow()
+        {
+            try { return TimeManager.Instance?.SurviveTime ?? 0; }
+            catch { return 0; }
         }
 
         private static int RoomOf(GamePlayer p)
