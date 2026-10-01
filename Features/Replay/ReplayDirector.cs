@@ -128,9 +128,20 @@ namespace HideAndSeek.Features.Replay
                 //   一旦在这里改 key，客户端手里那把就失效了，索取只会拿回"当前 14 秒缓冲"
                 //   —— 早期事件早已滚出缓冲区。实测症状："3 次刀杀只播了 1 次"。
                 //
-                //   而 key 既然按事件时刻单调递增，播放顺序**自然**就是事件顺序，
-                //   所以不再需要按 (幕类型, 事件时刻) 重排。
-                All.Sort(delegate (Planned x, Planned y) { return x.Act.Key.CompareTo(y.Act.Key); });
+                //   而**不能按 key 排**（曾经这么写过，注释里还假设"key 按事件时刻单调递增"—— 那个假设不成立）：
+                //     · key 由**不同事件源**分配（`杀人` 在 `OnDamaged`、`自爆` 在 `OnDeadCollarBomb`），
+                //       两者时序无保证；
+                //     · 更关键的是**各幕的 `before` 不同**（`杀人` 向前 3 秒、`自爆` 向前 0 秒），
+                //       所以"key 顺序"与"窗口起点顺序"根本不是一回事。
+                //   实测：`杀人3`（key=3）的事件与 `自爆1`（key=1）同为 70.87，但它的窗口起点
+                //   （67.87）更早 ⇒ 按 key 排会把它放到最后，而它的窗口里**还包含自爆那一刻**，
+                //   观感就是"顺序错乱"。
+                //   ⇒ 按**窗口起点**排 —— 它就是"观众看到的第一刻"。
+                All.Sort(delegate (Planned x, Planned y)
+                {
+                    int c = x.Act.Window.From.CompareTo(y.Act.Window.From);
+                    return c != 0 ? c : x.Act.Key.CompareTo(y.Act.Key);   // 同起点时用 key 保稳定
+                });
 
                 int max = ReplayFeature.MaxClips?.Value ?? 12;
                 if (All.Count > max)
