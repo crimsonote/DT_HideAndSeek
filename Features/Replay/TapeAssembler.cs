@@ -94,6 +94,19 @@ namespace HideAndSeek.Features.Replay
         public const float PlaceholderTime = 1e6f;
 
         /// <summary>
+        /// 剪影的瞬移距离 —— 把它挪到**主角视野之外**。
+        ///
+        /// 依据：屏幕可见半径 = `(orthographicSize 480 + 200) / 0.98` ≈ **694**
+        /// （游戏自己的公式，客户端 `:16144`）。取 2000 保证完全出画。
+        /// 而 `HandleRespawn` 只设 `transform.position`、不做碰撞检测 ⇒ 越界也无害。
+        ///
+        /// 为什么值得瞬移而不是"挑个远的人"：剪影的身体虽被涂黑、骨架也被 `IsGhost` 关掉，
+        /// 但**它的 `NameTag` 仍会显示**（规格记过）。挑远的只是个近似 ——
+        /// 主角在动、候选也常常不够远；瞬移则直接达成"看不见"。
+        /// </summary>
+        private const float FarOffset = 2000f;
+
+        /// <summary>
         /// 装配一段磁带。
         /// </summary>
         /// <param name="act">这一幕（窗口 / 主角 / 剪影落点）。</param>
@@ -324,6 +337,34 @@ namespace HideAndSeek.Features.Replay
                 Edit = new EditSnapShot { Type = EEditShotType.NormalTimeEdit },
             });
             report.TimeEditAdded = true;
+
+            // ── ⑦ 剪影瞬移（index 2）────────────────────────────────────
+            // 剪影的身体被 `ChangeSilhouette(true)` 涂黑、`IsGhost` 又关掉了骨架，
+            // 但**它的 `NameTag` 仍会显示**（规格记过这条）。所以原先只能在候选里
+            // "取离主角最远的"去躲那个昵称 —— 那是个近似：主角在动、候选也常常不够远。
+            // ⇒ 这里直接把剪影**瞬移**到主角视野之外。
+            //   · 用 `RespawnShot` 而不是 `MoveShot`：`HandleRespawn` 直接设 `transform.position`
+            //     （落位），而 `HandleMove` 是匀速走过去 ⇒ 后者会看到"飘过去"。
+            //   · 安全：`HandleRespawn` 对"已装配的人"只改位置、不动相机；而唯一会动相机的分支
+            //     要求 `pkt.PlayerId == MyPlayer`，但 `ApplyRespawn` 会把"剪影恰好是本机自己"
+            //     那台机器的 id 改成 0 ⇒ 它查的是 `Players[0]` ⇒ 仍走"只改位置"那条。
+            //   · 落点取"主角位置 + FarOffset"：屏幕可见半径 ≈ 694（`(480+200)/0.98`），
+            //     2000 足够让它完全离开画面；`HandleRespawn` 不做碰撞检测，所以越界也无害。
+            //   · 时间戳略晚于窗口起点：首帧（index 0）必须仍是 `SpawnShot`，index 1 必须仍是
+            //     时间编辑（客户端拿 `tape[1].TimeStamp` 当 `_currentTime` 起点）。
+            if (head.PlayerId > 0 && head.Pos != null)
+            {
+                result.Insert(2, new SnapShot
+                {
+                    Type = ESnapShotType.RespawnShot,
+                    TimeStamp = start + 0.02f,
+                    Respawn = new RespawnSnapShot
+                    {
+                        PlayerId = head.PlayerId,
+                        Pos = new PosInfo { X = head.Pos.X + FarOffset, Y = head.Pos.Y },
+                    },
+                });
+            }
 
             report.FramesOut = result.Count;
             if (result.Count > 1)
