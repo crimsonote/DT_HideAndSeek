@@ -292,10 +292,13 @@ namespace HideAndSeek.Features.Replay
         /// <summary>
         /// 取 [from, to] 区间内**每人**的采样，按时间升序 —— 合成世界帧（`HostSynth`）的数据源。
         ///
-        /// 采样侧是**定时录帧**（`NoteMove` 不做状态去重，见那里的注释），所以窗口内通常本就有帧。
-        /// 只有一种情形需要兜底：**窗口比心博间隔（1s）还短**，那个人在区间内一帧都没有
-        /// —— 此时用"窗口起点的锚帧"顶上（它的语义就是"那一刻他在哪"）。
-        /// 不补的话 `HostSynth` 只剩 roster/area 帧 ⇒ 段时长塌成 0 ⇒ 观众看到"一闪而过"。
+        /// 采样侧是**定时录帧**（`NoteMove` 不做状态去重）：`C_MOVE` 每 tick 一枚 + 心博 1/秒一枚。
+        /// 而窗口最短的是巡礼（`TourBeforeSec` 2 + `TourAfterSec` 0.5 = 2.5s）
+        /// ⇒ **任何窗口内都至少应有 2 枚帧**。
+        ///
+        /// ⇒ 所以这里**不做任何兜底**：取不到就是采样机制坏了，
+        ///   而那种情况会由装配日志里的 `⚠帧跨度只有…` 当场暴露。
+        ///   补一枚"锚帧"能让画面看起来正常，却会把这个信号盖掉 —— 那正是要避免的。
         /// </summary>
         public static List<Sample> Range(float from, float to)
         {
@@ -304,9 +307,6 @@ namespace HideAndSeek.Features.Replay
             {
                 var rows = kv.Value;
                 int n = rows.Count;
-                int before = list.Count;
-
-                // 区间内的帧（rows 按 Time 升序，所以 break 成立）
                 for (int i = 0; i < n; i++)
                 {
                     var r = rows[i];
@@ -315,21 +315,6 @@ namespace HideAndSeek.Features.Replay
                     if (r.Time > to)
                         break;
                     list.Add(ToSample(r));
-                }
-
-                // ★ 这个人在区间内一帧都没有 ⇒ 用窗口起点的锚帧兜底。
-                //   **只在此时加**，不是每人无条件加一枚（那会多出一堆同位置的重复 MoveShot）。
-                //   时间戳**钳到 `from`**：锚帧原始 Time 可能落在窗口外（`AtOrBefore` 兜底会给 `rows[0]`），
-                //   照搬会让帧落到窗口之外 —— 早了无所谓，**晚了会把段时长撑长**、客户端干等到那一刻才结束。
-                if (list.Count == before && n > 0)
-                {
-                    var anchor = AtOrBefore(rows, from);
-                    if (anchor != null)
-                    {
-                        var a = ToSample(anchor);
-                        a.Time = from;
-                        list.Add(a);
-                    }
                 }
             }
             list.Sort((a, b) => a.Time.CompareTo(b.Time));
