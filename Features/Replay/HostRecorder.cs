@@ -274,6 +274,49 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
+        /// 在 `[from, to]` 期间，`a` 与 `b` 是否**曾经**相距 &lt; `range`
+        /// （逐采样点比对 —— **进过范围就算**，不是只看某一刻）。
+        ///
+        /// ★ 为什么必须扫全程：幕的窗口是 `[事件 − 3, 事件 + 1]`，而**事件在窗口末尾** ——
+        ///   凶手是**走到**受害者身边才动手的。若只判窗口起点那一刻的距离，拿到的恰恰是
+        ///   "他还没走过去"的时候（实测算出 2101 &gt; 900 ⇒ 受害者被判"不在画面里"
+        ///   ⇒ 剪影落到他身上 ⇒ 涂黑 + 隐形 ⇒ 玩家看到"砍死虚空、凭空冒出尸体"）。
+        ///
+        /// 以 `a`（镜头/主角）的采样时刻为基准，`b` 用 `AtOrBefore` 取同一时刻的位置 ——
+        /// 这样"站着不动的人"（不产生新采样）也能参与比较，不必给他插值。
+        /// </summary>
+        public static bool EverWithin(int a, int b, float from, float to, float range)
+        {
+            if (a <= 0 || b <= 0)
+                return false;
+            if (!ById.TryGetValue(a, out var ra) || !ById.TryGetValue(b, out var rb))
+                return false;
+            if (ra.Count == 0 || rb.Count == 0)
+                return false;
+
+            float r2 = range * range;
+            for (int i = 0; i < ra.Count; i++)
+            {
+                var x = ra[i];
+                if (x.Time < from)
+                    continue;
+                if (x.Time > to)
+                    break;
+
+                var pa = x.Info?.Pos;
+                var pb = AtOrBefore(rb, x.Time)?.Info?.Pos;
+                if (pa == null || pb == null)
+                    continue;
+
+                float dx = pa.X - pb.X;
+                float dy = pa.Y - pb.Y;
+                if (dx * dx + dy * dy <= r2)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// 全员在 <paramref name="t"/> 时刻的样子 —— **"全员出场帧"的数据源**。
         ///
         /// ★ 必须是这里（房主侧采样），不能"从客户端磁带里捞"：

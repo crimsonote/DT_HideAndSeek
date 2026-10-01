@@ -683,10 +683,6 @@ namespace HideAndSeek.Features.Replay
             // 距离判据的阈值 = AOI 的退出距离（默认 900 ≈ 4.0 格；1 格 = 224 单位）。
             // 参考：屏幕可见半径 ≈ (480+200)/0.98 ≈ 694 ≈ 3.1 格 ⇒ 900 覆盖满屏幕还留余量。
             float range = Vision.AoiCullingFeature.ExitRange?.Value ?? 900f;
-            float rangeSq = range * range;
-
-            // 镜头位置 = 主角在窗口起点的位置（房主侧权威采样）
-            var camera = HostRecorder.At(act.SubjectId, act.Window.From)?.Pos;
 
             var known = ActTable.KnownIn(frames, 0, out var moved);
             var ids = new List<int>();
@@ -701,18 +697,19 @@ namespace HideAndSeek.Features.Replay
                     continue;
                 }
 
-                // ② 只有 SpawnShot（客户端"认识"他）⇒ 用距离判。
-                //    ★ 两边都必须取 `HostRecorder` 的权威采样 —— 拿 `SpawnShot` 里的位置
-                //      （那是"他最后一次进入视野时"的，可能很旧）去减实时位置是两个基准相减，结论无意义。
-                var pos = HostRecorder.At(id, act.Window.From)?.Pos;
-                if (camera == null || pos == null)
+                // ② 只有 SpawnShot（客户端"认识"他）⇒ 用**全程距离**判：
+                //    扫遍整个窗口，**期间任一时刻进过范围就算在画面里**。
+                //    ★ 不能只判窗口起点 —— 窗口是 [事件−3, 事件+1]，而**事件在末尾**：
+                //      凶手是走到受害者身边才动手的，起点那一刻他还在远处
+                //      （实测算出 2101 > 900 ⇒ 受害者被判"不在画面里" ⇒ 剪影落到他身上 ⇒ 隐形）。
+                //    ★ 两边都用 `HostRecorder` 的权威采样（`EverWithin` 内部保证同源）——
+                //      拿 `SpawnShot` 里的旧位置去减实时位置是两个基准相减，结论没有意义。
+                if (HostRecorder.At(id, act.Window.From) == null)
                 {
-                    ids.Add(id);          // 取不到位置就不排除（宁可多留一个，也不要漏掉画面里的人）
+                    ids.Add(id);          // 那一刻取不到他的采样 ⇒ 不排除（宁可多留，也不要漏掉画面里的人）
                     continue;
                 }
-                float dx = pos.X - camera.X;
-                float dy = pos.Y - camera.Y;
-                if (dx * dx + dy * dy <= rangeSq)
+                if (HostRecorder.EverWithin(act.SubjectId, id, act.Window.From, act.Window.To, range))
                     ids.Add(id);
                 else
                     far.Add(id);
