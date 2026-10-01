@@ -137,8 +137,13 @@ namespace HideAndSeek.Features.Rule
             // ⚠ 整段折行后要控制在 3 个渲染行内（`Reply` 每 3 行一条，超了会拆成多条）。
             "SelfTestRecv = 系统已接收请求，正在验证操作者权限，请耐心等待。\n" +
             "SelfTestDenied = 权限验证失败。\n" +
-            "SelfTestPrompt = 已验证权限，操作者 {name}#{id}，于{room}进行操作。\n" +
-            "为防止误操作，请计算 {q}，再发送「/maint 答案」完成确认。\n" +
+            // ⚠ 授权码提示**刻意拆成两条独立文案**（Prompt1 / Prompt2），由调用方用两次
+            //   `Reply` + `PushAfter` 分开发 —— **不能合成一条靠 `Reply` 自动分段**：
+            //   那个机制按"每 3 个渲染行一条"切，这两段合起来是 4 行，切点正好落在
+            //   第二段中间 ⇒ 客户端少渲染一条时，**含算式的那半截就整段消失**
+            //   （实测连续踩两次，房主只看到"请输入…"却看不到"请计算…"）。
+            "SelfTestPrompt1 = 已验证权限，操作者 {name}#{id}，于{room}进行操作。\n" +
+            "SelfTestPrompt2 = 为防止误操作，请计算 {q}，再发送「/maint 答案」完成确认。\n" +
             "SelfTestBadCode = 授权码错误，操作失败。\n" +
             "SelfTestExpired = 操作已过期。\n" +
             "SelfTestBusy = 已有其他操作者正在进行电力系统自检，请稍后再试。\n" +
@@ -2200,12 +2205,33 @@ namespace HideAndSeek.Features.Rule
 
             s.WaitingCode = true;
 
-            string text = T("SelfTestPrompt")
+            // ★ 两句提示**分两条独立回执发**，中间留足间隔。
+            //   不要合成一条靠 `Reply` 自动分段：那个机制按"每 3 个渲染行一条"切，
+            //   而这两句合起来是 4 行 ⇒ 切点落在第二句中间 ⇒ 客户端少渲染一条时
+            //   **含算式的那半截整段消失**（实测连续踩两次）。
+            //   间隔也不能太短：客户端对同一秒内刷出的多条消息只保留一条。
+            string line1 = T("SelfTestPrompt1")
                 .Replace("{name}", RoleNameOf(player))
                 .Replace("{id}", s.PlayerId.ToString())
-                .Replace("{room}", AreaNameOf(player))
+                .Replace("{room}", AreaNameOf(player));
+
+            string line2 = T("SelfTestPrompt2")
                 .Replace("{q}", question);
-            Reply(player, s.DeviceId, s.Channel, text);
+
+            Reply(player, s.DeviceId, s.Channel, line1);
+
+            // ⚠ 用**本地捕获**而不是在闭包里重新查玩家：玩家中途退局时 `FindPlayerById`
+            //   会返回 null，那样第二句就静默丢失；而这里的 `player` 引用仍然有效，
+            //   `SendChat` 内部会自己判 `Session` 是否还在。
+            //   ⚠ 变量名不能叫 `dev`/`ch` —— 上面那个 `if` 块里已经用过同名的，
+            //     C# 不允许内层作用域的名字与方法级局部变量重名（会报 CS0136）。
+            var boundPlayer = player;
+            int promptDev = s.DeviceId;
+            var promptCh = s.Channel;
+            room?.PushAfter(ReplyChunkGapMs + 300, delegate
+            {
+                Reply(boundPlayer, promptDev, promptCh, line2);
+            });
 
             int timeoutMs = (int)((PowerSelfTestFeature.CodeTimeoutSec?.Value ?? 20f) * 1000f);
             room?.PushAfter(timeoutMs, delegate { SelfTestExpire(gen); });
