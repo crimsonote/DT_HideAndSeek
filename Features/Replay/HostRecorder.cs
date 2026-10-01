@@ -82,53 +82,6 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
-        /// 一次**藏尸**（DT 把尸体丢进柜子/水池/魔法阵/传送门）—— 合成 `AddShot` 的素材。
-        ///
-        /// ★ 依据来自**客户端回传磁带的真实序列**（dump `1001-174004/03_杀人_r1_k3.txt`）：
-        ///       t=108.349  DeadlyTrickShot { WarpTrick, 1→6, deviceId:10136 }
-        ///       t=108.349  ModifyShot { Warp, 10136 } + RespawnShot×2
-        ///       t=110.890  **AddShot { device:{ type:"Corpse", deviceId:6, pos:(9062,3559),
-        ///                                          stateList:[0,1,0,0,10136,0,0,106,0] } }**
-        ///       t=110.890  DespawnShot { 6 }
-        ///   ⇒ "尸体进水池"不是某个动作，而是**那具 `Corpse` 对象出现**，且它的
-        ///     `StateList[4]` 就是藏尸设备 id（`Corpse.SetInfo` 里正是读 `StateList[4]`）。
-        ///     **没有 `AddShot` 就没有尸体对象** ⇒ 之后什么"进水池"都演不出来。
-        ///
-        /// ★ 为什么服务端造得出：藏尸的唯一出口是 `DeviceManager.CreateHiddenCorpse`
-        ///   （水池/魔法阵直接调；柜子经 `Cabinet.StoreCorpse` 也调它），它返回的 `Corpse`
-        ///   身上就带着构造时填好的 `DeviceInfo`（`type/deviceId/pos/stateList` 全在里面）
-        ///   ⇒ 与 `AddSnapShot` 需要的字段一一对应，直接 Clone 即可。
-        ///
-        /// ⚠ 规格 §1·C8 把 `AddShot(Corpse)` 记作"毒帧"，但**客户端自己就在录它**
-        ///   （上面那条 dump 就是客户端回传的），所以那条结论至少对这条路径不成立。
-        ///   真正踩过的坑更可能是"往 `Cache` 里没有的设备发 `AddShot`"或 `stateList` 不完整。
-        /// </summary>
-        private sealed class CorpseRow
-        {
-            public float Time;
-            public DeviceInfo Info;
-        }
-
-        private static readonly List<CorpseRow> _corpses = new List<CorpseRow>();
-
-        /// <summary>记一次藏尸。由 `ReplayFeature` 挂在 `DeviceManager.CreateHiddenCorpse` 上调用。</summary>
-        public static void NoteCorpse(DeviceInfo info)
-        {
-            if (info == null)
-                return;
-            _corpses.Add(new CorpseRow { Time = Now(), Info = info.Clone() });
-        }
-
-        /// <summary>本局记下的藏尸（合成时按窗口筛）。</summary>
-        public static List<(float Time, DeviceInfo Info)> CorpseList()
-        {
-            var list = new List<(float, DeviceInfo)>(_corpses.Count);
-            foreach (var c in _corpses)
-                list.Add((c.Time, c.Info));
-            return list;
-        }
-
-        /// <summary>
         /// 一次**特效广播** —— 合成"刀杀闪光"等 `EffectShot` 的素材。
         ///
         /// ★ 为什么服务端记得下来：客户端那条 `EffectShot` 本来就不是它自己产生的，
@@ -340,7 +293,6 @@ namespace HideAndSeek.Features.Replay
             _snaps.Clear();
             _fx.Clear();
             _tricks.Clear();
-            _corpses.Clear();
             _rowCount = 0;
             _lastTrim = -999f;
             _newestTime = -999f;

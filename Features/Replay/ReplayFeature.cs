@@ -11,9 +11,6 @@ using HideAndSeek.Core;
 using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Weapon;
 using GamePlayer = Server.Game.Player;
-// 注意：全局命名空间里也有 Corpse / DeviceManager（客户端那套），C# 查找规则下裸写会解析到全局那个。
-using GameCorpse = Server.Game.Corpse;
-using GameDeviceManager = Server.Game.DeviceManager;
 
 namespace HideAndSeek.Features.Replay
 {
@@ -450,39 +447,6 @@ namespace HideAndSeek.Features.Replay
                     return;
                 NoteHit(pkt.TargetId, __instance.PublicInfo.PlayerId,
                     $"DT 刀杀 #{__instance.PublicInfo.PlayerId} → #{pkt.TargetId}");
-            }
-        }
-
-        /// <summary>
-        /// 记录**藏尸** —— 合成幕里补 `AddShot{Corpse}` 的唯一素材来源。
-        ///
-        /// 依据是客户端回传磁带的真实序列（dump `1001-174004/03_杀人_r1_k3.txt`）：
-        ///     t=108.349  DeadlyTrickShot{WarpTrick, 1→6, 10136} + ModifyShot{Warp} + RespawnShot×2
-        ///     t=110.890  **AddShot{ device:{ type:"Corpse", deviceId:6, pos:(9062,3559),
-        ///                                        stateList:[0,1,0,0,10136,0,0,106,0] } }**
-        ///     t=110.890  DespawnShot{6}
-        ///   ⇒ "尸体进水池"不是某个动作，而是**那具 `Corpse` 出现**，而它的 `StateList[4]`
-        ///     就是藏尸设备 id（`Corpse.SetInfo` 正是读 `StateList[4]`）。
-        ///     没有 `AddShot` ⇒ 没有尸体对象 ⇒ 之后什么"进水池"都演不出来。
-        ///
-        /// ★ 挂 `CreateHiddenCorpse` 就够了：它是藏尸的**唯一出口** ——
-        ///   水池/魔法阵直接调它，柜子经 `Cabinet.StoreCorpse` 也调它
-        ///   （`StoreCorpse` 内部就是 `CreateHiddenCorpse(black, victim, base.ID)`）。
-        ///   而它返回的 `Corpse` 带着构造时填好的 `DeviceInfo` ⇒ 与 `AddSnapShot` 一一对应。
-        ///
-        /// ⚠ 尸体 id = 玩家 id（`Corpse` 构造里 `base.ID = playerInfo.PlayerId`）⇒ 合成时
-        ///   同一时刻会同时出现 `AddShot{6}` 与 `DespawnShot{6}`，**顺序必须是"先显尸体、后隐玩家"**
-        ///   （dump 里就是这个顺序；靠稳定排序保持插入顺序）。
-        /// </summary>
-        [HarmonyPatch(typeof(GameDeviceManager), "CreateHiddenCorpse")]
-        internal static class CorpseHideHook
-        {
-            [HarmonyPostfix]
-            private static void Postfix(GameCorpse __result)
-            {
-                if (!Armed || __result == null)
-                    return;
-                HostRecorder.NoteCorpse(__result.DeviceInfo);
             }
         }
 
