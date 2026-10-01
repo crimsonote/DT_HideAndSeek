@@ -133,7 +133,7 @@ namespace HideAndSeek.Features.Rule
             "RepairDone = 已立即恢复供电（修复 {n} 处）。\n" +
             // ── 电力系统自检（多阶段流程）──
             // `[000000]` 是**格式占位**（六位数字的样子），真正要求输入的是那条算式的答案。
-            "SelfTestRecv = 系统已收到电力系统自检命令，正在验证操作者权限，请耐心等待。\n" +
+            "SelfTestRecv = 系统已接受到请求，正在验证操作者权限，请耐心等待。\n" +
             "SelfTestDenied = 权限验证失败。\n" +
             "SelfTestPrompt = 已验证权限，操作者为{name}#{id}，于{room}进行操作。请输入一次性授权码[000000]进行二次操作确认\n" +
             "为防止误操作，请计算{q}，并将其作为一次性授权码发送。\n" +
@@ -141,7 +141,7 @@ namespace HideAndSeek.Features.Rule
             "SelfTestExpired = 操作已过期。\n" +
             "SelfTestBusy = 已有其他操作者正在进行电力系统自检，请稍后再试。\n" +
             "SelfTestBusyElsewhere = 此操作当前正在{room}由{name}#{id}进行操作，请耐心等待。\n" +
-            "SelfTestWrongArea = 你已离开操作区域（{room}），授权码无效，操作失败。\n" +
+            "SelfTestWrongArea = 你只能在{room}进行操作，不可变更操作位置，流程已中断。\n" +
             "SelfTestRunning = 已完成二次确认，电力自检已开始，请耐心等待，预计{sec}s完成自检。\n" +
             "SelfTestOk = 自检完成，当前电力系统工作正常。\n" +
             "SelfTestRestored = 电力系统已排除{n}个故障，电力系统已恢复。\n" +
@@ -2024,9 +2024,11 @@ namespace HideAndSeek.Features.Rule
                 s.WaitingCode = false;
                 int gen = s.Gen;
 
-                // ★ 地缘约束：授权码**只能在发起时的那个房间**提交。
-                //   中途可以离开（验证 / 等待期间都不检查），但提交这一刻必须回到原房间 ——
-                //   这正是"全程在同一房间操作"的落点，也让"异区的人替你交码"不可能成立。
+                // ★ 地缘约束：**操作位置不可变更** —— 授权码只能在发起时的那个房间提交。
+                //   游戏里能敲命令的只有四个通讯台所在的位置，所以"换了房间"就等于
+                //   "换了通讯台"：提交这一刻不在原房间 ⇒ 流程中断（文案：你只能在 X 进行操作…）。
+                //   验证与等待期间不检查（那两个阶段本就无事可做），判据只在**提交**这一瞬。
+                //   这也让"异区的人替你交码"不可能成立。
                 if (PowerSelfTestFeature.RequireSameArea?.Value ?? true)
                 {
                     if (AreaRoomIdOf(player) != s.AreaRoomId)

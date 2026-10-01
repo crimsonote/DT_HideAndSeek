@@ -49,9 +49,11 @@ namespace HideAndSeek.Features.Rule
         public static ConfigEntry<float> Cooldown;
 
         [ConfigField(true,
-            "地缘约束：授权码**只能在发起时的那个房间内提交**" +
-            "（中途可以离开，只要回来提交即可）；异区玩家敲命令会被告知『正在 X 房间由 Y 操作』。" +
-            "关 = 不检查房间，他人一律得到『已被占用』。")]
+            "地缘约束：游戏里能敲命令的只有四个通讯台所在的位置，" +
+            "所以**整个自检流程不可变更操作位置** —— 授权码必须回到发起时的那个房间提交，" +
+            "中途离开则流程中断（『你只能在 X 进行操作，不可变更操作位置，流程已中断』）。" +
+            "异区玩家敲命令会被告知『正在 X 房间由 Y 操作』。" +
+            "关 = 不检查位置，他人一律得到『已被占用』。")]
         public static ConfigEntry<bool> RequireSameArea;
 
         /// <summary>抑制窗口的截止时刻（房主时钟）。在此之前 `StartFuseboxSabotage` 会被顺延。</summary>
