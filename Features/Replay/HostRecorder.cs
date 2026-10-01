@@ -82,6 +82,103 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
+        /// 一次**特效广播** —— 合成"刀杀闪光"等 `EffectShot` 的素材。
+        ///
+        /// ★ 为什么服务端记得下来：客户端那条 `EffectShot` 本来就不是它自己产生的，
+        ///   而是**服务端广播 `S_PLAY_EFFECT` 时它顺手录的**：
+        ///       Handle_S_PLAY_EFFECT:  if (s.Pos != null) Recording(EffectShot, { Type, DeviceId, Pos });
+        ///   而服务端发它的地方是 `GameRoom.BroadcastWorldVFX` / `SendVFX`
+        ///   （刀杀闪光在 `Player` 里：`BroadcastWorldVFX(EEffectType.FlashVfx, Owner.PlayerId, Owner.Pos)`）。
+        ///   ⇒ 信息一直在服务端手上，只是原先没记 ⇒ 合成幕里"没有出刀动画"。
+        ///
+        /// ⚠ 只在 `Pos != null` 时记 —— 与客户端 `Handle_S_PLAY_EFFECT` 的录制条件一致
+        ///   （`SendVFX` 那条不带 `Pos`，客户端不录，我们也不补）。
+        /// </summary>
+        private sealed class Fx
+        {
+            public float Time;
+            public EEffectType Type;
+            public int DeviceId;
+            public PosInfo Pos;
+        }
+
+        private static readonly List<Fx> _fx = new List<Fx>();
+
+        /// <summary>
+        /// 一次 **DT（`S_DEADLY_TRICK`）** —— 合成 `DeadlyTrickShot` 的素材。
+        ///
+        /// "DT"= 在柜子/水池/魔法阵/黑洞传送门附近杀人后**把尸体藏进去**，或**把尸体拖过去藏**。
+        /// 客户端那条 `DeadlyTrickShot` 同样是**收到服务端 `S_DEADLY_TRICK` 时顺手录的**：
+        ///     Handle_S_DEADLY_TRICK: PlayDeadlyTrick(...) + Recording(DeadlyTrickShot, {…})
+        /// 而服务端发它的地方是 `Player.UseDeadlyTrick(C_DEADLY_TRICK)`（杀人类）
+        /// 与 `Player.UseCorpseDeadlyTrick(C_DEADLY_TRICK)`（拖尸类），两者都走 `GameRoom.Broadcast`。
+        ///
+        /// ⚠ 记的是**广播包里**的字段，不是上行包：拖尸那条路径里
+        ///   `TargetId` 会从"玩家 id"换成 `corpse.ID`、并带上 `IsCorpse = true` ——
+        ///   只有抓广播包才拿得到客户端真正录下的那份。
+        /// </summary>
+        private sealed class Trick
+        {
+            public float Time;
+            public EDeadlyTrickType Type;
+            public int AttackerId;
+            public int TargetId;
+            public int DeviceId;
+            public bool IsCorpse;
+        }
+
+        private static readonly List<Trick> _tricks = new List<Trick>();
+
+        /// <summary>记一次 DT 广播。由 `ReplayFeature` 挂在 `GameRoom.Broadcast` 上调用。</summary>
+        public static void NoteTrick(EDeadlyTrickType type, int attackerId, int targetId, int deviceId, bool isCorpse)
+        {
+            _tricks.Add(new Trick
+            {
+                Time = Now(),
+                Type = type,
+                AttackerId = attackerId,
+                TargetId = targetId,
+                DeviceId = deviceId,
+                IsCorpse = isCorpse,
+            });
+        }
+
+        /// <summary>本局记下的 DT（合成时按窗口筛）。</summary>
+        public static List<(float Time, EDeadlyTrickType Type, int AttackerId, int TargetId, int DeviceId, bool IsCorpse)>
+            TrickList()
+        {
+            var list = new List<(float, EDeadlyTrickType, int, int, int, bool)>(_tricks.Count);
+            foreach (var t in _tricks)
+                list.Add((t.Time, t.Type, t.AttackerId, t.TargetId, t.DeviceId, t.IsCorpse));
+            return list;
+        }
+
+        /// <summary>
+        /// 记一次特效广播。由 `ReplayFeature` 挂在 `GameRoom.BroadcastWorldVFX` / `SendVFX` 上调用。
+        /// </summary>
+        public static void NoteEffect(EEffectType type, int deviceId, PosInfo pos)
+        {
+            if (pos == null || deviceId == 0)
+                return;
+            _fx.Add(new Fx
+            {
+                Time = Now(),
+                Type = type,
+                DeviceId = deviceId,
+                Pos = pos.Clone(),
+            });
+        }
+
+        /// <summary>本局记下的特效（合成时按窗口筛）。</summary>
+        public static List<(float Time, EEffectType Type, int DeviceId, PosInfo Pos)> FxList()
+        {
+            var list = new List<(float, EEffectType, int, PosInfo)>(_fx.Count);
+            foreach (var f in _fx)
+                list.Add((f.Time, f.Type, f.DeviceId, f.Pos));
+            return list;
+        }
+
+        /// <summary>
         /// **一幕的采样快照** —— 独立于主缓冲存储，这才是"按需裁剪"的正解。
         ///
         /// 客户端早就在这么做：收到 `S_RECORD_REPLAY` 后 9 秒，它把当时的录制缓冲
@@ -194,6 +291,8 @@ namespace HideAndSeek.Features.Replay
             ById.Clear();
             Bombs.Clear();
             _snaps.Clear();
+            _fx.Clear();
+            _tricks.Clear();
             _rowCount = 0;
             _lastTrim = -999f;
             _newestTime = -999f;

@@ -168,6 +168,53 @@ namespace HideAndSeek.Features.Replay
                 }
             }
 
+            // ── 特效广播（出刀闪光等）────────────────────────────────────
+            // 客户端那条 `EffectShot` 本来就是收到服务端 `S_PLAY_EFFECT` 时顺手录的
+            // （`Handle_S_PLAY_EFFECT`），所以把服务端广播过的那份补回来即可 ——
+            // 否则服务端合成的幕里"没有出刀动画"。
+            // ⚠ `DyingVfx` 跳过：自爆那条已经在上面的"自爆"段里补过，避免重复。
+            foreach (var fx in HostRecorder.FxList())
+            {
+                if (fx.Type == EEffectType.DyingVfx)
+                    continue;
+                if (fx.Time < window.From || fx.Time >= window.To)
+                    continue;
+                shots.Add(new SnapShot
+                {
+                    Type = ESnapShotType.EffectShot,
+                    TimeStamp = fx.Time,
+                    Effect = new EffectSnapShot
+                    {
+                        Type = fx.Type,
+                        DeviceId = fx.DeviceId,
+                        Pos = fx.Pos?.Clone(),
+                    },
+                });
+            }
+
+            // ── DT（藏尸）────────────────────────────────────────────────
+            // 同理：客户端 `Handle_S_DEADLY_TRICK` 收到包时录 `DeadlyTrickShot`。
+            // 字段直接照抄广播包 —— 尤其 `TargetId`/`IsCorpse`：拖尸那条路径里
+            // `TargetId` 是 `corpse.ID`、`IsCorpse = true`，与上行包不同。
+            foreach (var tk in HostRecorder.TrickList())
+            {
+                if (tk.Time < window.From || tk.Time >= window.To)
+                    continue;
+                shots.Add(new SnapShot
+                {
+                    Type = ESnapShotType.DeadlyTrickShot,
+                    TimeStamp = tk.Time,
+                    DeadlyTrick = new DeadlyTrickSnapShot
+                    {
+                        TrickType = tk.Type,
+                        AttackerId = tk.AttackerId,
+                        TargetId = tk.TargetId,
+                        DeviceId = tk.DeviceId,
+                        IsCorpse = tk.IsCorpse,
+                    },
+                });
+            }
+
             // 稳定排序：同时间戳保持插入顺序（客户端 `BeginTape` 硬要求首帧是 SpawnShot，
             // 而首帧由 `TapeAssembler` 负责；这里只需要保证自己内部不逆序）。
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using BepInEx.Configuration;
 using DummyClient;
+using Google.Protobuf;
 using HarmonyLib;
 using Protocol;
 using Server.Game;
@@ -423,6 +424,45 @@ namespace HideAndSeek.Features.Replay
                 //   参与者不该依赖这个，位置照样取房主侧采样。
                 if (victim > 0)
                     act.Subjects = new List<int> { victim };
+            }
+        }
+
+        /// <summary>
+        /// 记录**服务端广播的两类帧素材** —— 它们都是"客户端磁带里那条帧"的服务端对应物：
+        ///
+        ///   · `S_PLAY_EFFECT`  ⇒ 客户端录成 `EffectShot`（**出刀闪光**等）
+        ///       服务端发它的是 `GameRoom.BroadcastWorldVFX` / `SendVFX`；
+        ///       客户端 `Handle_S_PLAY_EFFECT` 只在 `Pos != null` 时录。
+        ///   · `S_DEADLY_TRICK` ⇒ 客户端录成 `DeadlyTrickShot`（**DT：藏尸**）
+        ///       服务端发它的是 `Player.UseDeadlyTrick`（杀人类）/ `UseCorpseDeadlyTrick`（拖尸类）。
+        ///
+        /// ★ 为什么拦 `Broadcast` 而不是各自的发送点：
+        ///   ① 它只有一个重载（`IMessage`），拦点唯一、不会漏；
+        ///   ② 拿到的是**服务端真正发出去的包** —— 拖尸那条路径里 `TargetId` 会被换成 `corpse.ID`
+        ///      并带上 `IsCorpse = true`，只有在这里才拿得到客户端真正录下的那份。
+        ///
+        /// ⚠ `Broadcast` 是通用方法、调用频繁，所以钩子第一件事就是按类型快速判断（`is` 为 O(1)）。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), "Broadcast", new[] { typeof(IMessage), typeof(int) })]
+        internal static class BroadcastHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(IMessage packet)
+            {
+                if (!Armed || packet == null)
+                    return;
+
+                if (packet is S_PLAY_EFFECT fx)
+                {
+                    // 与客户端 `Handle_S_PLAY_EFFECT` 的录制条件一致：`Pos == null` 时它不录，我们也不记。
+                    HostRecorder.NoteEffect(fx.Type, fx.DeviceId, fx.Pos);
+                    return;
+                }
+
+                if (packet is S_DEADLY_TRICK dt)
+                {
+                    HostRecorder.NoteTrick(dt.TrickType, dt.AttackerId, dt.TargetId, dt.DeviceId, dt.IsCorpse);
+                }
             }
         }
 
