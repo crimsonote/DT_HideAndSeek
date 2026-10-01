@@ -215,6 +215,30 @@ namespace HideAndSeek.Features.Replay
                 });
             }
 
+            // ── 藏尸（DT 把尸体丢进柜子/水池/魔法阵/传送门）──────────────
+            // ★ 这是"尸体进水池"的关键：它不是某个动作，而是**那具 `Corpse` 对象出现**。
+            //   客户端磁带里的真实形态（dump `1001-174004/03_杀人_r1_k3.txt`）：
+            //       t=108.349  DeadlyTrickShot{WarpTrick, 1→6, 10136} + ModifyShot{Warp} + RespawnShot×2
+            //       t=110.890  **AddShot{ Corpse, deviceId:6, pos:(9062,3559),
+            //                              stateList:[0,1,0,0,10136,0,0,106,0] }**   ← `[4]` = 藏尸设备
+            //       t=110.890  DespawnShot{6}
+            //   `StateList[4]` 就是藏尸设备 id（`Corpse.SetInfo` 读的正是它）⇒ 只要把服务端
+            //   记下的 `DeviceInfo` 原样发出去，客户端就会把尸体摆到正确位置与藏点。
+            //   ⚠ 时间戳用 `Now()`（= `CreateHiddenCorpse` 被调那一刻）—— 它本身就在
+            //     `PushAfter(tickAfter)` 里，所以天然是"尸体出现"的时刻，不必再加偏移。
+            //   ⚠ 玩家不必另发 `DespawnShot`：死者不在 roster 里 ⇒ 不会被装配 ⇒ 自动消失。
+            foreach (var cp in HostRecorder.CorpseList())
+            {
+                if (cp.Time < window.From || cp.Time >= window.To)
+                    continue;
+                shots.Add(new SnapShot
+                {
+                    Type = ESnapShotType.AddShot,
+                    TimeStamp = cp.Time,
+                    Add = new AddSnapShot { Device = cp.Info.Clone() },
+                });
+            }
+
             // 稳定排序：同时间戳保持插入顺序（客户端 `BeginTape` 硬要求首帧是 SpawnShot，
             // 而首帧由 `TapeAssembler` 负责；这里只需要保证自己内部不逆序）。
 
