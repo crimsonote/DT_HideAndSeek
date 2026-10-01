@@ -50,33 +50,14 @@ namespace HideAndSeek.Features.Replay
         ///   该条件恒真 ⇒ `Trim` **每帧**遍历几万帧 ⇒ 主线程一帧 5.7 秒（Dissonance 报 frame skip）。
         ///   现在触发只按时间且 1 秒节流，"超上限"由 `Trim` 内部按数量兜底处理 ⇒ 可以放心放大窗口。
         /// </summary>
-        /// <summary>
-        /// **基础保留窗口**（秒）—— 覆盖"事件发生**之前**那几秒"。
-        ///
-        /// 为什么需要它：幕的窗口是 `[事件 − before, 事件 + after]`，而**登记发生在事件当时**
-        /// （`ReplayFeature.Add` 在 `HitHook` 里就登记了）。也就是说登记那一刻，`before` 那一段
-        /// **已经过去了** —— 如果只按"已登记窗口"保留，它早被裁掉了。
-        /// ⇒ 所以基础窗口必须 ≥ 各幕 `before` 的最大值；由 `ReplayFeature` 在初始化时写入
-        ///   （见 `ReplayFeature.SyncKeepBudget`），默认 30 已覆盖配置上限。
-        /// </summary>
-        private static float _baseKeepSeconds = 30f;
-
-        /// <summary>
-        /// **必须保住的区间**（已登记幕的窗口）—— 裁剪时，除基础窗口外，这些区间内的帧一律保留。
-        ///
-        /// ★ 这就是"按需裁剪"：不再猜一个固定的大窗口（曾经写死 400 秒，既浪费又**可能不够** ——
-        ///   幕的窗口是事后才知道的，拿猜的数字去覆盖未知需求，两头都不对）。
-        ///   窗口在 `ReplayFeature.Add` 登记那一刻就已确定 ⇒ 那时告诉这里即可。
-        /// </summary>
-        private static readonly List<KeyValuePair<float, float>> _keepWindows =
-            new List<KeyValuePair<float, float>>();
+        private const float KeepSeconds = 400f;
 
         /// <summary>
         /// 硬上限。超过就**按数量**裁掉最老的（不能只靠时间 —— 帧率高于预期时会空转）。
-        /// 取值依据：基础 30s + 最多 `MaxClips`(12) 幕 × 6.5s ≈ 110s ⇒ 6 人 × 9 帧/秒 ≈ 6000 帧，留一倍余量。
-        /// 内存 ≈ 16000 × ~200B ≈ 3 MB。
+        /// 取值依据：`KeepSeconds` 400 × 9 帧/秒/人 × 6 人 ≈ 21600，留一点余量。
+        /// 内存 ≈ 24000 × ~200B ≈ 4.6 MB。
         /// </summary>
-        private const int MaxRows = 16000;
+        private const int MaxRows = 24000;
 
         /// <summary>一次采样 —— 某个玩家在某个时刻的样子。</summary>
         private sealed class Row
@@ -110,30 +91,9 @@ namespace HideAndSeek.Features.Replay
         {
             ById.Clear();
             Bombs.Clear();
-            _keepWindows.Clear();
             _rowCount = 0;
             _lastTrim = -999f;
             _newestTime = -999f;
-        }
-
-        /// <summary>
-        /// 登记一个**必须保住**的区间（一幕的窗口）。由 `ReplayFeature.Add` 在登记幕时调用 ——
-        /// 那一刻窗口（`[事件 − before, 事件 + after]`）已经确定，所以裁剪可以精确到"只留用得上的"。
-        /// </summary>
-        public static void KeepWindow(float from, float to)
-        {
-            if (to > from)
-                _keepWindows.Add(new KeyValuePair<float, float>(from, to));
-        }
-
-        /// <summary>
-        /// 设定基础保留窗口（秒）—— 由 `ReplayFeature` 按各幕 `before` 配置的最大值写入。
-        /// 它兜住"事件发生前那几秒"，因为登记时那一段已经过去（见字段注释）。
-        /// </summary>
-        public static void SetBaseKeep(float seconds)
-        {
-            if (seconds > 1f)
-                _baseKeepSeconds = seconds;
         }
 
         /// <summary>
@@ -524,44 +484,16 @@ namespace HideAndSeek.Features.Replay
         ///   ② 按数量：时间裁不掉、但总量超过 `MaxRows` 时，每人保留等额的一份
         ///      （防住"帧率远高于预期"时缓冲无限增长 —— 只按时间会永远裁不掉）。
         /// </summary>
-        /// <summary>
-        /// 这个时刻的帧要不要留：落在**基础窗口**内，或落在**任一已登记幕的窗口**内。
-        ///
-        /// 两者缺一不可：
-        ///   · 基础窗口兜住"事件发生前那几秒"（登记时它已经过去）；
-        ///   · 登记窗口兜住"早已发生、但结算时才要用"的那几幕 —— 这正是原来写死 400 秒想解决的问题，
-        ///     只是那时只能靠猜；现在窗口在 `ReplayFeature.Add` 那一刻就精确已知。
-        /// </summary>
-        private static bool Keep(float t, float baseFrom)
-        {
-            if (t >= baseFrom)
-                return true;
-            for (int i = 0; i < _keepWindows.Count; i++)
-            {
-                if (t >= _keepWindows[i].Key && t <= _keepWindows[i].Value)
-                    return true;
-            }
-            return false;
-        }
-
         private static void Trim(float now)
         {
-            float baseFrom = now - _baseKeepSeconds;
-
-            // 先丢掉"连基础窗口都够不着"的登记窗口（它的右端已经太老）—— 否则 `Keep` 会一直为它保留。
-            for (int i = _keepWindows.Count - 1; i >= 0; i--)
-            {
-                if (_keepWindows[i].Value < baseFrom)
-                    _keepWindows.RemoveAt(i);
-            }
-
+            float keepFrom = now - KeepSeconds;
             int perPlayerCap = Math.Max(64, MaxRows / Math.Max(1, ById.Count));
 
             foreach (var kv in ById)
             {
                 var l = kv.Value;
                 int drop = 0;
-                while (drop < l.Count - 1 && !Keep(l[drop].Time, baseFrom))
+                while (drop < l.Count - 1 && l[drop].Time < keepFrom)
                     drop++;
 
                 if (drop == 0 && _rowCount > MaxRows && l.Count > perPlayerCap)

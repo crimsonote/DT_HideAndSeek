@@ -169,24 +169,6 @@ namespace HideAndSeek.Features.Replay
             catch { return 0f; }
         }
 
-        /// <summary>
-        /// 把**基础保留窗口**同步给采样缓冲 = 各幕 `before` 配置的最大值 + 余量。
-        ///
-        /// 为什么需要它：幕的窗口是 `[事件 − before, 事件 + after]`，而登记发生在**事件当时** ——
-        /// 那一刻 `before` 那段已经过去了。所以"按需保留"必须配一个基础窗口兜住它，
-        /// 而这个值应当由**配置**决定（`before` 可调到 30），不能靠猜。
-        /// 每局重设一次即可（`Reset` 里调用），配置改了下一局生效。
-        /// </summary>
-        private static void SyncKeepBudget()
-        {
-            float max = Math.Max(
-                Math.Max(KnifeBeforeSec?.Value ?? 1f, KillBeforeSec?.Value ?? 3f),
-                Math.Max(
-                    Math.Max(SelfDestructBeforeSec?.Value ?? 0f, TourBeforeSec?.Value ?? 2f),
-                    EndBeforeSec?.Value ?? 3f));
-            HostRecorder.SetBaseKeep(max + 5f);
-        }
-
         private static void Reset()
         {
             Acts.Clear();
@@ -196,7 +178,6 @@ namespace HideAndSeek.Features.Replay
             _ending = "结算前";
             HostRecorder.Clear();
             ReplayDirector.Reset();
-            SyncKeepBudget();
         }
 
         /// <summary>用**指定的 key** 登记一幕（key 已在事件发生时分配并告知客户端）。</summary>
@@ -213,13 +194,6 @@ namespace HideAndSeek.Features.Replay
                 Note = note,
             };
             Acts.Add(act);
-
-            // ★ **登记即"按需保留"**：窗口此刻已确定（`[事件 − before, 事件 + after]`），
-            //   于是告诉采样缓冲把它保住 —— 结算时（可能已是几分钟后）才要用到这一段。
-            //   这替代了原先"写死 400 秒"的猜法：那时只能靠一个足够大的固定值去兜未知需求，
-            //   既白占内存、又**可能不够**（幕的窗口是事后才知道的）。
-            HostRecorder.KeepWindow(window.From, window.To);
-
             return act;
         }
 
