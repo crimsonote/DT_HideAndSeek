@@ -442,10 +442,44 @@ namespace HideAndSeek.Features.Replay
         ///   而那种情况会由装配日志里的 `⚠帧跨度只有…` 当场暴露。
         ///   补一枚"锚帧"能让画面看起来正常，却会把这个信号盖掉 —— 那正是要避免的。
         /// </summary>
+        /// <summary>
+        /// 找一份**覆盖 `[from, to]`** 的服务端采样快照。
+        ///
+        /// ⚠ 别与"客户端磁带"混：客户端也有快照（`ReserveSaveTape` 拍的 `List<SnapShot>`），
+        ///   但那个走 `S_TAPE` 由 `ReplayDirector.OnTape` 处理，**优先级高于本函数**。
+        ///   这里只服务"服务端合成"那一路的数据源。
+        /// </summary>
+        private static Snap FindSnap(float from, float to)
+        {
+            for (int i = 0; i < _snaps.Count; i++)
+            {
+                var s = _snaps[i];
+                if (s.From <= from + 0.001f && s.To >= to - 0.001f)
+                    return s;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 取 `[from, to]` 区间内每人的采样 —— **服务端合成**（`HostSynth`）的数据源。
+        ///
+        /// ★ 数据源优先级（**只在这一路内**，与"客户端磁带优先"无关）：
+        ///   ① **服务端采样快照**（`Snap`）—— 独立副本，主缓冲怎么裁都动不到它 ⇒ 首选；
+        ///   ② 主缓冲（`ById`）—— 快照未覆盖时退回（兼容"没登记到"的情况）。
+        ///   而**客户端磁带**在更上层就已经定胜负：客户端回了磁带就走 `OnTape`，
+        ///   压根不会调用到这里（见 `ReplayDirector` 的 `TrySynth`）。
+        ///
+        /// 为什么要有 ①：主缓冲的裁剪曾把"结算时要用的幕"剪掉（`MaxRows` 调小后
+        /// "按数量裁"分支不尊重保护名单 ⇒ 最早那几幕的帧全丢 ⇒ 自爆幕消失、剪影候选空）。
+        /// 快照把素材从主缓冲里**解耦**出来，那类事故就不可能再发生。
+        /// </summary>
         public static List<Sample> Range(float from, float to)
         {
             var list = new List<Sample>(256);
-            foreach (var kv in ById)
+            var snap = FindSnap(from, to);
+            var source = snap != null ? snap.Rows : ById;
+
+            foreach (var kv in source)
             {
                 var rows = kv.Value;
                 int n = rows.Count;
@@ -459,6 +493,7 @@ namespace HideAndSeek.Features.Replay
                     list.Add(ToSample(r));
                 }
             }
+
             list.Sort((a, b) => a.Time.CompareTo(b.Time));
             return list;
         }
