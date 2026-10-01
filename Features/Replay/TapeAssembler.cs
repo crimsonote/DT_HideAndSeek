@@ -164,11 +164,18 @@ namespace HideAndSeek.Features.Replay
 
             // ── ① 首帧：剪影落点 ─────────────────────────────────────────
             // 客户端 `BeginTape` 用它做三件事：`_blackId`（⇒ 剪影打谁）、`ChangeMyPlayer`、`ApplySpawn`。
-            // 标成幽灵是"让它不可见"的唯一服务端手段：回放期间 `Player.Update` 每帧刷
-            // `RefreshGhostVisual()`，走 case 2 把幽灵替身与骨架**一起关掉**。
+            //
+            // ★ `IsGhost` 的判据**必须与 `ReplayDirector.BuildHead` 一致**：
+            //   · 剪影**不是**镜头宿主本人 ⇒ `true` ⇒ 回放期间 `Player.Update` 每帧刷
+            //     `RefreshGhostVisual()` 走 case 2，把幽灵替身与骨架**一起关掉** ⇒ 他不可见（正确）；
+            //   · 剪影**就是**镜头宿主本人（降级：所有人都在幕里出现过、一个不在场的都挑不出来）
+            //     ⇒ 必须 `false`：他在画面里，只该被 `ChangeSilhouette(true)` **涂黑**成黑影
+            //     （用户口径："降级原版方案是暴露剪影黑色滤镜，而不是幽灵化消失"）。
+            //   ⚠ 这里曾经**无条件写 `true`**，把 `BuildHead` 算好的值盖掉了 ⇒ 降级时黑方被
+            //     幽灵化、彻底消失（实测 bug）。两处判据必须同源 —— 改一处就要改另一处。
             var headInfo = head.Clone();
             headInfo.State = EPlayerState.Idle;   // 别让"躲柜 / 死亡幽灵"这类状态驱动这个看不见的角色
-            headInfo.IsGhost = true;
+            headInfo.IsGhost = headInfo.PlayerId != act.SubjectId;
 
             report.HeadId = headInfo.PlayerId;
 
