@@ -86,7 +86,7 @@ namespace HideAndSeek.Features.Replay
 
         [ConfigField(false, "「自爆」瞬间放一次**全屏压暗**（客户端 `BlackOutVfx`）。" +
             "⚠ **默认关**：原版的压暗是「开 → DoActionAfter(2f) → 关」，服务端没有「立刻取消」的接口，" +
-            "而下一幕「黑方收尾」是断电视野 ⇒ 两者叠加会完全看不清。", Min = 0f, Max = 0f)]
+            "而下一幕「黑方收尾」是断电视野 ⇒ 两者叠加会完全看不清。")]
         public static ConfigEntry<bool> BombBlackout;
 
         [ConfigField(2f, "「白方各段」：白胜结局里幸存者那段的**判定前**秒数。" +

@@ -30,6 +30,15 @@ namespace HideAndSeek.Features.Replay
         public int InvertedBefore;
         /// <summary>是否补了一枚 `NormalTimeEdit`（没有它，客户端会继承上一段遗留的 `TimeScale = 0.25`）。</summary>
         public bool TimeEditAdded;
+
+        /// <summary>
+        /// 本段**帧时间戳的实际跨度**（最后一帧 − 第一帧）。
+        ///
+        /// ★ 为什么必须盯着它：客户端播放一段的时长**不是**我们给的窗口，而是
+        ///   `RecordManager.Update` 按时间戳推进到最后一帧为止 ⇒ **跨度就是这一段的观感时长**。
+        ///   若它远小于窗口，用户看到的就是"这一段光速切完"（"自爆/巡礼每段不到半秒"那类反馈）。
+        /// </summary>
+        public float TsSpan;
         /// <summary>非空 = 装配失败的原因（调用方据此决定是否退回占位磁带）。</summary>
         public string Fail;
 
@@ -46,7 +55,13 @@ namespace HideAndSeek.Features.Replay
                 _ => "无",
             };
 
+            float win = Window.Length;
+            string spanNote = (win > 0.05f && TsSpan < win * 0.8f)
+                ? $" ⚠帧跨度只有 {TsSpan:F2}s（窗口 {win:F2}s）⇒ **这一段会明显偏短**"
+                : $" 帧跨度={TsSpan:F2}s";
+
             return $"【{Kind}#{Key}】{origin} 窗口={Window} {FramesIn}→{FramesOut} 帧"
+                 + spanNote
                  + $"（全员出场帧 +{RosterAdded} 剔毒帧 -{ToxicDropped} 排序前逆序 {InvertedBefore} 处"
                  + (TimeEditAdded ? " 补时间编辑" : "") + $")"
                  + $" 主角=#{SubjectId} 首帧(剪影)=#{HeadId}";
@@ -311,6 +326,8 @@ namespace HideAndSeek.Features.Replay
             report.TimeEditAdded = true;
 
             report.FramesOut = result.Count;
+            if (result.Count > 1)
+                report.TsSpan = result[result.Count - 1].TimeStamp - result[0].TimeStamp;
 
             // ── 出厂自检 ────────────────────────────────────────────────
             // 这几个不变量是客户端硬要求，违反了表现为"静默跳过整段"或"整段卡死"，

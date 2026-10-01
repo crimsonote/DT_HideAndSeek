@@ -170,7 +170,10 @@ namespace HideAndSeek.Features.Replay
 
             // 稳定排序：同时间戳保持插入顺序（客户端 `BeginTape` 硬要求首帧是 SpawnShot，
             // 而首帧由 `TapeAssembler` 负责；这里只需要保证自己内部不逆序）。
-            shots.Sort((a, b) => a.TimeStamp.CompareTo(b.TimeStamp));
+            // ⚠ 用 `OrderBy` 而不是 `List<T>.Sort` —— 后者不稳定，而原版磁带里**同一时间戳的帧顺序是有意义的**
+            //   （实测：刀架在同一时刻先"还在"后"被取走"，排反了就看到"刀没被拿走"）。
+            shots = global::System.Linq.Enumerable.ToList(
+                global::System.Linq.Enumerable.OrderBy(shots, delegate (SnapShot s) { return s.TimeStamp; }));
             return shots;
         }
 
