@@ -364,7 +364,12 @@ namespace HideAndSeek.Features.Replay
                     return;
 
                 int id = __instance.PublicInfo.PlayerId;
-                Add(ActKind.Knife, id, id,
+                // 录制者 = **只有真人能当**：假人没有客户端，按 `Act.RecorderId` 的契约
+                // （"只有真人可能是录制者；假人是 0"）必须记 0，而不是记下假人的 id。
+                // 假人的 `Session` 是空壳（`HostPeerSession(null)`）⇒ 记下 id 会让
+                // `FetchTapes` 去登记一个**永远不收敛**的 Pending 槽位；
+                // 单人局"满台账"看起来完全正常，联机局才暴露。见 `HasClient`。
+                Add(ActKind.Knife, id, HasClient(__instance) ? id : 0,
                     ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 2f), "拿刀");
             }
         }
