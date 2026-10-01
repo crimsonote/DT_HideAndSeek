@@ -41,6 +41,12 @@ namespace HideAndSeek.Features.Replay
                 return shots;
 
             var samples = HostRecorder.Range(window.From, window.To);
+            // ★ 诊断：把"这次到底取到多少采样、缓冲本身覆盖到哪"打出来。
+            //   实测症状——自爆幕的 7 帧时间戳**全是窗口起点**（跨度 0.00s）、一枚 MoveShot 都没有，
+            //   而 `Roster()` 却取到了 4 个人 ⇒ 缓冲里有数据、但都早于窗口起点。
+            //   ⇒ 这一行能一次区分：① 缓冲没覆盖到窗口（采样停了）；② 缓冲覆盖了但 `Range` 取不到（取帧有 bug）。
+            Plugin.Log.LogInfo($"[HS-Replay/诊断] 合成取采样 窗口=[{window.From:F2},{window.To:F2}] "
+                + $"取到 {samples.Count} 条 ｜ 缓冲 {HostRecorder.Stats()}");
 
             // ── 窗口起点的"全员出场帧" ──────────────────────────────────
             // 它有两个作用：
