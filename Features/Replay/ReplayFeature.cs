@@ -378,6 +378,36 @@ namespace HideAndSeek.Features.Replay
         ///   第三件是关键：客户端 9 秒后会把当时的缓冲拍成**持久快照**，
         ///   结算时（几分钟后）索取仍能拿回事件周围的素材。
         /// </summary>
+        /// <summary>
+        /// 登记"一次杀人事件的时刻与 key"，并**立刻把 key 告知录制者客户端**。
+        ///
+        /// ★ 为什么要有这个共用方法：**刀杀有两条路径**，只有一条经过 `OnDamaged`：
+        ///   · 普通刀杀：`UseWeapon` → `OnDamaged`（其内部再调 `OnDead`）—— 由 `HitHook` 走这里；
+        ///   · **DT 刀杀**：`ExecuteCabinet/Pond/OccultTrick` → `StartDeadlyTrickCommon` → `OnDead`
+        ///     —— **完全不经过 `OnDamaged`**，所以 `HitHook` 对它无效。
+        ///   实测症状：一局里 2 幕杀人**全是 DT** ⇒ `HitHook` 一次都没跑 ⇒ 客户端手里只有
+        ///   原版自己发的那份快照（key = `SurviveTime`），而我们索取时用的是 `_nextKey`
+        ///   ⇒ `no tape for RecordTime=0` ⇒ 全部降级成服务端合成。
+        ///
+        /// ⇒ **key 一律由 mod 分配**，不用原版的 `RecordTime` —— 这样"每个事件点由 mod 登记、
+        ///   结算时用同一个 key 索取"是唯一规则，不依赖原版实现细节（原版也会发它自己那份，
+        ///   多存一份无害）。这也是"独立性与解释性"的取舍：宁可多一份快照，也不要两套 key 混用。
+        /// </summary>
+        private static void NoteHit(int victim, int attackerId, string what)
+        {
+            if (victim <= 0 || attackerId <= 0)
+                return;
+            if (PendingHit.ContainsKey(victim))
+                return;                       // 同一受害者只记第一次（多段伤害会重复触发）
+
+            int key = _nextKey++;
+            PendingHit[victim] = new Hit { Time = Now(), Key = key, Victim = victim };
+            NotifyRecorder(key, attackerId, what);
+        }
+
+        /// <summary>
+        /// 「普通刀杀」—— `UseWeapon` → `OnDamaged`。它内部会调 `OnDead`，所以这一刻就是事件时刻。
+        /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "OnDamaged")]
         internal static class HitHook
         {
@@ -386,20 +416,37 @@ namespace HideAndSeek.Features.Replay
             {
                 if (!Armed)
                     return;
-                int victim = __instance?.PublicInfo?.PlayerId ?? 0;
-                if (victim <= 0 || attacker?.PublicInfo == null)
+                if (attacker?.PublicInfo == null)
                     return;
-                if (PendingHit.ContainsKey(victim))
-                    return;                       // 同一受害者只记第一次（多段伤害会重复触发）
+                int victim = __instance?.PublicInfo?.PlayerId ?? 0;
+                NoteHit(victim, attacker.PublicInfo.PlayerId,
+                    $"普通刀杀 #{attacker.PublicInfo.PlayerId} → #{victim}");
+            }
+        }
 
-                int key = _nextKey++;
-                PendingHit[victim] = new Hit { Time = Now(), Key = key, Victim = victim };
-
-                // 录制者 = 凶手本人（客户端磁带录的是他自己的视角）
-                // ⚠ 走 `NotifyRecorder` —— 全模块**只有那一处**发 `S_RECORD_REPLAY`，
-                //   成功/失败都留痕（曾散成两处，导致诊断漏了一半、排查时反被误导）。
-                NotifyRecorder(key, attacker.PublicInfo.PlayerId,
-                    $"杀人 #{attacker.PublicInfo.PlayerId} → #{victim}");
+        /// <summary>
+        /// 「**DT 刀杀**」—— 它**不经过 `OnDamaged`**，必须单独补登记点。
+        ///
+        /// 服务端入口是 `Player.UseDeadlyTrick(C_DEADLY_TRICK)`（:176314）：它构造
+        /// `S_DEADLY_TRICK` 广播、并走 `StartDeadlyTrickCommon` ⇒ 约 1.8 秒后 `OnDead`。
+        /// 而 `OnDead` 正是 `KillHook` 登记幕的地方 ⇒ 只要在这里把 key 备好，
+        /// `KillHook` 就能取到 mod 自己那个（否则它会走 `else` 分支另分配一个，
+        /// 而客户端手里没有那个 key ⇒ 该幕拿不到磁带）。
+        ///
+        /// ⚠ **拖尸**（`UseCorpseDeadlyTrick`）不在这里登记：那条路径上人**早就死了**、
+        ///   `OnDead` 不会再触发 ⇒ 分配出去的 key 没人消费，只会让 `PendingHit` 留垃圾。
+        ///   拖尸的"帧"由 `BroadcastHook` 记 `S_DEADLY_TRICK` 负责，与"幕"无关。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "UseDeadlyTrick", new[] { typeof(C_DEADLY_TRICK) })]
+        internal static class DeadlyTrickRecordHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance, C_DEADLY_TRICK pkt)
+            {
+                if (!Armed || pkt == null || __instance?.PublicInfo == null)
+                    return;
+                NoteHit(pkt.TargetId, __instance.PublicInfo.PlayerId,
+                    $"DT 刀杀 #{__instance.PublicInfo.PlayerId} → #{pkt.TargetId}");
             }
         }
 
