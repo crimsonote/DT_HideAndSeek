@@ -219,7 +219,23 @@ namespace HideAndSeek.Features.Replay
 
             var p = FindPlayer(GameRoom.Instance, recorderId);
             if (p?.Session != null)
+            {
                 p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
+
+                // 诊断：**这条必须发出去**，否则客户端不会在 9 秒后把"事件周围的缓冲"
+                // 拍成持久快照 ⇒ 结算时它只会回一段**空带**（客户端日志：
+                // `S_REQUEST_TAPE: no tape for RecordTime=N. Sending empty tape.`）
+                // ⇒ 该幕只能降级成服务端合成。所以成功与失败都要留痕，便于对账。
+                Plugin.Log.LogInfo($"[HS-Replay/诊断] key={key} 已发 S_RECORD_REPLAY → 录制者 #{recorderId}"
+                    + $"（{ActTable.Name(kind)}，窗口={window}）");
+            }
+            else
+            {
+                Plugin.Log.LogWarning($"[HS-Replay/诊断] ⚠ key={key} **未能发出 S_RECORD_REPLAY**"
+                    + $"（{ActTable.Name(kind)}，recorderId=#{recorderId}："
+                    + (p == null ? "找不到该玩家" : "他的 Session 为空（已掉线/假人/已退出）")
+                    + "）⇒ 客户端不会有这一幕的快照，结算时只能走服务端合成。");
+            }
 
             return act;
         }
