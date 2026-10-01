@@ -1001,18 +1001,24 @@ namespace HideAndSeek.Features.Rule
                 new CommandDef
                 {
                     // 「电力系统自检」——不消耗任务进度，但流程繁琐（3 秒验证 → 一次性授权码 → 10~24 秒自检）。
-                    // 次数**不限**（`MaxUses = 0`）；冷却**全房共享**（`UsesPerPlayer = false`
-                    // 在原注释里的语义就是"次数按全房算、冷却也全房共用"）。
                     //
                     // ★ `Side = Any`（**公共组**），**不能**设成 `White`：
                     //   `SideAllows` 不匹配时命令直接"找不到"（:606），黑方就敲不进来 ——
                     //   而需求要的正是"黑方敲了、3 秒后得到『权限验证失败』"这个演出。
                     //   所以它是公共命令：黑方看得到、敲得动，只是流程里会被拒。
+                    //
+                    // ★ 冷却**由本功能自管**（`PowerSelfTestFeature.RemainingCooldown`），
+                    //   所以引擎的两个冷却都留 0：
+                    //     · 引擎的 `Cooldown` / `RoomCooldown` 都在**命令返回时**记账（:806），
+                    //       而本命令"返回"只代表流程**开始**（后面还有授权码与自检两段）；
+                    //       真正的 CD 起点是**流程走完、效果落地**那一刻。
+                    //     · 而且房主要的是"**全房共享**" —— 那个语义在引擎的 `RoomCooldown` 上，
+                    //       而 `Cooldown` 是"每人一个间隔"，用错就变成各算各的。
                     Name = "maint", Aliases = new[] { "maintenance", "mnt" },
                     Side = CommandSide.Any, Channel = CommandChannel.Public,
                     Action = "Maint", UsesPerPlayer = false, MaxUses = 0,
                     QuietWhenBlocked = true,
-                    Cooldown = (int)(PowerSelfTestFeature.Cooldown?.Value ?? 180f),
+                    Cooldown = 0, RoomCooldown = 0,
                     IsAvailable = () => PowerSelfTestFeature.Armed
                 },
                 new CommandDef
@@ -1448,6 +1454,11 @@ namespace HideAndSeek.Features.Rule
 
             if (action == "repair")
                 return text.Replace("{cost}", (RepairCostPercent?.Value ?? 10f).ToString("F0"));
+
+            // 「电力系统自检」的冷却由功能自管（引擎字段留 0，好把记账点延后到"流程完成"），
+            // 所以 {cd} 必须拿配置值来填，否则 /help 里会显示成 "-"。
+            if (action == "maint")
+                return text.Replace("{cd}", (PowerSelfTestFeature.Cooldown?.Value ?? 180f).ToString("F0"));
 
             return text;
         }
@@ -2022,6 +2033,24 @@ namespace HideAndSeek.Features.Rule
 
             int pid = info.PlayerId;
 
+            // ⓪ 全房共享冷却 —— 起点是"上一次流程**真正完成**"那一刻（`StartCooldown`），
+            //    而不是"上次敲命令"。所以被拒（黑方）/ 超时 / 算错 / 换位置 这些路径
+            //    都**不吃 CD**，可以立刻重试；只有效果真的落地了才开始计时。
+            //    ⚠ 顺序：在"等这个玩家交授权码"之前判 —— 否则流程走到一半就会被自己的 CD 挡掉。
+            //      真正的流程已持有 `_selfTest`，此时 CD 一般也没开始（上一次完成才会置它），
+            //      但万一并发（旧流程刚完成、新流程已开）也要让进行中的那次优先。
+            if (_selfTest == null)
+            {
+                float cdLeft = PowerSelfTestFeature.RemainingCooldown();
+                if (cdLeft > 0f)
+                {
+                    int left = (int)global::System.Math.Ceiling(cdLeft);
+                    Reply(player, deviceId, channel,
+                        T("RoomCooldown", "name", "maint", "sec", left.ToString()));
+                    return true;
+                }
+            }
+
             // ① 正在等这个玩家交授权码 ⇒ 这次输入就是授权码（一次性：无论对错都作废）
             if (_selfTest != null && _selfTest.PlayerId == pid && _selfTest.WaitingCode)
             {
@@ -2196,6 +2225,10 @@ namespace HideAndSeek.Features.Rule
                 PowerSelfTestFeature.ApplyNormal();
                 Reply(player, dev, ch, T("SelfTestOk"));
             }
+
+            // ★ 全房共享冷却**从这里开始** —— 效果已经落地，才算"一次有效流程完成"。
+            //   失败路径（黑方被拒 / 超时 / 算错 / 换位置 / 退局）都不调用它，所以不吃 CD。
+            PowerSelfTestFeature.StartCooldown();
         }
 
         // ══ 任务进度读写 ══════════════════════════════════════════════

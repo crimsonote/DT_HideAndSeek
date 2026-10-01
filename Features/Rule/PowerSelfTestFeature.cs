@@ -59,6 +59,33 @@ namespace HideAndSeek.Features.Rule
         /// <summary>抑制窗口的截止时刻（房主时钟）。在此之前 `StartFuseboxSabotage` 会被顺延。</summary>
         private static float _suppressUntil = -1f;
 
+        /// <summary>
+        /// **全房共享冷却**的截止时刻（房主时钟）。
+        ///
+        /// 为什么不让命令引擎管：引擎的 `Cooldown`/`RoomCooldown` 都在**命令返回时**记账，
+        /// 而本命令返回只代表流程**开始** —— 后面还有"等授权码"和"等自检"两段，
+        /// 中途可能被拒/超时/算错而根本没产生效果。房主的口径是
+        /// "**一次有效流程完成后**才进 CD"，所以起点必须由 <see cref="StartCooldown"/> 手动打。
+        ///
+        /// 用 `Managers.Game.ClientTime`（每局从 0 重新计）⇒ **换局自动失效**，不需要额外重置。
+        /// </summary>
+        private static float _roomCdUntil = -1f;
+
+        /// <summary>剩余冷却秒数；返回 0 表示不在冷却中。</summary>
+        public static float RemainingCooldown()
+        {
+            float left = _roomCdUntil - Now();
+            return left > 0f ? left : 0f;
+        }
+
+        /// <summary>流程**真正完成**（效果已落地）时才开始计时。失败/中止的路径不该调用它。</summary>
+        public static void StartCooldown()
+        {
+            float cd = Cooldown?.Value ?? 180f;
+            if (cd > 0f)
+                _roomCdUntil = Now() + cd;
+        }
+
         internal static bool Armed => !ModeRuntime.Bypass && Diagnostics.IsLoaded("PowerSelfTest");
 
         private static float Now()
