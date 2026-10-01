@@ -533,11 +533,30 @@ namespace HideAndSeek.Features.Replay
         [HarmonyPatch(typeof(GameRoom), "Broadcast", new[] { typeof(IMessage), typeof(int) })]
         internal static class BroadcastHook
         {
-            [HarmonyPostfix]
-            private static void Postfix(IMessage packet)
+            // ⚠ 必须是 **Prefix**（原来是 Postfix）：回放期间要**原地改包里的 `Phase`**（见下），
+            //   包一旦发出去就改不了了。返回 void ⇒ 原方法照常执行，只是包被我们改过了。
+            [HarmonyPrefix]
+            private static void Prefix(IMessage packet)
             {
                 if (!Armed || packet == null)
                     return;
+
+                // ★★ **回放期间把快照里的 `Phase` 改成 `Trial`** —— 消灭"客户端 Trial / 服务端 Survive"分裂态。
+                //
+                //   为什么改快照而不是改服务端 `_state`：`EnsureServerSurvive` 刻意让服务端留在 `Survive`
+                //   （`TrialTick` 会接管状态机并广播讨论/投票界面；`GameOver` 也要求它在 Survive），
+                //   那条不能动。而 guest 的相位看门狗读的是**快照里的 `Phase`**
+                //   （`HostRuntime.BroadcastSnapshot` 里 `Phase = (int)GameRoom.Instance.State`，DummyClient:159748），
+                //   两者不一致满 5 秒 ⇒ `UpdatePhaseConvergence` 强制 `ApplyStateInstant(Survive)`
+                //   （decomp:34930-34943），而它顺手 `CompleteWatchdog.CompleteAndSend()`
+                //   （decomp:38696-38715）⇒ **一个与回放无关的 ack** 命中 first-ack grace
+                //   ⇒ 全场回放只播一幕就被掐断。让 Phase 一致，这条链从一开始就不会启动。
+                if (packet is S_STATE_SNAPSHOT snap)
+                {
+                    if (ReplayDirector.Current == ReplayDirector.Phase.Playing)
+                        snap.Phase = (int)EGameState.Trial;
+                    return;
+                }
 
                 if (packet is S_PLAY_EFFECT fx)
                 {

@@ -301,7 +301,11 @@ namespace HideAndSeek.Features.Replay
                 //         ⇒ 服务端不在 Survive，结算那一步反而不执行。
                 //   只让客户端进 Trial 就同时避开这两条。
                 Plugin.Log.LogInfo($"[HS-Replay] 先让客户端建立回放 UI（{All.Count} 幕）。");
-                room.WaitCompletePacket(WaitIntroThenReplay, room.CompleteWaitCount(), 8000, 1500);
+
+                // ★ **这里也不等回执**：原来用 `WaitCompletePacket(…, 8000, 1500)`，
+                //   而它的 1500ms 同样是"第一个回执到达后就收尾" —— 触发源可能是相位收敛发来的
+                //   无关 ack（见下面 `Replay` 那处的完整说明）。给客户端一个固定的建 UI 时间即可。
+                room.PushAfter(800, WaitIntroThenReplay);
                 room.Broadcast(new S_CHANGE_GAME_STATE { State = EGameState.Trial });
             }
             catch (Exception ex)
@@ -363,8 +367,23 @@ namespace HideAndSeek.Features.Replay
                 Plugin.Log.LogInfo($"[HS-Replay] 广播 Replay 状态：已有磁带 {_got} 段 / 服务端合成 {_synth} 段 / "
                     + $"占位 {_placeholder} 段，预算 {budget}ms。");
 
-                // 客户端放完会在 `RecordManager.Stop()` 里 `CompleteAndSend()`；第一个回执到达后再宽限一会儿。
-                room.WaitCompletePacket(() => Finish("客户端回执/超时"), room.CompleteWaitCount(), budget, 4000);
+                // ★ **结束时刻由服务端预算单方面决定**，不等任何客户端的回执。
+                //
+                //   原实现：`WaitCompletePacket(() => Finish(...), CompleteWaitCount(), budget, 4000)`
+                //   —— 它的语义是"**第一个回执到达后，再等 4000ms 就强制收尾**"（decomp:173031-173045），
+                //   而那个 4000ms 就是本次"联机回放只播一幕"的直接执行者：
+                //     · guest 因为"客户端 Trial / 服务端 Survive"分裂满 5 秒被相位看门狗强制
+                //       `ApplyStateInstant(Survive)`（decomp:34930-34943）；
+                //     · 而 `ApplyStateInstant` 里顺手 `CompleteWatchdog.CompleteAndSend()`
+                //       （decomp:38696-38715）⇒ 发回一个**与回放无关**的 ack；
+                //     · 服务端把它当成"有人放完了"，4000ms 后 `ForceComplete` ⇒ 全场被掐断。
+                //   实测（子会话量录屏）：真人局回放 ≈4 秒、假人局 ≈18 秒 —— 与这条链吻合。
+                //
+                //   ⇒ 现在只等预算：谁发什么回执都不影响。预算本身已经是"按段数 × 1.6 + 固定余量"
+                //     估出来的宽松值（`EstimateBudgetMs`），播完的人多等几秒，好过任何人被中途掐断。
+                //     服务端到点推 `TotalResult` 后，客户端的 `EndReplay` 若发现还在播会**强制 `Stop()`**
+                //     （decomp:71453）⇒ 所有人一起收尾，不会出现"这台结算了、那台还在播"。
+                room.PushAfter(budget, () => Finish("预算到点"));
                 room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Replay });
             }
             catch (Exception ex)
