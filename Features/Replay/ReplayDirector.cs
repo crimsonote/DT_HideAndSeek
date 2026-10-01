@@ -199,8 +199,12 @@ namespace HideAndSeek.Features.Replay
             {
                 var act = p.Act;
                 var player = FindPlayer(room, act.RecorderId);
-                if (act.RecorderId <= 0 || player?.Session == null)
-                    continue;   // 假人/已退出：没有客户端可问，稍后走服务端合成
+                // ⚠ 判据用 `ReplayFeature.HasClient`（含 `!IsDummy`），**不是** `Session != null` ——
+                //   假人的 Session 是空壳（`HostPeerSession(null)`，`Send` 走 `_underlying?.Send`
+                //   静默丢弃，decomp:172552），只看 Session 会给它登记一个**永远不收敛**的 Pending 槽位：
+                //   单人局"满台账"看起来完全正常，联机局才暴露。见 `ReplayFeature.HasClient` 的说明。
+                if (act.RecorderId <= 0 || !ReplayFeature.HasClient(player))
+                    continue;   // 没有客户端可问（假人 / 已退出）⇒ 稍后走服务端合成
 
                 // ⚠ **不要在这里补发 `S_RECORD_REPLAY`**。
                 //   它必须在**事件发生时就发出去**，客户端才会在 9 秒后把"事件周围的缓冲"拍成

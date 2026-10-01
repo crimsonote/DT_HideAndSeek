@@ -213,6 +213,22 @@ namespace HideAndSeek.Features.Replay
         ///   如果拖到索取前才发，只会拿到"当前 14 秒缓冲" ⇒ 早期事件已经滚出缓冲。
         /// </summary>
         /// <summary>
+        /// <summary>
+        /// 这个人有没有「**真的能收包**的客户端」。
+        ///
+        /// ⚠ **不能只看 `Session != null`**：
+        ///   · `Player.Session` **永远非 null**（构造函数里就赋值，decomp:175703）⇒ 那个判据区分不了任何东西；
+        ///   · **假人的 Session 是空壳** —— `new HostPeerSession(null)`（`DummyManager.cs:116-123`），
+        ///     而它的 `Send` 是 `_underlying?.Send(packet)`（decomp:172552）⇒ **静默丢弃、不报错**。
+        ///   于是"给假人发 `S_RECORD_REPLAY`"会走进"成功"分支、日志一片正常，而客户端什么都没收到。
+        ///
+        /// ★ 这条判据必须准确，否则**单人测试会走一条与联机不同的代码路径**
+        ///   （`recorderId=0` / `Pending` 不收敛 / 占位降级这些分支永远执行不到），
+        ///   于是"单人完美、联机全炸"就成了必然 —— 这是本项目最贵的一次教训。
+        /// </summary>
+        internal static bool HasClient(GamePlayer p)
+            => p != null && !p.IsDummy && p.Session != null;
+
         /// 把"新 key"告知**录制者客户端** —— 客户端靠它在 9 秒后把"事件周围的缓冲"
         /// 拍成**持久快照**（`ReserveSaveTape`），结算时（可能几分钟后）索取才拿得回素材。
         ///
@@ -224,7 +240,7 @@ namespace HideAndSeek.Features.Replay
         private static void NotifyRecorder(int key, int recorderId, string what)
         {
             var p = FindPlayer(GameRoom.Instance, recorderId);
-            if (p?.Session != null)
+            if (HasClient(p))
             {
                 p.Session.Send(new S_RECORD_REPLAY { RecordTime = key });
                 Plugin.Log.LogInfo($"[HS-Replay/诊断] key={key} 已发 S_RECORD_REPLAY → 录制者 #{recorderId}（{what}）");
@@ -233,7 +249,7 @@ namespace HideAndSeek.Features.Replay
 
             Plugin.Log.LogWarning($"[HS-Replay/诊断] ⚠ key={key} **未能发出 S_RECORD_REPLAY**"
                 + $"（{what}，recorderId=#{recorderId}："
-                + (p == null ? "找不到该玩家" : "他的 Session 为空（已掉线/假人/已退出）")
+                + (p == null ? "找不到该玩家" : (p.IsDummy ? "他是假人（没有客户端）" : "他的 Session 为空（已掉线/已退出）"))
                 + "）⇒ 客户端不会有这一幕的快照，结算时只能走服务端合成。");
         }
 
@@ -572,7 +588,7 @@ namespace HideAndSeek.Features.Replay
                         break;
                     var seg = ReplayWindow.Tile(seq, subjects.Count, window, 1.5f);
                     var p = FindPlayer(room, id);
-                    Add(ActKind.SelfDestruct, id, p?.Session != null ? id : 0, seg, $"被处决者 #{id}");
+                    Add(ActKind.SelfDestruct, id, HasClient(p) ? id : 0, seg, $"被处决者 #{id}");
                     seq++;
                 }
 
@@ -614,7 +630,7 @@ namespace HideAndSeek.Features.Replay
                     if (Acts.Count >= (MaxClips?.Value ?? 12))
                         break;
                     var p = FindPlayer(room, id);
-                    Add(ActKind.Tour, id, p?.Session != null ? id : 0, window, $"幸存者 #{id}");
+                    Add(ActKind.Tour, id, HasClient(p) ? id : 0, window, $"幸存者 #{id}");
                 }
 
                 if (blackId > 0 && Acts.Count < (MaxClips?.Value ?? 12))
@@ -738,7 +754,7 @@ namespace HideAndSeek.Features.Replay
                     if (Acts.Count >= max)
                         break;
                     var p = FindPlayer(room, id);
-                    Add(ActKind.Final, id, p?.Session != null ? id : 0,
+                    Add(ActKind.Final, id, HasClient(p) ? id : 0,
                         ActTable.Plain(now, EndBeforeSec?.Value ?? 3f, EndAfterSec?.Value ?? 1f), $"存活者 #{id}");
                     seq++;
                 }
