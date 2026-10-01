@@ -350,14 +350,17 @@ namespace HideAndSeek.Features.Replay
             //     那台机器的 id 改成 0 ⇒ 它查的是 `Players[0]` ⇒ 仍走"只改位置"那条。
             //   · 落点取"主角位置 + FarOffset"：屏幕可见半径 ≈ 694（`(480+200)/0.98`），
             //     2000 足够让它完全离开画面；`HandleRespawn` 不做碰撞检测，所以越界也无害。
-            //   · 时间戳略晚于窗口起点：首帧（index 0）必须仍是 `SpawnShot`，index 1 必须仍是
-            //     时间编辑（客户端拿 `tape[1].TimeStamp` 当 `_currentTime` 起点）。
+            //   · 时间戳用 `start`（与 index 1 的时间编辑**同值**）——
+            //     不能写 `start + ε`：插入点是 index 2，而它后面那帧的时间戳可能已经略大于
+            //     `start`（实测 24.512 vs 24.532）⇒ 触发"时间戳非递减"自检 ⇒ 整幕被判无效、
+            //     降级成占位磁带（客户端表现是"所有幕快速刷过"）。
+            //     同值不逆序，而客户端按索引顺序执行 ⇒ 先后仍然确定。
             if (head.PlayerId > 0 && head.Pos != null)
             {
                 result.Insert(2, new SnapShot
                 {
                     Type = ESnapShotType.RespawnShot,
-                    TimeStamp = start + 0.02f,
+                    TimeStamp = start,
                     Respawn = new RespawnSnapShot
                     {
                         PlayerId = head.PlayerId,
