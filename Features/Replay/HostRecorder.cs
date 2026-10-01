@@ -81,6 +81,73 @@ namespace HideAndSeek.Features.Replay
             public PosInfo Pos;
         }
 
+        /// <summary>
+        /// **一幕的采样快照** —— 独立于主缓冲存储，这才是"按需裁剪"的正解。
+        ///
+        /// 客户端早就在这么做：收到 `S_RECORD_REPLAY` 后 9 秒，它把当时的录制缓冲
+        /// **拍成快照并长期保存**，之后缓冲怎么滚都不影响它（`ReserveSaveTape`）。
+        /// 服务端缺的正是这一层 —— 采样只住在主缓冲里，于是**主缓冲的裁剪能把"结算时要用的幕"剪掉**。
+        /// 实测：把 `MaxRows` 调小后，"按数量裁"那个分支不尊重保护名单，
+        /// 直接丢掉了最早那几幕的帧 ⇒ 自爆幕消失、剪影候选全空 ⇒ 降级到主角。
+        ///
+        /// 分工：
+        ///   · 主缓冲（`ById`）—— 保留策略照旧，负责"最近一段"的查询（`At`/`Range`/`Roster`）；
+        ///   · 快照（本类）—— 事件发生时开始累积 `[事件−before, 事件+after]`，`To` 之后**封存**，
+        ///     此后不再更新、**也不受主缓冲裁剪影响**。结算时从这里取。
+        ///
+        /// ⚠ **第一步只积累，不改任何现有查询路径** —— `Trim`/`Range`/`At` 全不动，
+        ///   所以现有行为一字不变（最坏只是多占一点内存）。验证积累正常后，再让 `Range` 读它。
+        /// </summary>
+        private sealed class Snap
+        {
+            public int Key;
+            public float From;
+            public float To;
+            /// <summary>`To` 之后置位 ⇒ 不再接收新帧（这一幕的素材已齐）。</summary>
+            public bool Sealed;
+            /// <summary>按玩家分组 —— 与主缓冲同构，便于日后直接替换查询。</summary>
+            public readonly Dictionary<int, List<Row>> Rows = new Dictionary<int, List<Row>>();
+            public int Count;
+        }
+
+        private static readonly List<Snap> _snaps = new List<Snap>();
+
+        /// <summary>
+        /// 事件发生时登记一份快照（窗口此刻已确定）。由 `ReplayFeature.AddWithKey` 调用。
+        /// 同一 key 重复登记时忽略（幂等）。
+        /// </summary>
+        public static void BeginSnap(int key, float from, float to)
+        {
+            if (to <= from)
+                return;
+            for (int i = 0; i < _snaps.Count; i++)
+            {
+                if (_snaps[i].Key == key)
+                    return;
+            }
+            _snaps.Add(new Snap { Key = key, From = from, To = to });
+        }
+
+        /// <summary>快照积累情况的诊断行（写日志用）。</summary>
+        public static string SnapStats()
+        {
+            if (_snaps.Count == 0)
+                return "快照 0 份";
+            var sb = new global::System.Text.StringBuilder();
+            sb.Append("快照 ").Append(_snaps.Count).Append(" 份：");
+            for (int i = 0; i < _snaps.Count; i++)
+            {
+                var s = _snaps[i];
+                if (i > 0)
+                    sb.Append(" ｜ ");
+                sb.Append('#').Append(s.Key).Append(' ')
+                  .Append(s.Sealed ? "已封存" : "累积中")
+                  .Append(' ').Append(s.Count).Append(" 帧")
+                  .Append('/').Append(s.Rows.Count).Append(" 人");
+            }
+            return sb.ToString();
+        }
+
         private static readonly Dictionary<int, List<Row>> ById = new Dictionary<int, List<Row>>();
         private static readonly List<Bomb> Bombs = new List<Bomb>();
         private static int _rowCount;
@@ -91,6 +158,7 @@ namespace HideAndSeek.Features.Replay
         {
             ById.Clear();
             Bombs.Clear();
+            _snaps.Clear();
             _rowCount = 0;
             _lastTrim = -999f;
             _newestTime = -999f;
@@ -143,6 +211,19 @@ namespace HideAndSeek.Features.Replay
                 list.Add(row);
                 _rowCount++;
                 _newestTime = now;
+
+                // ★ **同时分流进"覆盖当前时刻的活跃快照"** —— 这一幕的素材从此有了一份独立副本，
+                //   主缓冲之后怎么裁都动不到它（`Row` 只读，`At()` 返回前会 Clone，共享实例安全）。
+                for (int i = 0; i < _snaps.Count; i++)
+                {
+                    var s = _snaps[i];
+                    if (s.Sealed || now < s.From || now > s.To)
+                        continue;
+                    if (!s.Rows.TryGetValue(row.Id, out var sl))
+                        s.Rows[row.Id] = sl = new List<Row>(64);
+                    sl.Add(row);
+                    s.Count++;
+                }
 
                 // ★★ 触发条件**必须只按时间**，而且要节流。
                 //    曾经写成 `|| _rowCount > MaxRows`：帧数一旦顶到上限，这个条件就**恒真**
@@ -486,6 +567,14 @@ namespace HideAndSeek.Features.Replay
         /// </summary>
         private static void Trim(float now)
         {
+            // ★ **封存已过窗口的快照**：`To` 之后这一幕的素材就齐了，不再接收新帧。
+            //   （本步只加这一句，裁剪逻辑一个字不改 —— 快照不参与裁剪，只独立积累。）
+            for (int i = 0; i < _snaps.Count; i++)
+            {
+                if (!_snaps[i].Sealed && now > _snaps[i].To)
+                    _snaps[i].Sealed = true;
+            }
+
             float keepFrom = now - KeepSeconds;
             int perPlayerCap = Math.Max(64, MaxRows / Math.Max(1, ById.Count));
 

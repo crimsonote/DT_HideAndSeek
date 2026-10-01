@@ -150,6 +150,10 @@ namespace HideAndSeek.Features.Replay
 
                 Plugin.Log.LogInfo($"[HS-Replay] 开始回放，共 {All.Count} 幕：{DescribePlan()}");
 
+                // 诊断：采样快照的积累情况。"按需裁剪"第一步只积累（查询仍走主缓冲），
+                // 这一行用来确认快照真的在攒、并且到点封存了。
+                Plugin.Log.LogInfo($"[HS-Replay/诊断] {HostRecorder.SnapStats()}");
+
                 // ② 索要素材（每 key 单发 —— 一次塞多个 key 会让客户端按它自己的硬编码窗口裁，裁出空带）
                 FetchTapes(room);
 

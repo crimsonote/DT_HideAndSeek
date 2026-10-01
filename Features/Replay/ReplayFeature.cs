@@ -194,6 +194,13 @@ namespace HideAndSeek.Features.Replay
                 Note = note,
             };
             Acts.Add(act);
+
+            // ★ **事件发生时开一份采样快照**（客户端 `ReserveSaveTape` 的服务端对应物）。
+            //   窗口此刻已确定，快照从这里开始累积 `[事件−before, 事件+after]`，`To` 之后封存，
+            //   此后**不受主缓冲裁剪影响** —— 结算时（可能几分钟后）仍拿得到这一幕的素材。
+            //   ⚠ 本步只积累，`Range`/`Trim` 尚未改用它，所以现有行为不变。
+            HostRecorder.BeginSnap(key, window.From, window.To);
+
             return act;
         }
 
