@@ -830,12 +830,22 @@ namespace HideAndSeek.Features.Replay
             var head = own.Clone();
             head.PlayerId = silhouetteId;
             head.State = EPlayerState.Idle;
-            // ★ `IsGhost = true`：剪影槽位必须是**看不见的**。
-            //   他的"不可见"靠两条：客户端 `ChangeSilhouette(true)` 涂黑 ＋ `RefreshGhostVisual` 关掉骨架。
-            //   ⚠ 前提是**剪影绝不能是主角** —— 否则观众会看到"隐形的人在挥刀"。
-            //   那个前提现在由 `ActTable.VisibleIn` 的判据（有 MoveShot 才算在画面里）保证；
-            //   一旦它又坏掉，`SilhouetteResolver.Fallback` 会打 Warning。
-            head.IsGhost = true;
+
+            // ★ `IsGhost` 的判据：**当且仅当"剪影就是镜头宿主本人"时为 false**（即用户口径的降级）。
+            //
+            //   对照降级链（`SilhouetteResolver`，优先级从高到低）：
+            //     ① 已死 + 不在画面      ⇒ 涂黑无害（他不在画面里）⇒ `true`（幽灵化，不出现）
+            //     ② **不在场的活人**      ⇒ **同样可以捞过来当剪影，优先级高于黑方自己**
+            //                              ⇒ 他也不在画面里 ⇒ 涂黑无害 ⇒ `true`
+            //     ③ **黑方自己**（降级）  ⇒ **他在画面里**（他就是镜头宿主）⇒ `false`
+            //                              ⇒ 只留客户端 `ChangeSilhouette(true)` 的**黑色滤镜**，
+            //                                以"黑影"形态留在画面里 —— **这才是原版方案**
+            //                              ⇒ 只在"所有人都在幕里出现过、一个不在场的都挑不出来"时才走到
+            //
+            //   ⚠ 判据**不是**"剪影是不是活人"：② 本身就是活人（只是不在场），他照样要 `true`。
+            //   ⚠ 也不能一律 `true`：那会在涂黑之上**再叠一层幽灵化** ⇒ 降级时凶手彻底消失
+            //     （用户口径："降级原版方案是暴露剪影黑色滤镜，而不是幽灵化消失"）。
+            head.IsGhost = silhouetteId != act.SubjectId;
 
             if (subject?.Pos != null)
                 head.Pos = subject.Pos.Clone();
