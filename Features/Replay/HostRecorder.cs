@@ -31,20 +31,33 @@ namespace HideAndSeek.Features.Replay
     internal static class HostRecorder
     {
         /// <summary>
-        /// 环形缓冲时长 —— 只需覆盖**结算类的那几秒**（自爆 6.5s + 黑方收尾 3s），留 60 秒足够。
+        /// 环形缓冲时长 —— **必须覆盖整局**。
         ///
-        /// ⚠ **曾经设成 300 秒（"覆盖整局"），结果造成严重卡顿** —— 见 <see cref="Trim"/> 与
-        ///   `NoteMove` 里的节流注释：`MaxRows` 被顶满后触发条件恒真 ⇒ `Trim` 每帧遍历几万帧
-        ///   ⇒ 主线程一帧 5.7 秒（Dissonance 报 frame skip）⇒ 游戏被判定无响应。
+        /// 为什么不是"只需要覆盖结算类的那几秒"（曾经这么以为，设成 60 秒，那是错的）：
+        ///   回放是在**结算时**才组装的，而一幕的事件的发生时刻可能远早于此
+        ///   —— 实测那一局：第一幕的事件在 `ClientTime = 27.5`，结算在 116.5，**相隔 89 秒**。
+        ///   60 秒的缓冲早已把那一段裁光 ⇒ `At(id, 窗口起点)` 走 `AtOrBefore` 的兜底返回 `rows[0]`
+        ///   —— 而那是**该玩家死之后**的帧（`IsGhost = true`）
+        ///   ⇒ `SilhouetteResolver` 把它判成"起点即幽灵" ⇒ **受害者被选为剪影**
+        ///   ⇒ 涂黑 + 身体隐藏 ⇒ 玩家看到"砍死虚空、然后凭空冒出尸体"。
         ///
-        /// ⚠ 而**根本不需要**覆盖整局：早期事件（几十秒前的那次刀杀）的素材由
-        ///   **客户端 9 秒快照**提供（客户端收到 `S_RECORD_REPLAY` 后会把当时的录制缓冲存成
-        ///   持久快照）—— 见 `ReplayFeature.HitHook`。房主侧采样只是"客户端给不了时"的兜底。
+        /// 曾经以为"早期事件由客户端的 9 秒快照兜底、房主采样只是备用"，所以 60 秒够 ——
+        /// **那个假设不成立**：客户端录制会漏人（实测日志：`参与者 #4 不在磁带里 ⇒ 由服务端补进画面`），
+        /// 此时该玩家的位置**只能**取自房主采样。
+        ///
+        /// ⚠ 历史上把这里设成 300 秒确实引发过严重卡顿，但**根因不在这个值**，而是
+        ///   `NoteMove` 里的触发条件写成了 `|| _rowCount > MaxRows` —— 帧数一旦顶到上限，
+        ///   该条件恒真 ⇒ `Trim` **每帧**遍历几万帧 ⇒ 主线程一帧 5.7 秒（Dissonance 报 frame skip）。
+        ///   现在触发只按时间且 1 秒节流，"超上限"由 `Trim` 内部按数量兜底处理 ⇒ 可以放心放大窗口。
         /// </summary>
-        private const float KeepSeconds = 60f;
+        private const float KeepSeconds = 400f;
 
-        /// <summary>硬上限。超过就**按数量**裁掉最老的（不能只靠时间 —— 帧率高于预期时会空转）。</summary>
-        private const int MaxRows = 12000;
+        /// <summary>
+        /// 硬上限。超过就**按数量**裁掉最老的（不能只靠时间 —— 帧率高于预期时会空转）。
+        /// 取值依据：`KeepSeconds` 400 × 9 帧/秒/人 × 6 人 ≈ 21600，留一点余量。
+        /// 内存 ≈ 24000 × ~200B ≈ 4.6 MB。
+        /// </summary>
+        private const int MaxRows = 24000;
 
         /// <summary>一次采样 —— 某个玩家在某个时刻的样子。</summary>
         private sealed class Row
@@ -209,8 +222,13 @@ namespace HideAndSeek.Features.Replay
         /// 某人在 <paramref name="t"/> 时刻（或之前最近一刻）的样子。
         /// 返回的是**新实例**（调用方可以随意改，不会污染缓冲）。
         ///
-        /// 注意保留策略：该时刻之前没有任何采样时，返回他**最早**的一帧（而不是 null）——
-        /// 因为"他早就站在那儿了"比"他不在场"更接近事实。
+        /// ⚠ **该时刻之前没有任何采样时返回 null**（不再退用"最早的一帧"）。
+        ///   旧理由是"他早就站在那儿了，比'他不在场'更接近事实"—— 听起来合理，但它混淆了两件事：
+        ///   ① "那时他已在场，只是没动" 与 ② "那时他还没有任何数据"（缓冲被裁过、或他刚进场）。
+        ///   而退用最早的一帧更严重的问题是**拿未来冒充过去**：实测见过返回的帧属于
+        ///   **该玩家死亡之后**（`IsGhost = true`）⇒ 上层据此判他"起点即幽灵"
+        ///   ⇒ 本幕受害者被选为剪影 ⇒ 涂黑 + 隐形 ⇒ "砍死虚空、凭空冒出尸体"。
+        ///   ⇒ 宁可返回 null，让"取不到"显式暴露。
         /// </summary>
         public static PublicPlayerInfo At(int id, float t, out float velocity)
             => At(id, t, out velocity, out _);
@@ -218,8 +236,8 @@ namespace HideAndSeek.Features.Replay
         /// <summary>
         /// 取"≤ t 的最近一帧"。
         /// <paramref name="atTime"/> 回传**那一帧自己的时间戳** —— 排障用：
-        /// 因为 <see cref="AtOrBefore"/> 在"t 早于所有帧"时会兜底返回 `rows[0]`（最早的一帧），
-        /// 那时拿到的位置与 t 时刻的真实位置相差可以很大。
+        /// 它正常应当 ≤ t；若日志里看到它明显大于 t，就说明当时缓冲覆盖不到该时刻
+        /// （历史上正是靠这一点定位到"缓冲只有 60 秒而事件在 90 秒前"）。
         /// </summary>
         public static PublicPlayerInfo At(int id, float t, out float velocity, out float atTime)
         {
@@ -383,7 +401,19 @@ namespace HideAndSeek.Features.Replay
             catch { return true; }
         }
 
-        /// <summary>找"最后一个 Time &lt;= t"的行（二分）；都比 t 晚就退用最早的。</summary>
+        /// <summary>
+        /// 找"最后一个 Time &lt;= t"的行（二分）；**没有就返回 null**。
+        ///
+        /// ★ 返回 null 的语义是"这个时刻还没有任何数据"，**不是**"拿最早的一帧凑数"。
+        ///   曾经的写法是"都比 t 晚就退用最早的（`rows[0]`）"—— 那等于把**未来**的状态
+        ///   当成 t 时刻的状态，而调用方完全无从察觉。实测后果：窗口起点早于某人的所有帧时
+        ///   （缓冲被裁过、或他刚进场），`At()` 返回的是他**死亡之后**的那一帧（`IsGhost = true`），
+        ///   于是 `SilhouetteResolver` 把他判成"起点即幽灵" ⇒ **本幕的受害者被选为剪影**
+        ///   ⇒ 涂黑 + 身体隐藏 ⇒ 玩家看到"砍死虚空、然后凭空冒出尸体"。
+        ///
+        /// ⇒ 宁可返回 null 让上层显式处理（`VisibleInfos` 跳过该人、`BuildHead` 退用主角、
+        ///   `Roster` 不收他），也不要拿错误的数据把"取不到"盖住。
+        /// </summary>
         private static Row AtOrBefore(List<Row> rows, float t)
         {
             int lo = 0, hi = rows.Count - 1, best = -1;
@@ -400,7 +430,7 @@ namespace HideAndSeek.Features.Replay
                     hi = mid - 1;
                 }
             }
-            return best >= 0 ? rows[best] : rows[0];
+            return best >= 0 ? rows[best] : null;
         }
 
         /// <summary>
