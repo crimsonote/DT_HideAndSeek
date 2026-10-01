@@ -87,9 +87,9 @@ namespace HideAndSeek.Features.Replay
         /// 采一帧。**调用点应该是服务端的 `Player.Move`**（每次收到 `C_MOVE` 之后执行）——
         /// 这样频率与客户端录制同源，而不是像旧实现那样定时 5Hz。
         ///
-        /// 为什么不需要"定时兜底采样"：位置是**状态**而不是事件 ——
-        /// 站着不动的人，他"最后一次移动"那一帧记录的位置**仍然是对的**；
-        /// 查询用"≤ 目标时刻的最近一帧"即可（<see cref="At"/>）。
+        /// ★ **不做状态去重**（详见方法内注释）：`C_MOVE` 每次记一帧、心博每秒再补一帧。
+        ///   曾经的"状态没变就只把时间往后推"会让**不动的人**在缓冲里只剩一帧、且时间戳被推到最新，
+        ///   于是 `Range(from,to)` 按区间筛时什么都取不到 —— 那正是"合成幕一闪而过"的根因。
         /// </summary>
         public static void NoteMove(GamePlayer p)
         {
@@ -113,18 +113,20 @@ namespace HideAndSeek.Features.Replay
                 if (!ById.TryGetValue(row.Id, out var list))
                     ById[row.Id] = list = new List<Row>(64);
 
-                // 位置是状态：连续两次完全一样就没必要再存一帧（省内存，也省查询时的扫描）
-                if (list.Count > 0)
-                {
-                    var last = list[list.Count - 1];
-                    if (SameState(last, row))
-                    {
-                        last.Time = now;         // 只把时间往后推
-                        _newestTime = now;
-                        return;
-                    }
-                }
-
+                // ★ **不做"状态去重"** —— 每次都新增一帧，也就是"定时录帧"，与客户端 `RecordAllType` 同构。
+                //
+                //   曾经的写法是"连续两次状态完全一样就只把 last.Time 往后推、不新增帧"，
+                //   理由是"位置是状态、查询只需 ≤ 目标时刻的最近一帧、还能省内存"。
+                //   **那个理由只对 `At()` 成立，对 `Range()` 是致命的**：
+                //     `last.Time = now` 把一帧的时间戳推到了"最新"，而它的语义变成了
+                //     "这个状态持续到的最新时刻" ⇒ 于是 `Range(from,to)` 按 `Time ∈ [from,to]`
+                //     线性筛时，`now > to` 会直接 `break`，**那一段唯一的一枚素材被跳过**。
+                //   实测症状（用户那一局）：自爆三幕 `samples` 全为空 ⇒ 装配出的帧只剩窗口起点那几枚
+                //   ⇒ 段时长趋近 0 ⇒ "一闪而过"。
+                //   而**不动的人（假人、自爆中的人、站桩玩家）恰恰只有那一帧** ⇒ 必空。
+                //
+                //   定时录帧后帧密度 = 与客户端同源：`C_MOVE` 每 tick 一枚（≈8/秒/人）+ 心博 1/秒/人。
+                //   容量：最坏 6 人 × 9/秒 × `KeepSeconds`(60) ≈ 3240 帧，远低于 `MaxRows`(12000)。
                 list.Add(row);
                 _rowCount++;
                 _newestTime = now;
@@ -147,12 +149,13 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
-        /// 【兜底】把当前所有玩家各记一帧（不管他们有没有移动）。
+        /// 给当前所有玩家各记一帧（不管他们有没有移动）—— 由 `Managers.Update` 上的心博按 **1Hz** 调用。
         ///
-        /// 主采样点挂在 `Player.Move` 上（服务端每次收到 `C_MOVE` 后调用）—— 那保证了
-        /// "有移动就有帧"，而且频率与客户端录制同源。但**假人不主动发包**、站桩玩家也不发包，
-        /// 所以"从未移动过的人"可能一帧都没有。这一路只负责补这个洞，不追高频。
-        /// （`NoteMove` 内部有"状态没变就只把时间往后推"的去重，所以它不会撑大缓冲。）
+        /// ★ 它**不是"兜底"，而是"不动的人唯一的素材来源"**：
+        ///   主采样点在 `Player.Move`（服务端每次收到 `C_MOVE` 后调用），频率与客户端同源；
+        ///   但**假人不发包、站桩玩家不发包、自爆/巡礼期间大家都不动** ——
+        ///   这些情形下全靠这一路按秒计时录帧，否则那一段在缓冲里就是空白。
+        ///   ⇒ 少说话就会重演"合成幕一闪而过"（实测：自爆三幕 `samples` 全空）。
         /// </summary>
         public static void SampleAll()
         {
@@ -289,15 +292,10 @@ namespace HideAndSeek.Features.Replay
         /// <summary>
         /// 取 [from, to] 区间内**每人**的采样，按时间升序 —— 合成世界帧（`HostSynth`）的数据源。
         ///
-        /// ★ **必须先放"窗口起点的那一帧"（AtOrBefore(from)）** —— 这是最容易漏的一环：
-        ///   `NoteMove` 在状态不变时会把**最后一帧的 Time 往后推**（last.Time = now），
-        ///   所以一帧的 Time 表示"**这个状态持续到的最新时刻**"，而不是"状态开始时刻"。
-        ///   ⇒ 缓冲里常见的情形是某人的序列形如 [… , t=117]，而那枚 117 实际代表
-        ///     "从更早某个时刻起位置就没变过"。
-        ///   ⇒ 若只按 r.Time ∈ [from, to] 线性筛，117 > to 会直接 break，
-        ///     于是**这一段一条采样都取不到**（实测：自爆三幕的 samples 全为空 ⇒
-        ///     装配出的帧只剩窗口起点那几枚 ⇒ 段时长趋近 0 ⇒ 观众看到"一闪而过"）。
-        ///   锚帧本身就是"窗口起点时他在哪"，正是这一段唯一需要的素材。
+        /// 采样侧是**定时录帧**（`NoteMove` 不做状态去重，见那里的注释），所以窗口内通常本就有帧。
+        /// 只有一种情形需要兜底：**窗口比心博间隔（1s）还短**，那个人在区间内一帧都没有
+        /// —— 此时用"窗口起点的锚帧"顶上（它的语义就是"那一刻他在哪"）。
+        /// 不补的话 `HostSynth` 只剩 roster/area 帧 ⇒ 段时长塌成 0 ⇒ 观众看到"一闪而过"。
         /// </summary>
         public static List<Sample> Range(float from, float to)
         {
@@ -306,21 +304,9 @@ namespace HideAndSeek.Features.Replay
             {
                 var rows = kv.Value;
                 int n = rows.Count;
+                int before = list.Count;
 
-                // ① 窗口起点的锚帧（AtOrBefore 在"没有更早的帧"时兜底返回 rows[0]）
-                var anchor = AtOrBefore(rows, from);
-                if (anchor != null)
-                {
-                    var a = ToSample(anchor);
-                    // ★ **必须钳到 `from`**：锚帧原始的 `Time` 可能已被 `SameState` 的
-                    //   `last.Time = now` 推到很后面（实测见过 t=117）。它的语义是
-                    //   "窗口起点时他在哪"，所以时间就是 `from`；照搬原值会让帧落到窗口之外
-                    //   ⇒ 跨度被撑成 6.6s、客户端干等到那一刻才结束这一段。
-                    a.Time = from;
-                    list.Add(a);
-                }
-
-                // ② 区间内的帧（rows 按 Time 升序，break 保留；锚帧已单独处理）
+                // 区间内的帧（rows 按 Time 升序，所以 break 成立）
                 for (int i = 0; i < n; i++)
                 {
                     var r = rows[i];
@@ -329,6 +315,21 @@ namespace HideAndSeek.Features.Replay
                     if (r.Time > to)
                         break;
                     list.Add(ToSample(r));
+                }
+
+                // ★ 这个人在区间内一帧都没有 ⇒ 用窗口起点的锚帧兜底。
+                //   **只在此时加**，不是每人无条件加一枚（那会多出一堆同位置的重复 MoveShot）。
+                //   时间戳**钳到 `from`**：锚帧原始 Time 可能落在窗口外（`AtOrBefore` 兜底会给 `rows[0]`），
+                //   照搬会让帧落到窗口之外 —— 早了无所谓，**晚了会把段时长撑长**、客户端干等到那一刻才结束。
+                if (list.Count == before && n > 0)
+                {
+                    var anchor = AtOrBefore(rows, from);
+                    if (anchor != null)
+                    {
+                        var a = ToSample(anchor);
+                        a.Time = from;
+                        list.Add(a);
+                    }
                 }
             }
             list.Sort((a, b) => a.Time.CompareTo(b.Time));
@@ -395,22 +396,6 @@ namespace HideAndSeek.Features.Replay
         {
             try { return p?.CurrentArea?.IsLight ?? true; }
             catch { return true; }
-        }
-
-        /// <summary>两帧是否"看起来一样"（位置/朝向/速度/房间/光照都没变）—— 一样就不必再存。</summary>
-        private static bool SameState(Row a, Row b)
-        {
-            if (a.RoomId != b.RoomId || a.IsLight != b.IsLight)
-                return false;
-            if (Math.Abs(a.Velocity - b.Velocity) > 0.01f)
-                return false;
-            if (a.Info.LookLeft != b.Info.LookLeft)
-                return false;
-            var pa = a.Info.Pos;
-            var pb = b.Info.Pos;
-            if (pa == null || pb == null)
-                return false;
-            return Math.Abs(pa.X - pb.X) < 0.01f && Math.Abs(pa.Y - pb.Y) < 0.01f;
         }
 
         /// <summary>找"最后一个 Time &lt;= t"的行（二分）；都比 t 晚就退用最早的。</summary>
