@@ -857,7 +857,7 @@ namespace HideAndSeek.Features.Replay
             //   ⚠ 判据**不是**"剪影是不是活人"：② 本身就是活人（只是不在场），他照样要 `true`。
             //   ⚠ 也不能一律 `true`：那会在涂黑之上**再叠一层幽灵化** ⇒ 降级时凶手彻底消失
             //     （用户口径："降级原版方案是暴露剪影黑色滤镜，而不是幽灵化消失"）。
-            head.IsGhost = silhouetteId != act.SubjectId;
+            head.IsGhost = SilhouetteResolver.GhostFor(silhouetteId, act.SubjectId);
 
             if (subject?.Pos != null)
                 head.Pos = subject.Pos.Clone();

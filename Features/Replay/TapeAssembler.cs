@@ -175,7 +175,7 @@ namespace HideAndSeek.Features.Replay
             //     幽灵化、彻底消失（实测 bug）。两处判据必须同源 —— 改一处就要改另一处。
             var headInfo = head.Clone();
             headInfo.State = EPlayerState.Idle;   // 别让"躲柜 / 死亡幽灵"这类状态驱动这个看不见的角色
-            headInfo.IsGhost = headInfo.PlayerId != act.SubjectId;
+            headInfo.IsGhost = SilhouetteResolver.GhostFor(headInfo.PlayerId, act.SubjectId);
 
             report.HeadId = headInfo.PlayerId;
 

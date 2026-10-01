@@ -219,6 +219,26 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
+        /// 剪影的 `IsGhost` 该不该为 `true` —— **全模块唯一的判据，别在别处再写一遍**。
+        ///
+        /// 为什么必须唯一：这个字段**有两处会写** ——
+        ///   · `ReplayDirector.BuildHead` 构造剪影的 `PublicPlayerInfo`；
+        ///   · `TapeAssembler.Assemble` 装配首帧时会 `head.Clone()` **再重建一份**。
+        /// 曾经两处各写各的，而装配器那处**无条件写 `true`** ⇒ 把 `BuildHead` 算好的值盖掉
+        /// ⇒ 降级（剪影 = 镜头宿主本人）时黑方被 `RefreshGhostVisual` 关掉骨架、彻底消失（实测 bug）。
+        ///
+        /// 规则（用户口径）：
+        ///   · 剪影**不是**镜头宿主本人 ⇒ `true` ⇒ 幽灵化，让他不可见（他的"不可见"就靠这个）；
+        ///   · 剪影**就是**镜头宿主本人（降级：所有人都在幕里出现过、一个不在场的都挑不出来）
+        ///     ⇒ `false` ⇒ 他在画面里，只该被 `ChangeSilhouette(true)` **涂黑**成黑影
+        ///     （"降级原版方案是暴露剪影黑色滤镜，而不是幽灵化消失"）。
+        ///
+        /// ⚠ `TapeAssembler.Placeholder`（占位磁带）**不走这里**：那是"一闪而过"的假带子，
+        ///   本来就该无条件不可见。
+        /// </summary>
+        public static bool GhostFor(int silhouetteId, int subjectId) => silhouetteId != subjectId;
+
+        /// <summary>
         /// 退回**镜头宿主本人**当剪影 —— 这是**原版方案，不是降级、不该报警**。
         ///
         /// 客户端 `BeginTape` 本来就是 `_blackId = 首帧那个人的 id` + `ChangeSilhouette(true)`：
