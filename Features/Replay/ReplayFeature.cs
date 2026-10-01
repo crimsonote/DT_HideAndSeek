@@ -487,7 +487,7 @@ namespace HideAndSeek.Features.Replay
                 }
 
                 var act = AddWithKey(key, ActKind.Kill, id, id,
-                    ActTable.Plain(at, KillBeforeSec?.Value ?? 3f, KillAfterSec?.Value ?? 1f), $"#{id} → #{victim}");
+                    ActTable.Plain(at, KillBeforeSec?.Value ?? 2f, KillAfterSec?.Value ?? 2.2f), $"#{id} → #{victim}");
 
                 // ★ 受害者是**事件参与者**：他要被强制放进本幕的"画面名单"。
                 //   roster 只来自磁带里出现过的人，而磁带录的是"录制者当时看得到的人" ——
