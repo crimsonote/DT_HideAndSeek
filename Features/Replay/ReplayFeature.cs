@@ -55,13 +55,13 @@ namespace HideAndSeek.Features.Replay
         [ConfigField(1f, "「黑方拿刀」片段：事件前秒数。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> KnifeBeforeSec;
 
-        [ConfigField(1f, "「黑方拿刀」片段：事件后秒数。", Min = 0f, Max = 30f)]
+        [ConfigField(2f, "「黑方拿刀」片段：事件后秒数。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> KnifeAfterSec;
 
-        [ConfigField(3f, "「黑方杀人」片段：事件前秒数。", Min = 0f, Max = 30f)]
+        [ConfigField(2f, "「黑方杀人」片段：事件前秒数。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> KillBeforeSec;
 
-        [ConfigField(1f, "「黑方杀人」片段：事件后秒数。", Min = 0f, Max = 30f)]
+        [ConfigField(2.2f, "「黑方杀人」片段：事件后秒数。", Min = 0f, Max = 30f)]
         public static ConfigEntry<float> KillAfterSec;
 
         [ConfigField(3f, "「最后时段」片段（每个存活者各录一段自己的视角）：事件前秒数。", Min = 0f, Max = 30f)]
@@ -349,7 +349,7 @@ namespace HideAndSeek.Features.Replay
 
                 int id = __instance.PublicInfo.PlayerId;
                 Add(ActKind.Knife, id, id,
-                    ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 1f), "拿刀");
+                    ActTable.Plain(Now(), KnifeBeforeSec?.Value ?? 1f, KnifeAfterSec?.Value ?? 2f), "拿刀");
             }
         }
 
