@@ -680,11 +680,46 @@ namespace HideAndSeek.Features.Replay
         /// </summary>
         private static List<int> SceneIds(Act act, List<SnapShot> frames)
         {
-            var ids = new List<int>(ActTable.VisibleIn(frames, act.Window.From, 0));
+            // 距离判据的阈值 = AOI 的退出距离（默认 900 ≈ 4.0 格；1 格 = 224 单位）。
+            // 参考：屏幕可见半径 ≈ (480+200)/0.98 ≈ 694 ≈ 3.1 格 ⇒ 900 覆盖满屏幕还留余量。
+            float range = Vision.AoiCullingFeature.ExitRange?.Value ?? 900f;
+            float rangeSq = range * range;
+
+            // 镜头位置 = 主角在窗口起点的位置（房主侧权威采样）
+            var camera = HostRecorder.At(act.SubjectId, act.Window.From)?.Pos;
+
+            var known = ActTable.KnownIn(frames, 0, out var moved);
+            var ids = new List<int>();
+            var far = new List<int>();
+
+            foreach (int id in known)
+            {
+                // ① 有位置更新 ⇒ 服务端把 AOI 内的动态广播给了他 ⇒ 一定在画面里，不必判距离
+                if (moved.Contains(id))
+                {
+                    ids.Add(id);
+                    continue;
+                }
+
+                // ② 只有 SpawnShot（客户端"认识"他）⇒ 用距离判。
+                //    ★ 两边都必须取 `HostRecorder` 的权威采样 —— 拿 `SpawnShot` 里的位置
+                //      （那是"他最后一次进入视野时"的，可能很旧）去减实时位置是两个基准相减，结论无意义。
+                var pos = HostRecorder.At(id, act.Window.From)?.Pos;
+                if (camera == null || pos == null)
+                {
+                    ids.Add(id);          // 取不到位置就不排除（宁可多留一个，也不要漏掉画面里的人）
+                    continue;
+                }
+                float dx = pos.X - camera.X;
+                float dy = pos.Y - camera.Y;
+                if (dx * dx + dy * dy <= rangeSq)
+                    ids.Add(id);
+                else
+                    far.Add(id);
+            }
 
             // ★ **自我报告**：如果这一幕需要"另补"参与者，就说明**录制侧没录到他们** ——
             //   那是另一个 bug，必须显式喊出来，不能让这层兜底悄悄掩盖它。
-            //   （`VisibleIn` 是扫描**全部**帧的，所以它漏人只可能是"磁带里真的没有"。）
             var added = new List<int>();
             if (act.Subjects != null)
             {
@@ -696,6 +731,14 @@ namespace HideAndSeek.Features.Replay
                         added.Add(id);
                     }
                 }
+            }
+
+            if (far.Count > 0)
+            {
+                Plugin.Log.LogInfo(
+                    $"[HS-Replay] 【{ActTable.Name(act.Kind)}#{act.Key}】距离判据排除"
+                    + $"（>{range:F0} 单位 ≈ {range / 224f:F1} 格）："
+                    + string.Join(",", far.Select(i => "#" + i)));
             }
 
             if (added.Count > 0)

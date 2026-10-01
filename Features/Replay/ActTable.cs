@@ -71,56 +71,46 @@ namespace HideAndSeek.Features.Replay
         // ── 「谁在画面里」──────────────────────────────────────────────
 
         /// <summary>
-        /// 从**帧本身**判断"谁会出现在画面里" —— 不需要任何近似（房间 / AOI 都是在猜它）。
+        /// 本幕**录制者认识的人**（候选池）—— 只从帧本身取 id，不做任何距离/房间推断：
+        ///   ① 有 `MoveShot` 的（AOI 内在动，位置在实时更新）
+        ///   ② 有 `SpawnShot` 的（客户端认识他；AOI 外的人位置冻结、但照样有一串 SpawnShot）
         ///
-        /// 判据：帧里出现过 <c>SpawnShot</c> 的玩家（每人取离窗口起点最近的那一枚）。
-        /// 为什么这就等于"会出现在画面里"：客户端 `ApplySpawn` 是**唯一**会
-        /// `SetInfo(PublicPlayerInfo)` 的地方，只有被 spawn 过的人才会被装配进场景；
-        /// 而 `ApplyMove` 对没 spawn 过的人**静默无效**。
+        /// ★ 这里**只给 id，不判"看不看得见"** —— 因为判"看得见"要算距离，而算距离必须**两边同源**：
+        ///   `SpawnShot` 里的位置是"他最后一次进入视野时"的（可能很旧），
+        ///   拿它去减 `MoveShot` 的实时位置，是两个基准的数相减，结论没有意义。
+        ///   ⇒ 距离判定交给调用方（`ReplayDirector.SceneIds`），那里两边都取 `HostRecorder` 的权威采样。
         ///
-        /// ★ 它同时统一了两条素材路径：
-        ///   · 客户端磁带 —— 帧就是 AOI 的**真实结果**，直接读即可；
-        ///   · 服务端合成 —— 帧是我们自己铺的（`HostSynth` 会在窗口起点给每个有采样的人各发一枚），
-        ///     所以"谁在画面里"同样由帧决定，而不是另行推断。
+        /// 曾经试过、但**被 35 份 dump 回溯否定**的两条判据（留档，免得再走一遍）：
+        ///   · "有 SpawnShot 就是在画面里" —— 不行：AOI 外的人照样有（实测 `#2` 有 7 枚、间隔 1.00s）；
+        ///   · "整秒的 SpawnShot 是自动注册、非整秒是 `S_SPAWN`" —— 不行：`Recording` 里
+        ///     `isStartShot ? SurvivalTime : ClientTime` 只区分"是不是每轮第一枚"，
+        ///     `#2~#4` 的帧是 `59.37/60.37/61.37…`（非整秒）却正是 `RecordAllType` 录的。
         /// </summary>
         /// <param name="excludeId">要排除的人（首帧/剪影槽位 —— 他不算"画面里的人"）。</param>
-        /// <summary>
-        /// 本幕"录制者看得到的人"。
-        ///
-        /// ★ 判据是「**在窗口附近有 `MoveShot`（位置更新）**」—— **不能**用 `SpawnShot` 判断。
-        ///
-        /// 为什么（2026-10 用真实 dump 实测）：
-        ///   客户端 `RecordAllType` 每秒把**本地认识的全体玩家**各记一枚 `SpawnShot`
-        ///   （`foreach (Managers.Player.Players.Values)`），而它认识所有人（`S_ADD_PLAYER` 发过）
-        ///   ⇒ **AOI 外的人同样有一串 `SpawnShot`**，只是位置冻结、永远不会有 `MoveShot`。
-        ///   实测那一卷"拿刀"磁带（录制者=黑方 #1，视野里只该有他自己）：
-        ///       #1  SpawnShot=15  MoveShot=134     ⇒ 在画面里
-        ///       #2  SpawnShot=9   MoveShot=0       ⇒ 不在
-        ///       #3  SpawnShot=12  MoveShot=0
-        ///       #4  SpawnShot=7   MoveShot=0
-        ///       #5  SpawnShot=7   MoveShot=0
-        ///       #6  SpawnShot=7   MoveShot=0
-        ///   ⇒ 用 `SpawnShot` 判断会把他们全当成"在画面里" ⇒ "不在画面里的人"候选为空
-        ///     ⇒ 剪影无处可选、降级到主角 ⇒ 主角被涂黑＋隐形（观众只看到"隐形的人在拿刀"）。
-        ///   ⇒ 所以必须改用"有位置更新"这条判据 —— 它说的才是"服务端把 AOI 内的动态广播给了录制者"。
-        /// </summary>
-        public static List<int> VisibleIn(List<SnapShot> frames, float windowStart, int excludeId)
+        /// <param name="moved">回传"**有位置更新**"的那些 id —— 他们在画面里是确定的，调用方不必再判距离。</param>
+        public static List<int> KnownIn(List<SnapShot> frames, int excludeId, out List<int> moved)
         {
-            var best = new Dictionary<int, float>();
-            if (frames != null)
+            var ids = new HashSet<int>();
+            var mvIds = new HashSet<int>();
+            moved = new List<int>();
+            if (frames == null)
+                return moved;
+
+            foreach (var s in frames)
             {
-                foreach (var s in frames)
+                var mv = s?.Move;
+                if (mv != null && mv.PlayerId > 0 && mv.PlayerId != excludeId)
                 {
-                    var mv = s?.Move;
-                    if (mv == null || mv.PlayerId <= 0 || mv.PlayerId == excludeId)
-                        continue;
-                    float d = Math.Abs(s.TimeStamp - windowStart);
-                    if (best.TryGetValue(mv.PlayerId, out float prev) && prev <= d)
-                        continue;                       // 已有更近的
-                    best[mv.PlayerId] = d;
+                    ids.Add(mv.PlayerId);
+                    mvIds.Add(mv.PlayerId);
+                    continue;
                 }
+                var sp = s?.Spawn;
+                if (sp != null && sp.PlayerId > 0 && sp.PlayerId != excludeId)
+                    ids.Add(sp.PlayerId);
             }
-            return new List<int>(best.Keys);
+            moved.AddRange(mvIds);
+            return new List<int>(ids);
         }
     }
 }
