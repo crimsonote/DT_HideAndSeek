@@ -154,7 +154,9 @@ namespace HideAndSeek.Features.Replay
             "而客户端**每次**登记都会插一枚 `SlowTimeEdit`（`FindBeforeSnapshot`，事件前 0.3 秒）" +
             "⇒ 两枚相隔 ≈0.354 秒 ⇒ 镜头「放大 → 回正 → 立刻又放大」，" +
             "观感就是『有点频繁的放大，还有点偏』（实测 7 幕杀人幕全部如此，拿刀幕只有一拍）。" +
-            "**KeepOne（默认）** = 只保留最早那枚 ⇒ 每幕恰好一拍。" +
+            "**KeepOne（默认）** = 每簇**留较晚那枚** ⇒ 慢镜正好贴着出刀收尾" +
+            "（真正的出刀在原版 `OnDamaged` 之后 `PushAfter(400)` 的延迟回调里 —— 实测它那枚的收尾与" +
+            "`AddShot{Corpse}` 同刻；若留较早那枚，慢镜会盖住前摇、出刀那一刻反而常速）。" +
             "**Remove** = 全部剔除 ⇒ 连慢镜一起去掉、全程常速。" +
             "⚠ 无论取哪个，`NormalTimeEdit` / `GlitchEdit` 都一枚不丢 —— 回正与故障特效挂在它们身上。")]
         public static ConfigEntry<SlowEditMode> SlowEdit;

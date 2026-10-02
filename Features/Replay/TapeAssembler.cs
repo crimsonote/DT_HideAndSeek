@@ -232,8 +232,9 @@ namespace HideAndSeek.Features.Replay
 
             // ── ③ 窗口过滤 + ④ 剔毒帧 ───────────────────────────────────
             int rawInWindow = 0;
-            // 上一枚**保留下来**的慢镜时刻（用于把"同一事件的重复登记"归簇）。
-            float lastSlow = -1f;
+            // `result` 里**上一枚保留下来**的慢镜下标记（-1 = 还没有）。归簇时**留较晚**那枚，
+            // 所以要能回头把它前一枚删掉 —— 见下面「慢镜 / 放大」那段。
+            int lastSlowIdx = -1;
             if (frames != null)
             {
                 foreach (var s in frames)
@@ -257,7 +258,11 @@ namespace HideAndSeek.Features.Replay
                     //     "有点频繁的放大，但是有点偏移"（实测 7 幕杀人幕全部如此，拿刀幕只有一拍）。
                     //
                     // ⇒ 按 `ReplayFeature.SlowEdit` 处理：
-                    //   · KeepOne（默认）＝ 只保留**一拍**：相隔 < `SlowDupSeconds` 的归成一簇、每簇留最早一枚；
+                    //   · KeepOne（默认）＝ 只保留**一拍**：相隔 < `SlowDupSeconds` 的归成一簇，
+                    //     **每簇留较晚那枚** —— 因为原版那枚才是贴着出刀的：
+                    //     原版把 `OnDead` 与尸体生成都放进 `OnDamaged` 之后 `PushAfter(400)` 的延迟回调，
+                    //     实测 dump 里 `NormalTimeEdit`（原版）与 `AddShot{Corpse}` **同刻**（t=193.907），
+                    //     而我们的登记在 t=193.507 ⇒ 若留较早那枚，慢镜会盖住前摇、出刀那一刻反而常速。
                     //   · Remove         ＝ **全部剔除**：连慢镜一起去掉、全程常速
                     //     （`SlowTimeEdit` 同时是"慢放"与"放大"的开关，做不出"只去放大、留慢镜"）。
                     //
@@ -274,12 +279,15 @@ namespace HideAndSeek.Features.Replay
                             report.SlowDropped++;      // Remove：全剔除
                             continue;
                         }
-                        if (lastSlow >= 0f && s.TimeStamp - lastSlow < SlowDupSeconds)
+                        if (lastSlowIdx >= 0 && s.TimeStamp - result[lastSlowIdx].TimeStamp < SlowDupSeconds)
                         {
-                            report.SlowDropped++;      // KeepOne：本簇已有更早的一枚，这枚是重复
-                            continue;
+                            result.RemoveAt(lastSlowIdx);   // KeepOne：丢掉较早那枚，改留这一枚
+                            report.SlowDropped++;
+                            rawInWindow--;
                         }
-                        lastSlow = s.TimeStamp;
+                        // Slow 是 `EditShot` ⇒ 后面两道过滤（毒尸 `AddShot`、`PlayerId<=0` 的出场帧）
+                        // 都拦不到它，本枚必定走到循环末尾的 `result.Add(s)` ⇒ 记下它将要落到哪个下标。
+                        lastSlowIdx = result.Count;
                     }
 
                     // ⚠ 项圈自爆尸体的 `AddShot` —— 原版自身的"二次 SetInfo"缺陷，只能绕开。
