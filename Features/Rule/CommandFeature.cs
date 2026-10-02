@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using BepInEx.Configuration;
 using DummyClient;
@@ -102,7 +103,8 @@ namespace HideAndSeek.Features.Rule
             "Desc_refresh = 刷新网络连接 CD{cd}\n" +
             "Desc_radar = 全图扫描{dur}秒({uses}次) CD{cd}\n" +
             "Desc_stasis = 冻结黑方{sec}秒，耗{cost}%任务进度 CD{cd}\n" +
-            "Desc_repair = 立即恢复供电，耗{cost}%任务进度\n" +
+            "Desc_repair = 强制重启电力系统，预损失{cost}%进度\n" +
+            "Desc_maint = 电力系统自检维护，CD{cd}\n" +
             "Desc_lock = 锁住附近的门 CD{cd}\n" +
             "Desc_teleport = 3 秒后传送到目标处 [玩家ID] CD{cd}\n" +
             "Desc_disconnect = 破坏电闸 CD{cd}\n" +
@@ -129,6 +131,28 @@ namespace HideAndSeek.Features.Rule
             "StasisDone = 已冻结黑方 {sec} 秒。\n" +
             "RepairNoOutage = 当前没有断电，无需修复。\n" +
             "RepairDone = 已立即恢复供电（修复 {n} 处）。\n" +
+            // ── 电力系统自检（多阶段流程）──
+            // ⚠ 这段文案**不能出现 `[000000]` 之类的格式占位**：实测玩家会照抄它当授权码输入。
+            //   要输入的是那条算式的**答案**，所以文案必须把"算什么 + 怎么发"说全。
+            // ⚠ 整段折行后要控制在 3 个渲染行内（`Reply` 每 3 行一条，超了会拆成多条）。
+            "SelfTestRecv = 系统已接收请求，正在验证操作者权限，请耐心等待。\n" +
+            "SelfTestDenied = 权限验证失败。\n" +
+            // ⚠ 授权码提示**刻意拆成两条独立文案**（Prompt1 / Prompt2），由调用方用两次
+            //   `Reply` + `PushAfter` 分开发 —— **不能合成一条靠 `Reply` 自动分段**：
+            //   那个机制按"每 3 个渲染行一条"切，这两段合起来是 4 行，切点正好落在
+            //   第二段中间 ⇒ 客户端少渲染一条时，**含算式的那半截就整段消失**
+            //   （实测连续踩两次，房主只看到"请输入…"却看不到"请计算…"）。
+            "SelfTestPrompt1 = 已验证权限，操作者 {name}#{id}，于{room}进行操作。\n" +
+            "SelfTestPrompt2 = 为防止误操作，请计算 {q}，再发送「/maint 答案」完成确认。\n" +
+            "SelfTestBadCode = 授权码错误，操作失败。\n" +
+            "SelfTestExpired = 操作已过期。\n" +
+            "SelfTestBusy = 已有其他操作者正在进行电力系统自检，请稍后再试。\n" +
+            "SelfTestBusyElsewhere = 此操作当前正在{room}由{name}#{id}进行操作，请耐心等待。\n" +
+            "SelfTestWrongArea = 你需要在{room}进行操作，不可变更操作位置。\n" +
+            "SelfTestRunning = 已完成二次确认，电力自检已开始，请耐心等待，预计{sec}s完成自检。\n" +
+            "SelfTestOk = 自检完成，当前电力系统工作正常。\n" +
+            "SelfTestRestored = 电力系统已排除{n}个故障，电力系统已恢复。\n" +
+            "SelfTestUnavailable = 电力自检当前不可用。\n" +
             "RefreshPending = 网络刷新中\n" +
             "RefreshDone = [刷新完成]\n" +
             "RefreshFailed = 网络连接异常，刷新失败。\n" +
@@ -362,6 +386,16 @@ namespace HideAndSeek.Features.Rule
         /// <summary>单行最大显示宽度（半角单位，中文按 2 计，40 = 20 个汉字）。超了客户端会自动折行。</summary>
         private const int MaxWidthPerLine = 40;
 
+        /// <summary>
+        /// 回执被拆成多条时的**段间隔**（毫秒）。
+        ///
+        /// 不能在同一帧把多条 `S_CHAT_MESSAGE` 一起发 —— 客户端对"同一时刻刷出的多条"
+        /// 只保留一条（`DefaultTexts` 里"多条消息一次性刷出、前面的会被顶掉"说的就是这个）。
+        /// 实测踩过：自检的授权码提示折行后 4 行 ⇒ 拆 2 条 ⇒ 含算式的那条被顶掉，
+        /// 玩家看不到该算什么，只能照抄文案里的格式占位 ⇒ 必然"授权码错误"。
+        /// </summary>
+        private const int ReplyChunkGapMs = 900;
+
         private static List<CommandDef> _parsed;
         private static string _parsedFrom;
         private static MethodInfo _disconnectMethod;
@@ -370,6 +404,44 @@ namespace HideAndSeek.Features.Rule
             => def.UsesPerPlayer ? playerId + ":" + def.Name : def.Name;
 
         // ══ 入口 ══════════════════════════════════════════════════════
+
+        /// <summary>
+        /// **换局清理**：进入新的 `Survive` 时，丢掉上一局残留的全部状态。
+        ///
+        /// 要清三类东西，任何一类漏掉都会在新局显形：
+        ///   · `_selfTest`（流程）—— 它是静态字段，6 个清理点全在流程内部
+        ///     （换位置 / 算错 / 退局 / 黑方 / 超时 / 激活）、**没有一个是"换局"**。
+        ///     残留 ⇒ 新局所有人敲 `/maint` 都得到"已有其他操作者…"，
+        ///     且已排出的 `SelfTestActivate` 可能在新局开局施加效果。
+        ///   · `_roomCdUntil`（全房冷却）—— 详见 `ResetRoundState`：残留会让新局报出
+        ///     **比配置值更大**的冷却（实测 "CD220" 而配置是 180）。
+        ///   · `_suppressUntil`（抑制派发）—— 同上，残留会让新局 `StartFuseboxSabotage`
+        ///     被莫名顺延几分钟，表现是"电箱迟迟不派发、`/brk` 无事可做"。
+        ///
+        /// ⚠ 后两个**不能**指望"换局时 `ClientTime` 归零"自愈 —— 那恰恰是问题所在：
+        ///   它们存的是**绝对时刻**，归零只是让上一局的绝对值在新局里显得更久。
+        /// </summary>
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
+        internal static class RoundResetHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(EGameState state)
+            {
+                if (state != EGameState.Survive)
+                    return;
+
+                // ① 丢上一局残留的流程（静态字段，否则新局所有人敲 /maint 都被"占用"，
+                //    而且已排出的 SelfTestActivate 可能在新局开局施加效果）。
+                SelfTestClear();
+
+                // ② 丢上一局残留的两个"绝对时刻"。它们**不能**靠 ClientTime 换局归零自愈 ——
+                //    归零只会让上一局的 `T0 + 180` / `T0 + 45` 在新局里显得更久：
+                //      实测 `_roomCdUntil`：上局 T0=100 ⇒ 280；新局到 60 时读出 220
+                //      （而配置的 CD 只有 180）—— 房主看到的正是 "CD220"；
+                //      `_suppressUntil` 同理 ⇒ 新局电箱迟迟不派发、`/brk` 无事可做。
+                PowerSelfTestFeature.ResetRoundState();
+            }
+        }
 
         /// <summary>
         /// 两条频道共用一个钩子：按 EChatType 分流。
@@ -841,6 +913,10 @@ namespace HideAndSeek.Features.Rule
                     special = true;
                     return DoRepair(room, player, deviceId, channel);
 
+                case "maint":
+                    special = true;
+                    return DoSelfTest(room, player, deviceId, channel, arg);
+
                 case "lock":
                     special = true;
                     return LockNearby(player, deviceId, channel);
@@ -976,6 +1052,29 @@ namespace HideAndSeek.Features.Rule
                     Side = CommandSide.White, Channel = CommandChannel.Public,
                     Action = "Repair", UsesPerPlayer = true, QuietWhenBlocked = true,
                     IsAvailable = () => AllowRepair == null || AllowRepair.Value
+                },
+                new CommandDef
+                {
+                    // 「电力系统自检」——不消耗任务进度，但流程繁琐（3 秒验证 → 一次性授权码 → 10~24 秒自检）。
+                    //
+                    // ★ `Side = Any`（**公共组**），**不能**设成 `White`：
+                    //   `SideAllows` 不匹配时命令直接"找不到"（:606），黑方就敲不进来 ——
+                    //   而需求要的正是"黑方敲了、3 秒后得到『权限验证失败』"这个演出。
+                    //   所以它是公共命令：黑方看得到、敲得动，只是流程里会被拒。
+                    //
+                    // ★ 冷却**由本功能自管**（`PowerSelfTestFeature.RemainingCooldown`），
+                    //   所以引擎的两个冷却都留 0：
+                    //     · 引擎的 `Cooldown` / `RoomCooldown` 都在**命令返回时**记账（:806），
+                    //       而本命令"返回"只代表流程**开始**（后面还有授权码与自检两段）；
+                    //       真正的 CD 起点是**流程走完、效果落地**那一刻。
+                    //     · 而且房主要的是"**全房共享**" —— 那个语义在引擎的 `RoomCooldown` 上，
+                    //       而 `Cooldown` 是"每人一个间隔"，用错就变成各算各的。
+                    Name = "maint", Aliases = new[] { "maintenance", "mnt" },
+                    Side = CommandSide.Any, Channel = CommandChannel.Public,
+                    Action = "Maint", UsesPerPlayer = false, MaxUses = 0,
+                    QuietWhenBlocked = true,
+                    Cooldown = 0, RoomCooldown = 0,
+                    IsAvailable = () => PowerSelfTestFeature.Armed
                 },
                 new CommandDef
                 {
@@ -1396,8 +1495,16 @@ namespace HideAndSeek.Features.Rule
         /// <summary>把说明模板里的占位符换成实际值。</summary>
         private static string FillDesc(string template, CommandDef def, string action)
         {
+            // ★ `{cd}` 必须**在这里一次算好**，不能"先统一填 def.Cooldown、再在下面按动作补" ——
+            //   那样第一次就把 `{cd}` 换成了 "-"（或数字），后面的按动作替换永远找不到目标。
+            //   实测踩过：`/maint` 的冷却由功能自管（引擎字段刻意留 0，好把记账点延后到"流程完成"），
+            //   于是 /help 里一直显示 "CD-"，看起来像"这条命令没有冷却"。
+            string cdText = action == "maint"
+                ? (PowerSelfTestFeature.Cooldown?.Value ?? 180f).ToString("F0")
+                : (def.Cooldown > 0 ? def.Cooldown.ToString() : "-");
+
             string text = template
-                .Replace("{cd}", def.Cooldown > 0 ? def.Cooldown.ToString() : "-")
+                .Replace("{cd}", cdText)
                 .Replace("{uses}", def.MaxUses > 0 ? def.MaxUses.ToString() : "-")
                 .Replace("{name}", def.Name);
 
@@ -1829,6 +1936,402 @@ namespace HideAndSeek.Features.Rule
             return true;
         }
 
+        // ══ 电力系统自检（多阶段流程）══════════════════════════════════
+        //
+        // 口径（房主给的）：**不消耗任务进度**，但流程繁琐 ——
+        //     收到命令 → 等 3 秒验证权限 → 要求输入"一次性授权码"（一道随机算式的答案，
+        //     难度按"让人至少要在终端前待 10 秒"设计）→ 超时 20 秒 → 答对后等 10~24 秒随机
+        //     → 结果分两种：电力正常（电箱下线 45 秒）/ 电力中断（修好电箱）。
+        //
+        // **同一时间只允许一个玩家处于流程中**，其他人拿到 "已有其他操作者" 的拒绝。
+        //
+        // 三个定时阶段都用 `GameRoom.PushAfter`，每个回调先核对**代次号** `Gen` ——
+        // 因为流程可能被"退局 / 新一轮 / 答对"提前终结，而排出去的定时器无法撤销；
+        // 不核代次的话，上一轮的定时器会打断新一轮（或对已结束的流程发消息）。
+        //
+        // 授权码走**同一个命令的第二次调用**（`/maint <答案>`），所以不需要在聊天入口
+        // 做特殊拦截：进到这里时看 `WaitingCode` 就知道这次输入是授权码。
+
+        private sealed class SelfTestSession
+        {
+            public int PlayerId;
+            public int DeviceId;
+            public CommandChannel Channel;
+            public int Gen;
+            public int Answer;
+            public bool WaitingCode;
+
+            /// <summary>发起时所在房间（`RoomData.DataId`）—— 地缘约束的判据。</summary>
+            public int AreaRoomId;
+            /// <summary>发起时的房间显示名（文案/日志用）。</summary>
+            public string AreaName;
+        }
+
+        /// <summary>某人此刻所在房间的 `DataId`；取不到返回 0。</summary>
+        private static int AreaRoomIdOf(GamePlayer player)
+        {
+            try { return player?.CurrentArea?.Data?.DataId ?? 0; }
+            catch { return 0; }
+        }
+
+        private static SelfTestSession _selfTest;
+        private static int _selfTestGen;
+        private static global::System.Random _selfTestRng;
+
+        private static global::System.Random SelfTestRng()
+            => _selfTestRng ?? (_selfTestRng = new global::System.Random());
+
+        private static void SelfTestClear()
+        {
+            _selfTest = null;
+            _selfTestGen++;                 // 让所有已排出的回调作废
+        }
+
+        private static GamePlayer FindPlayerById(GameRoom room, int id)
+        {
+            if (room?.Players == null)
+                return null;
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo != null && p.PublicInfo.PlayerId == id)
+                    return p;
+            }
+            return null;
+        }
+
+        /// <summary>角色显示名 —— 与客户端 `Player.DisplayName`(:15428) 同源。</summary>
+        private static string RoleNameOf(GamePlayer player)
+        {
+            try
+            {
+                var ch = Managers.Data?.CharacterDic?.Values
+                    .FirstOrDefault(x => x.DataId == player.CharacterId);
+                if (ch == null)
+                    return "#" + player.CharacterId;
+                string t = Managers.GetText(ch.Name);
+                return string.IsNullOrEmpty(t) ? ch.Name : t;
+            }
+            catch { return "#" + (player?.CharacterId ?? 0); }
+        }
+
+        /// <summary>房间显示名 —— 与客户端 :47082 同源（`GetText(ERoomType 名)`）。</summary>
+        private static string AreaNameOf(GamePlayer player)
+        {
+            try
+            {
+                var data = player?.CurrentArea?.Data;
+                if (data == null)
+                    return "未知区域";
+                string key = global::System.Enum.GetName(typeof(ERoomType), data.Type);
+                string t = Managers.GetText(key);
+                return string.IsNullOrEmpty(t) ? key : t;
+            }
+            catch { return "未知区域"; }
+        }
+
+        /// <summary>
+        /// 随机出一道算式，并给出答案。
+        /// 难度取向：**要心算几步**（两位数加减、或三数运算），让人不能在几秒内随手打完
+        /// —— 但答案不超过 200，避免算错得莫名其妙。
+        /// </summary>
+        private static string BuildQuestion(out int answer)
+        {
+            var r = SelfTestRng();
+            switch (r.Next(3))
+            {
+                case 0:
+                {
+                    int a = r.Next(13, 98), b = r.Next(13, 98);
+                    answer = a + b;
+                    return a + " + " + b + " = ？";
+                }
+                case 1:
+                {
+                    int a = r.Next(41, 150), b = r.Next(12, 39);
+                    answer = a - b;
+                    return a + " - " + b + " = ？";
+                }
+                default:
+                {
+                    int a = r.Next(16, 79), b = r.Next(11, 61), c = r.Next(9, 48);
+                    answer = a + b - c;
+                    return a + " + " + b + " - " + c + " = ？";
+                }
+            }
+        }
+
+        /// <summary>自检耗时：在 [下限, 上限] 之间取一个**真随机**整数（含两端）。</summary>
+        private static int RandomActivateSec()
+        {
+            int lo = (int)(PowerSelfTestFeature.ActivateMinSec?.Value ?? 10f);
+            int hi = (int)(PowerSelfTestFeature.ActivateMaxSec?.Value ?? 24f);
+            if (hi < lo)
+            {
+                int t = lo;
+                lo = hi;
+                hi = t;
+            }
+            if (hi <= lo)
+                return global::System.Math.Max(1, lo);
+            return SelfTestRng().Next(lo, hi + 1);
+        }
+
+        /// <summary>
+        /// 核对并消费授权码 —— **两条输入路径共用**：
+        ///   · `/maint <答案>`：`DoSelfTest` 进来后发现 `WaitingCode` ⇒ 走后一段
+        ///   · **裸数字**：玩家直接发一条纯数字聊天，由 `ChatMessageHook` 拦下（见 `TryConsumeCodeInput`）
+        ///
+        /// 为什么要有"裸数字"这条：提示写的是"把答案**发送**过来"，玩家的直觉就是直接发那串数字。
+        /// 只认命令形式的话，裸数字会当普通聊天广播出去、而玩家以为已经提交了 ——
+        /// 实测房主正是这么踩的（发了 `000000`，等来"授权码错误"）。
+        ///
+        /// 一次性：无论对错都把 `WaitingCode` 置回 false，不给无限重试。
+        /// </summary>
+        private static bool HandleCodeInput(GamePlayer player, int deviceId, CommandChannel channel, string arg)
+        {
+            var s = _selfTest;
+            if (s == null || player?.PublicInfo == null
+                || s.PlayerId != player.PublicInfo.PlayerId || !s.WaitingCode)
+                return false;                       // 没在等 ⇒ 不是授权码，交回调用方按原语义处理
+
+            s.WaitingCode = false;
+            int gen = s.Gen;
+
+            // ★ 地缘约束：**操作位置不可变更** —— 授权码只能在发起时的那个房间提交。
+            //   游戏里能敲命令的只有四个通讯台所在的位置，所以"换了房间"等于"换了通讯台"。
+            //   验证与等待期间不检查（那两阶段本就无事可做），判据只在**提交**这一瞬；
+            //   这也让"异区的人替你交码"不可能成立。
+            if (PowerSelfTestFeature.RequireSameArea?.Value ?? true)
+            {
+                if (AreaRoomIdOf(player) != s.AreaRoomId)
+                {
+                    string area = s.AreaName ?? "原区域";
+                    SelfTestClear();
+                    Reply(player, deviceId, channel, T("SelfTestWrongArea", "room", area));
+                    return true;
+                }
+            }
+
+            if (!int.TryParse((arg ?? "").Trim(), out int v) || v != s.Answer)
+            {
+                SelfTestClear();
+                Reply(player, deviceId, channel, T("SelfTestBadCode"));
+                return true;
+            }
+
+            int sec = RandomActivateSec();
+            Reply(player, deviceId, channel, T("SelfTestRunning", "sec", sec.ToString()));
+            GameRoom.Instance?.PushAfter(sec * 1000, delegate { SelfTestActivate(gen); });
+            return true;
+        }
+
+        // ⚠ 曾经想在这里加一个"裸数字也算授权码"的入口拦截（玩家直接发纯数字聊天就当提交），
+        //   最后**没有采用**：`ChatMessageHook` 是所有聊天的公共入口，为一条命令在那里吞消息，
+        //   影响面不成比例（等待期间发个 "123" 会被莫名吃掉），而且那属于"猜玩家意图"。
+        //   ⇒ 改为**把输入方式写进文案**（`SelfTestPrompt` 与 `Desc_maint`），
+        //     并在帮助里说明"要带 /maint 前缀"。命令形式是引擎既有语义，不会误伤聊天。
+
+        private static bool DoSelfTest(GameRoom room, GamePlayer player, int deviceId,
+                                       CommandChannel channel, string arg)
+        {
+            if (!PowerSelfTestFeature.Armed)
+            {
+                Reply(player, deviceId, channel, T("SelfTestUnavailable"));
+                return false;
+            }
+
+            var info = player?.PublicInfo;
+            if (info == null)
+                return false;
+
+            int pid = info.PlayerId;
+
+            // ⓪ 全房共享冷却 —— 起点是"上一次流程**真正完成**"那一刻（`StartCooldown`），
+            //    而不是"上次敲命令"。所以被拒（黑方）/ 超时 / 算错 / 换位置 这些路径
+            //    都**不吃 CD**，可以立刻重试；只有效果真的落地了才开始计时。
+            //    ⚠ 顺序：在"等这个玩家交授权码"之前判 —— 否则流程走到一半就会被自己的 CD 挡掉。
+            //      真正的流程已持有 `_selfTest`，此时 CD 一般也没开始（上一次完成才会置它），
+            //      但万一并发（旧流程刚完成、新流程已开）也要让进行中的那次优先。
+            if (_selfTest == null)
+            {
+                float cdLeft = PowerSelfTestFeature.RemainingCooldown();
+                if (cdLeft > 0f)
+                {
+                    int left = (int)global::System.Math.Ceiling(cdLeft);
+                    Reply(player, deviceId, channel,
+                        T("RoomCooldown", "name", "maint", "sec", left.ToString()));
+                    return true;
+                }
+            }
+
+            // ① 正在等这个玩家交授权码 ⇒ 这次输入就是授权码（一次性：无论对错都作废）
+            if (_selfTest != null && _selfTest.PlayerId == pid && _selfTest.WaitingCode)
+                return HandleCodeInput(player, deviceId, channel, arg);
+
+            // ② 别人正在流程中（含"别人卡的授权码"）⇒ 拒绝。
+            //    ★ 地缘约束开着时，**异区**的拒绝要说清"正在哪个房间、由谁操作"，
+            //      让异区玩家明白"不是不让你用，是这里正有人在用"。
+            //      同区则沿用普通的"已被占用"（同一时间只能一人，与他站哪儿无关）。
+            if (_selfTest != null)
+            {
+                var s0 = _selfTest;
+                bool geo = PowerSelfTestFeature.RequireSameArea?.Value ?? true;
+
+                if (geo && AreaRoomIdOf(player) != s0.AreaRoomId)
+                {
+                    var owner = FindPlayerById(room, s0.PlayerId);
+                    string text = T("SelfTestBusyElsewhere")
+                        .Replace("{room}", s0.AreaName ?? "其他区域")
+                        .Replace("{name}", owner != null ? RoleNameOf(owner) : "其他操作者")
+                        .Replace("{id}", s0.PlayerId.ToString());
+                    Reply(player, deviceId, channel, text);
+                    return true;
+                }
+
+                Reply(player, deviceId, channel, T("SelfTestBusy"));
+                return true;
+            }
+
+            // ③ 开一轮新的
+            string q = BuildQuestion(out int answer);
+            var session = new SelfTestSession
+            {
+                PlayerId = pid,
+                DeviceId = deviceId,
+                Channel = channel,
+                Gen = ++_selfTestGen,
+                Answer = answer,
+                WaitingCode = false,
+                // 地缘约束的两个判据：发起房间 id（提交授权码时核对）
+                // 与房间显示名（异区拒绝的消息里要报出来）
+                AreaRoomId = AreaRoomIdOf(player),
+                AreaName = AreaNameOf(player),
+            };
+            _selfTest = session;
+
+            Reply(player, deviceId, channel, T("SelfTestRecv"));
+
+            int verifyMs = (int)((PowerSelfTestFeature.VerifySec?.Value ?? 5f) * 1000f);
+            int sgen = session.Gen;
+            room.PushAfter(verifyMs, delegate { SelfTestVerify(sgen, q); });
+            return true;
+        }
+
+        /// <summary>阶段②：3 秒后判定阵营。黑方在这里被拒（演出效果，不是权限系统）。</summary>
+        private static void SelfTestVerify(int gen, string question)
+        {
+            var s = _selfTest;
+            if (s == null || s.Gen != gen)
+                return;
+
+            var room = GameRoom.Instance;
+            var player = FindPlayerById(room, s.PlayerId);
+            if (player == null)
+            {
+                SelfTestClear();                        // 退局 ⇒ 释放占用
+                return;
+            }
+
+            if (player.Color != EPlayerColor.White)
+            {
+                int dev = s.DeviceId;
+                var ch = s.Channel;
+                SelfTestClear();
+                Reply(player, dev, ch, T("SelfTestDenied"));
+                return;
+            }
+
+            s.WaitingCode = true;
+
+            // ★ 两句提示**分两条独立回执发**，中间留足间隔。
+            //   不要合成一条靠 `Reply` 自动分段：那个机制按"每 3 个渲染行一条"切，
+            //   而这两句合起来是 4 行 ⇒ 切点落在第二句中间 ⇒ 客户端少渲染一条时
+            //   **含算式的那半截整段消失**（实测连续踩两次）。
+            //   间隔也不能太短：客户端对同一秒内刷出的多条消息只保留一条。
+            string line1 = T("SelfTestPrompt1")
+                .Replace("{name}", RoleNameOf(player))
+                .Replace("{id}", s.PlayerId.ToString())
+                .Replace("{room}", AreaNameOf(player));
+
+            string line2 = T("SelfTestPrompt2")
+                .Replace("{q}", question);
+
+            Reply(player, s.DeviceId, s.Channel, line1);
+
+            // ⚠ 用**本地捕获**而不是在闭包里重新查玩家：玩家中途退局时 `FindPlayerById`
+            //   会返回 null，那样第二句就静默丢失；而这里的 `player` 引用仍然有效，
+            //   `SendChat` 内部会自己判 `Session` 是否还在。
+            //   ⚠ 变量名不能叫 `dev`/`ch` —— 上面那个 `if` 块里已经用过同名的，
+            //     C# 不允许内层作用域的名字与方法级局部变量重名（会报 CS0136）。
+            var boundPlayer = player;
+            int promptDev = s.DeviceId;
+            var promptCh = s.Channel;
+            room?.PushAfter(ReplyChunkGapMs + 300, delegate
+            {
+                Reply(boundPlayer, promptDev, promptCh, line2);
+            });
+
+            int timeoutMs = (int)((PowerSelfTestFeature.CodeTimeoutSec?.Value ?? 20f) * 1000f);
+            room?.PushAfter(timeoutMs, delegate { SelfTestExpire(gen); });
+        }
+
+        /// <summary>阶段③超时：长时间没交授权码。</summary>
+        private static void SelfTestExpire(int gen)
+        {
+            var s = _selfTest;
+            if (s == null || s.Gen != gen || !s.WaitingCode)
+                return;                                 // 已答对 / 已作废 ⇒ 不打扰
+
+            int dev = s.DeviceId;
+            var ch = s.Channel;
+            int pid = s.PlayerId;
+            SelfTestClear();
+
+            var player = FindPlayerById(GameRoom.Instance, pid);
+            if (player != null)
+                Reply(player, dev, ch, T("SelfTestExpired"));
+        }
+
+        /// <summary>阶段④：自检结束，按当前电力状态落地效果。</summary>
+        private static void SelfTestActivate(int gen)
+        {
+            var s = _selfTest;
+            if (s == null || s.Gen != gen)
+                return;
+
+            int dev = s.DeviceId;
+            var ch = s.Channel;
+            int pid = s.PlayerId;
+            SelfTestClear();
+
+            var player = FindPlayerById(GameRoom.Instance, pid);
+            if (player == null)
+                return;                                 // 退局 ⇒ 不施加效果
+
+            int broken = 0;
+            try { broken = Server.Game.DeviceManager.Instance?.GetDisconnectFuseCount() ?? 0; }
+            catch { }
+
+            if (broken > 0)
+            {
+                // 电力中断 ⇒ 修好所有电箱。文案里的 [1-3] 是房主给的口径，
+                // 所以对外只说 1~3，不暴露真实数量（真实值进日志）。
+                int n = PowerSelfTestFeature.ApplyRestore();
+                int shown = global::System.Math.Min(3, global::System.Math.Max(1, n));
+                Reply(player, dev, ch, T("SelfTestRestored", "n", shown.ToString()));
+            }
+            else
+            {
+                // 电力正常 ⇒ 电箱下线一段时间（已派发的收回，未派发的把那次派发顺延）
+                PowerSelfTestFeature.ApplyNormal();
+                Reply(player, dev, ch, T("SelfTestOk"));
+            }
+
+            // ★ 全房共享冷却**从这里开始** —— 效果已经落地，才算"一次有效流程完成"。
+            //   失败路径（黑方被拒 / 超时 / 算错 / 换位置 / 退局）都不调用它，所以不吃 CD。
+            PowerSelfTestFeature.StartCooldown();
+        }
+
         // ══ 任务进度读写 ══════════════════════════════════════════════
 
         /// <summary>
@@ -2024,6 +2527,13 @@ namespace HideAndSeek.Features.Rule
             foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
                 wrapped.AddRange(WrapByWidth(raw));
 
+            // ★ 段与段之间**必须留间隔**：同一帧连发多条 `S_CHAT_MESSAGE` 时，
+            //   客户端只保留一条（`DefaultTexts` 里那句"多条消息一次性刷出、前面的会被顶掉"
+            //   说的就是这个坑）。
+            //   实测踩过：自检的授权码提示折行后是 4 行 ⇒ 拆成 2 条 ⇒ **第 2 条（含算式）被顶掉**，
+            //   玩家永远看不到"该算什么"，只能去照抄文案里的格式占位（于是必然报"授权码错误"）。
+            //   第 1 条立即发（保持回执的即时感），其余按间隔排出去。
+            int delayMs = 0;
             for (int start = 0; start < wrapped.Count; start += MaxLinesPerMessage)
             {
                 int count = wrapped.Count - start < MaxLinesPerMessage
@@ -2032,23 +2542,51 @@ namespace HideAndSeek.Features.Rule
 
                 string chunk = string.Join("\n", wrapped.GetRange(start, count));
 
-                try
+                if (delayMs <= 0)
                 {
-                    player.Session.Send(new S_CHAT_MESSAGE
+                    if (!SendChat(player, type, deviceId, chunk))
+                        return;
+                }
+                else
+                {
+                    var captured = chunk;
+                    int delay = delayMs;
+                    try
                     {
-                        Type = type,
-                        DeviceId = deviceId,
-                        Text = chunk,
-                        PlayerId = player.PublicInfo?.PlayerId ?? 0,
-                        Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
-                        IsDead = false
-                    });
+                        GameRoom.Instance?.PushAfter(delay, delegate { SendChat(player, type, deviceId, captured); });
+                    }
+                    catch (global::System.Exception ex)
+                    {
+                        Plugin.Log.LogWarning($"[HS] 命令：回执延迟发送失败 — {ex.Message}");
+                    }
                 }
-                catch (global::System.Exception ex)
+
+                delayMs += ReplyChunkGapMs;
+            }
+        }
+
+        /// <summary>一条回执的实际发送。返回 false 表示发送失败（调用方据此中止后续分段）。</summary>
+        private static bool SendChat(GamePlayer player, EChatType type, int deviceId, string text)
+        {
+            if (player?.Session == null || string.IsNullOrEmpty(text))
+                return false;
+            try
+            {
+                player.Session.Send(new S_CHAT_MESSAGE
                 {
-                    Plugin.Log.LogWarning($"[HS] 命令：回执失败 — {ex.Message}");
-                    return;
-                }
+                    Type = type,
+                    DeviceId = deviceId,
+                    Text = text,
+                    PlayerId = player.PublicInfo?.PlayerId ?? 0,
+                    Time = (int)(TimeManager.Instance?.SurviveTime ?? 0f),
+                    IsDead = false
+                });
+                return true;
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] 命令：回执失败 — {ex.Message}");
+                return false;
             }
         }
 

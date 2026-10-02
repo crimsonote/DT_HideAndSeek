@@ -54,8 +54,11 @@ namespace HideAndSeek.Features.Rule
         /// Fusebox.IsLight 是 `{ get; private set; }`，外部无法直接赋值，只能用反射；
         /// 同时要把 DeviceInfo.StateList[0] 归零（客户端凭它判断是否需要修），
         /// 否则客户端那边仍会显示成"可修"。
+        ///
+        /// 可见性为 `internal`：`PowerSelfTestFeature`（电力自检命令的"电力中断"分支）直接复用它，
+        /// 而不是另写一份 —— 走原版路径的细节（最后一步 `AreaManager.RefreshLight`）不能漏。
         /// </summary>
-        private static void ForceRepairAll()
+        internal static void ForceRepairAll()
         {
             try
             {
