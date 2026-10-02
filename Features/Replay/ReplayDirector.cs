@@ -26,7 +26,8 @@ namespace HideAndSeek.Features.Replay
     ///   ⑤ **等它演完**（回执 = `ShowTrialUI()` 之后那句 `CompleteAndSend()`），上限 12 秒
     ///   ⑥ 这时才发 `S_FADE_IN` 收掉加载页 —— ⚠ 早发会把入场序列 `Kill()` 掉（见方法头）
     ///   ⑦ 给没收到磁带的幕补"合成/占位"，然后推 `S_TRIAL_STATE{Replay}`
-    ///   ⑧ 只等**预算**到点（不等任何回执）⇒ 继续原本的结算
+    ///   ⑧ 等**全部真人客户端报"放完了"**（`RecordManager.Stop()` 末尾那条回执，:32164），
+    ///      预算作绝对上限、grace 同值 ⇒ 谁都不会被提前掐断，也不会白等一场黑屏（:32141）
     /// </summary>
     internal static class ReplayDirector
     {
@@ -429,23 +430,30 @@ namespace HideAndSeek.Features.Replay
                 Plugin.Log.LogInfo($"[HS-Replay] 广播 Replay 状态：已有磁带 {_got} 段 / 服务端合成 {_synth} 段 / "
                     + $"占位 {_placeholder} 段，预算 {budget}ms。");
 
-                // ★ **结束时刻由服务端预算单方面决定**，不等任何客户端的回执。
+                // ★ **结束时刻 = 全部真人客户端报"放完了"，预算只作绝对上限。**
                 //
-                //   原实现：`WaitCompletePacket(() => Finish(...), CompleteWaitCount(), budget, 4000)`
-                //   —— 它的语义是"**第一个回执到达后，再等 4000ms 就强制收尾**"（decomp:173031-173045），
-                //   而那个 4000ms 就是本次"联机回放只播一幕"的直接执行者：
-                //     · guest 因为"客户端 Trial / 服务端 Survive"分裂满 5 秒被相位看门狗强制
-                //       `ApplyStateInstant(Survive)`（decomp:34930-34943）；
-                //     · 而 `ApplyStateInstant` 里顺手 `CompleteWatchdog.CompleteAndSend()`
-                //       （decomp:38696-38715）⇒ 发回一个**与回放无关**的 ack；
-                //     · 服务端把它当成"有人放完了"，4000ms 后 `ForceComplete` ⇒ 全场被掐断。
-                //   实测（子会话量录屏）：真人局回放 ≈4 秒、假人局 ≈18 秒 —— 与这条链吻合。
+                //   客户端**有**这条回执：`RecordManager.Stop()` 的末尾
+                //   （decomp:32135-32165；那是它放完最后一段磁带时走的路）：
+                //       32141: Managers.SetActiveAllWorldObject(enable: false);   ← 世界物件就地关掉 ⇒ 黑屏
+                //       32164: CompleteWatchdog.CompleteAndSend();                ← "我放完了"
+                //   ⇒ 只等预算的话，**黑屏时长 = 预算 − 实际播放时长**（实测 38.8 秒预算、
+                //     实际播了十几秒 ⇒ 黑了二十多秒，房主报的就是这个）。
                 //
-                //   ⇒ 现在只等预算：谁发什么回执都不影响。预算本身已经是"按段数 × 1.6 + 固定余量"
-                //     估出来的宽松值（`EstimateBudgetMs`），播完的人多等几秒，好过任何人被中途掐断。
-                //     服务端到点推 `TotalResult` 后，客户端的 `EndReplay` 若发现还在播会**强制 `Stop()`**
-                //     （decomp:71453）⇒ 所有人一起收尾，不会出现"这台结算了、那台还在播"。
-                room.PushAfter(budget, () => Finish("预算到点"));
+                //   ⚠ 但它**必须**用对参数。原实现 `(… , budget, 4000)` 的语义是
+                //     "**第一个回执到达后，再等 4000ms 就强制收尾**"（decomp:173031-173045）——
+                //     那个 4000ms 才是"联机回放只播一幕"的直接执行者：guest 因为
+                //     "客户端 Trial / 服务端 Survive"分裂满 5 秒被相位看门狗强制
+                //     `ApplyStateInstant(Survive)`（34930-34943），而它顺手 `CompleteAndSend()`
+                //     （38714）⇒ 发回一个**与回放无关**的 ack ⇒ 4000ms 后全场被掐断。
+                //   ⇒ 病根是 **grace**，不是"等待"。把 grace 取成**等于**绝对超时，
+                //     出路就只剩"全部回执到齐"或"预算到点"两条 ——
+                //     **这也正是原版自己的写法**（`TrialManager.StartReplay`：
+                //     `WaitCompletePacket(cb, CompleteWaitCount(), num2, num2)`，179355）。
+                //     慢的客户端最多拖到预算上限；慢不动的会被上限收掉，不会有人被提前掐断。
+                room.WaitCompletePacket(() => Finish("客户端放完/预算到点"),
+                    room.CompleteWaitCount(), budget, budget);
+                Plugin.Log.LogInfo($"[HS-Replay] 等 {room.CompleteWaitCount()} 个真人客户端报『放完了』，"
+                    + $"上限 {budget}ms（grace 同值 ⇒ 不会因单个回执提前收尾）。");
                 room.Broadcast(new S_TRIAL_STATE { State = ETrialState.Replay });
             }
             catch (Exception ex)
