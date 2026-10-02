@@ -1,6 +1,7 @@
 ﻿using System;
 using BepInEx.Configuration;
 using HarmonyLib;
+using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
 using GameDeviceManager = Server.Game.DeviceManager;
@@ -13,12 +14,11 @@ namespace HideAndSeek.Features.Rule
     ///
     /// 结果一 —— **电力系统正常** ⇒ **电箱下线 N 秒**（默认 45）：
     ///   口径（房主给的）："如果已经派发电箱，则让电箱消失 45 秒无法破坏；如果电箱还没派发，则额外延后 45 秒"。
-    ///   两者用同一条路径实现 —— 一个**抑制窗口**：
+    ///   两者共用一条路径：
     ///     · 已派发（`Fusebox.DeviceInfo.MissionType == -1`）⇒ 先 `ClearFuseboxSabotage()` 立刻收回
-    ///       （地图标记消失、`GetDisconnectFuseCount` 归零 ⇒ 期间无法破坏），再把抑制窗口设上；
-    ///     · 未派发 ⇒ 只设抑制窗口（原版 `RefreshLight` 的 `case 0` 会在断电归零后
-    ///       `PushSurvivalJob(60, StartFuseboxSabotage)`，那一次派发会被抑制窗口挡住并顺延）。
-    ///   ⇒ 抑制由 <see cref="SuppressStartHook"/> 实现，**不改原版那个 60 秒常量**。
+    ///       （地图标记消失 ⇒ 期间无法破坏）；
+    ///     · 然后**排一次归还预约**（<see cref="ArmRestore"/>）—— N 秒后重新派发。
+    ///   ⇒ "下线"由收回实现，"恢复"由预约实现；**不依赖原版那条只在电缆事件时才会排上的 60 秒重派发**。
     ///
     /// 结果二 —— **电力中断** ⇒ **修好所有电箱**：直接复用 <see cref="PowerRepairFeature"/> 的
     ///   既有实现（走原版 `Fusebox.ConnetCable` 路径，不手工复刻它的副作用）。
@@ -56,8 +56,33 @@ namespace HideAndSeek.Features.Rule
             "关 = 不检查位置，他人一律得到『已被占用』。")]
         public static ConfigEntry<bool> RequireSameArea;
 
-        /// <summary>抑制窗口的截止时刻（房主时钟）。在此之前 `StartFuseboxSabotage` 会被顺延。</summary>
-        private static float _suppressUntil = -1f;
+        /// <summary>
+        /// **归还预约** —— "电箱下线 N 秒"唯一的状态。
+        ///
+        /// ★ 为什么是**句柄**而不是一个绝对时刻（2026-10 改掉的关键）：
+        ///   旧实现存 `_suppressUntil = Now() + N`（绝对时刻），判据是"比时间"，于是
+        ///     · 与 `ClientTime`（受 `TimeScale` 缩放的**本机**时钟）绑死；
+        ///     · 窗口内收到派发请求时用"真实毫秒重排"，**两个时钟不同源 ⇒ 可能永不收敛**
+        ///       （实测症状："预期 45 秒后恢复，实际永久不恢复"）；
+        ///     · 换局必须显式清，漏了就把新局前几分钟全抑制掉。
+        ///   ⇒ 现在"何时归还"交给**原版自己的通道** `TimeManager.PushSurvivalJob` ——
+        ///     与原版 `RefreshLight` 里那句 `PushSurvivalJob(60, StartFuseboxSabotage)`（:173511）
+        ///     同源，基准是 `SurviveTime`（全网同步、每局重置为 420）。
+        /// </summary>
+        private static JobElem _restore;
+
+        /// <summary>
+        /// 排下 <see cref="ArmRestore"/> 那一刻的 `SurviveTime` —— 用途只有**换局自愈**。
+        ///
+        /// 为什么需要第二个判据：`ResetSurvival()` 会把 `SurviveTime` 重设为 420，
+        /// 队列里的陈旧预约被原版 `ClearSurvivalJob()` 清掉时**不会** `Kill()` 元素
+        /// （`JobElem.IsValid()` 仍为真）⇒ 单看 `IsValid()` 无法察觉。
+        /// 而 `SurviveTime` 局内单调增、换局归 420 ⇒ `SurviveTime >= _armedAt` 必然转假。
+        /// ⚠ 方向必须是"失败即放行"：转假只会让派发恢复正常，绝不会把派发永久吃掉。
+        /// ⚠ **不要**改成 `SurviveTime < _restore.execTick` 之类 —— 陈旧 `execTick` 恒大于
+        ///   新局的 `SurviveTime`，那会让陈旧句柄显得**更**"pending"（方向反了）。
+        /// </summary>
+        private static int _armedAt;
 
         /// <summary>
         /// **全房共享冷却**的截止时刻（房主时钟）。
@@ -77,19 +102,18 @@ namespace HideAndSeek.Features.Rule
         private static float _roomCdUntil = -1f;
 
         /// <summary>
-        /// **换局清理**：把两个"绝对时刻"归零。
+        /// **换局清理**：把"绝对时刻"形态的残留状态归零。
         ///
-        /// 由 `CommandFeature.RoundResetHook`（`ChangeGameState` 进 `Survive`）调用。
-        ///
-        /// 不清会怎样（都是实测过的症状）：
+        /// 不清会怎样（实测过的症状）：
         ///   · `_roomCdUntil` 残留 ⇒ 新局 `/maint` 报出**比配置值更大**的冷却
         ///     （上一局 T0 越大、残留越久，因为 `ClientTime` 归零后要从 0 重新爬）；
-        ///   · `_suppressUntil` 残留 ⇒ 新局 `StartFuseboxSabotage` 被莫名顺延，
-        ///     表现为"**电箱迟迟不派发、`/brk` 无事可做**"，最长可达上一局的 T0 + 45 秒。
+        ///
+        /// ⚠ 抑制那半边**已经不需要在这里清了**：它从"绝对时刻 `_suppressUntil`"改成了
+        ///   "归还预约 `_restore`"，而后者靠 `SurviveTime >= _armedAt` 换局自愈
+        ///   （`SurviveTime` 换局归 420 ⇒ 判据自动转假，且方向是失败即放行）。
         /// </summary>
         public static void ResetRoundState()
         {
-            _suppressUntil = -1f;
             _roomCdUntil = -1f;
         }
 
@@ -116,12 +140,53 @@ namespace HideAndSeek.Features.Rule
             catch { return 0f; }
         }
 
-        /// <summary>把抑制窗口设为"现在 + N 秒"。已在抑制期内则取更晚的那个（不缩短）。</summary>
-        private static void Suppress(float seconds)
+        /// <summary>
+        /// **排一次归还**：N 秒后（`SurviveTime` 轴）重新派发电箱。
+        ///
+        /// ★ 这是"下线 N 秒"里**解除下线**的唯一来源。旧实现只设了一个抑制窗口，却假设
+        ///   "原版会在断电归零后自己重派发"—— 而那个重派发在
+        ///   `RefreshLight` 的 `case 0`（`:173511` 的 `PushSurvivalJob(60, StartFuseboxSabotage)`），
+        ///   而 `RefreshLight` **只有两个调用点**：`Fusebox.ConnetCable`(:162756) 与
+        ///   `Fusebox.DisconnetCable`(:162775) ⇒ 它由**电缆事件**驱动，不是定时器。
+        ///   自检这条路上没有任何电缆事件 ⇒ 那个假设不成立 ⇒ 电箱本局再也不回来
+        ///   （实测："预期推迟 45 秒，实际永久推迟"）。
+        /// </summary>
+        private static void ArmRestore(float sec)
         {
-            float until = Now() + seconds;
-            if (until > _suppressUntil)
-                _suppressUntil = until;
+            var tm = TimeManager.Instance;
+            if (tm == null)
+                return;
+
+            _restore?.Kill();                       // 幂等：重复自检只保留最后一次预约
+            _armedAt = tm.SurviveTime;
+            _restore = tm.PushSurvivalJob((int)Math.Ceiling(sec), Restore);
+        }
+
+        /// <summary>
+        /// 预约到点：重新派发电箱。照抄原版对 `_jobElem` 的既有写法（`:168336-168339`）——
+        /// `Kill()` 旧的、`PushSurvivalJob` 拿新句柄、回调里把字段置空。
+        /// </summary>
+        private static void Restore()
+        {
+            _restore = null;
+            try
+            {
+                if (GameRoom.Instance?.State != EGameState.Survive)
+                    return;                         // 已换局/已进审判 ⇒ 不在这一局里补派发
+                GameDeviceManager.Instance?.StartFuseboxSabotage();
+            }
+            catch (global::System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] 电力自检：归还电箱失败 — {ex.Message}");
+            }
+        }
+
+        /// <summary>是否已有一次归还预约在排队（见 <see cref="_restore"/> / <see cref="_armedAt"/>）。</summary>
+        private static bool ReturnPending()
+        {
+            var tm = TimeManager.Instance;
+            return _restore != null && _restore.IsValid()
+                && tm != null && tm.SurviveTime >= _armedAt;
         }
 
         /// <summary>
@@ -162,8 +227,9 @@ namespace HideAndSeek.Features.Rule
                 Plugin.Log.LogWarning($"[HS] 电力自检：收回电箱失败 — {ex.Message}");
             }
 
-            Suppress(sec);
-            Plugin.Log.LogInfo($"[HS] 电力自检：电箱下线 {sec:F0} 秒（已派发={dispatched}）。");
+            ArmRestore(sec);
+            Plugin.Log.LogInfo($"[HS] 电力自检：电箱下线 {sec:F0} 秒（已派发={dispatched}）——"
+                + $"归还已按原版 `PushSurvivalJob` 排定。");
             return dispatched;
         }
 
@@ -180,11 +246,17 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>
-        /// 抑制窗口内的电箱派发 ⇒ 不执行，改为**顺延到窗口末尾**重排一次。
+        /// 归还预约在排队时，其它派发请求一律**作废**。
         ///
-        /// 为什么用"重排"而不是"直接丢弃"：派发是原版 `RefreshLight` 的 `case 0` 排的
-        /// `PushSurvivalJob(60, StartFuseboxSabotage)` —— 丢弃等于把它永久吃掉，
-        /// 这一局就再也不会派发电箱了；重排则只是推迟。
+        /// 保留这个钩子是为了挡住一个仍然存在的情形：**自检之前就已经排好的原版派发**
+        /// （某人修好电缆 ⇒ `RefreshLight` 的 `case 0` 排了 60 秒任务）落在下线窗口内
+        /// ⇒ 电箱会提前回来。作废它即可，因为"重派发"这个语义已由
+        /// <see cref="ArmRestore"/> 的预约接管。
+        ///
+        /// ★ 为什么是"作废"而不是旧实现的"顺延到窗口末尾"：
+        ///   · 归还已经由预约负责 ⇒ 再顺延一次会造成同一时刻**两次**派发；
+        ///   · 而"丢弃"本来并不可怕 —— 旧注释担心的"永久吃掉"恰恰是**旧实现自己的 bug**：
+        ///     它把归还的责任外包给原版，而原版那条路只在电缆事件时才会被排上。
         /// </summary>
         [HarmonyPatch(typeof(GameDeviceManager), "StartFuseboxSabotage")]
         internal static class SuppressStartHook
@@ -195,22 +267,10 @@ namespace HideAndSeek.Features.Rule
                 if (!Armed || __instance == null)
                     return true;
 
-                float now = Now();
-                if (now >= _suppressUntil)
-                    return true;                    // 不在抑制期 ⇒ 放行
+                if (!ReturnPending())
+                    return true;                    // 没有待归还的预约 ⇒ 正常派发
 
-                // 还在抑制期 ⇒ 顺延到窗口末尾（+50ms 余量，避免同一帧内立刻又撞上）
-                int delayMs = (int)((_suppressUntil - now) * 1000f) + 50;
-                try
-                {
-                    GameRoom.Instance?.PushAfter(delayMs, __instance.StartFuseboxSabotage);
-                    Plugin.Log.LogInfo($"[HS] 电力自检：电箱派发被顺延 {delayMs / 1000f:F1} 秒。");
-                }
-                catch (global::System.Exception ex)
-                {
-                    Plugin.Log.LogWarning($"[HS] 电力自检：顺延派发失败，改为放行 — {ex.Message}");
-                    return true;                    // 顺延失败就放行，绝不能让派发凭空消失
-                }
+                Plugin.Log.LogInfo("[HS] 电力自检：已有一次归还预约在排队，本次派发作废。");
                 return false;
             }
         }

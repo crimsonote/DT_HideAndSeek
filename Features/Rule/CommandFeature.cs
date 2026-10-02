@@ -415,8 +415,10 @@ namespace HideAndSeek.Features.Rule
         ///     且已排出的 `SelfTestActivate` 可能在新局开局施加效果。
         ///   · `_roomCdUntil`（全房冷却）—— 详见 `ResetRoundState`：残留会让新局报出
         ///     **比配置值更大**的冷却（实测 "CD220" 而配置是 180）。
-        ///   · `_suppressUntil`（抑制派发）—— 同上，残留会让新局 `StartFuseboxSabotage`
-        ///     被莫名顺延几分钟，表现是"电箱迟迟不派发、`/brk` 无事可做"。
+        ///
+        /// ⚠ "抑制"那一类残留**已经不存在了**：它从"绝对时刻 `_suppressUntil`"改成了
+        ///   "归还预约 `_restore`"（`PowerSelfTestFeature`），而预约靠 `SurviveTime` 换局归 420
+        ///   自愈 ⇒ 不需要在这里清，也不会再出现"新局电箱迟迟不派发"。
         ///
         /// ⚠ 后两个**不能**指望"换局时 `ClientTime` 归零"自愈 —— 那恰恰是问题所在：
         ///   它们存的是**绝对时刻**，归零只是让上一局的绝对值在新局里显得更久。
@@ -434,11 +436,10 @@ namespace HideAndSeek.Features.Rule
                 //    而且已排出的 SelfTestActivate 可能在新局开局施加效果）。
                 SelfTestClear();
 
-                // ② 丢上一局残留的两个"绝对时刻"。它们**不能**靠 ClientTime 换局归零自愈 ——
-                //    归零只会让上一局的 `T0 + 180` / `T0 + 45` 在新局里显得更久：
-                //      实测 `_roomCdUntil`：上局 T0=100 ⇒ 280；新局到 60 时读出 220
-                //      （而配置的 CD 只有 180）—— 房主看到的正是 "CD220"；
-                //      `_suppressUntil` 同理 ⇒ 新局电箱迟迟不派发、`/brk` 无事可做。
+                // ② 丢上一局残留的"绝对时刻" `_roomCdUntil`。它**不能**靠 ClientTime 换局归零自愈 ——
+                //    归零只会让上一局的 `T0 + 180` 在新局里显得更久：
+                //      实测：上局 T0=100 ⇒ 280；新局到 60 时读出 220（而配置的 CD 只有 180）
+                //      —— 房主看到的正是 "CD220"。
                 PowerSelfTestFeature.ResetRoundState();
             }
         }
