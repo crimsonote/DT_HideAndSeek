@@ -22,10 +22,11 @@ namespace HideAndSeek.Features.Replay
     ///   ① 结算被请求 ⇒ 拦下（返回 true），启动
     ///   ② 逐幕发 `S_RECORD_REPLAY`（登记时已发）+ `S_REQUEST_TAPE`
     ///   ③ 等 TapeWaitMs；期间客户端回 `C_TAPE` ⇒ 逐段装配 + 广播
-    ///   ④ 让客户端进 Trial（**只广播，不改服务端 State**），等它过渡完
-    ///   ⑤ 发 `S_FADE_IN` 收掉加载页，等入场演出播完
-    ///   ⑥ 给没收到磁带的幕补"合成/占位"，然后推 `S_TRIAL_STATE{Replay}`
-    ///   ⑦ 等客户端回执（或超时）⇒ 继续原本的结算
+    ///   ④ 让客户端进 Trial（**只广播，不改服务端 State**）⇒ 客户端开始约 7 秒的入场演出
+    ///   ⑤ **等它演完**（回执 = `ShowTrialUI()` 之后那句 `CompleteAndSend()`），上限 12 秒
+    ///   ⑥ 这时才发 `S_FADE_IN` 收掉加载页 —— ⚠ 早发会把入场序列 `Kill()` 掉（见方法头）
+    ///   ⑦ 给没收到磁带的幕补"合成/占位"，然后推 `S_TRIAL_STATE{Replay}`
+    ///   ⑧ 只等**预算**到点（不等任何回执）⇒ 继续原本的结算
     /// </summary>
     internal static class ReplayDirector
     {
@@ -318,18 +319,35 @@ namespace HideAndSeek.Features.Replay
         }
 
         /// <summary>
-        /// 等审判 UI 的**开场演出**播完再推 Replay。
+        /// 【⑤⑥ 等每个客户端把 **TrialUI 建出来**】—— 回放能不能播，全在这一步。
         ///
-        /// ★ 不看客户端源码想不到：`StartReplay()` 第一件事是 `ResetSlideVisual()`，它是
-        ///   `_slideSequence.Kill()` + 把文字设成完全不透明；而开场 `SlidingText()` 的收尾
-        ///   `slideText.SetActive(false)` 挂在序列 OnComplete 上 ⇒ 序列被 Kill 之后永不执行
-        ///   ⇒ 开场文字被冻在画面上压在整段回放之上。
-        ///   开场时长（源码常量）：`SlidingText` 0.5+1+0.5 ≈ 2.0s，随后 `AlertMessage` 0.5+3.5+0.5 ≈ 4.5s，
-        ///   合计约 6.5s ⇒ 默认等 7 秒。
+        /// ★ 硬性依赖（不是"等演出播完"）：客户端 `Handle_S_TRIAL_STATE`（decomp:43033）里
+        ///   `TrialUI == null` 时**只打一条 LogError 就跳过**：
+        ///       UI_TrialEvent ui = (Managers.UI.SceneUI as UI_GameScene)?.TrialUI;
+        ///       if (ui == null) LogError("…TrialUI 없음 — 스킵");   else ui.State = …;
+        ///   而 `TrialUI` 是**整段入场演出跑完**才建出来的：
+        ///       `S_CHANGE_GAME_STATE{Trial}` → `Managers.UI.StartLoading(Trial)`
+        ///         （只记 `_loadingTargetState`，**不建 UI**；38629-38642）
+        ///         → `Arm(18s, "transition:Trial")` + `FadeOut(Trial)`（62301-62305）
+        ///         → `TrialEffect` 起 `_trialSequence`（62755）：淡出 1.0 → 镜头推近 0.47
+        ///           → 停 0.5 → **`GavelSfx` 敲锤**（62804）→ 镜头回 0.22 → 抖动 0.6+0.5
+        ///           → 淡入 0.15 → 标题（`TrialTitle` + `PakSound`）→ **停 3 秒**（62841）
+        ///         → `AppendTrialTitle` 收尾：`ShowTrialUI()` + `State = state`
+        ///           + `CompleteAndSend()`（62856-62861）
+        ///   ⇒ **整段约 7 秒**，回执在**最后一刻**才发 —— 这就是"要等"的全部理由。
         ///
-        /// 另外必须发 `S_FADE_IN`：客户端进 Trial 会先显示 `UI_Loading`，而它**自己不关自己**，
-        /// 关闭它的都是外部调用点，其中一条就是这个包；不发就要等 18 秒的兜底 watchdog，
-        /// 而那时回放早被盖住了。
+        /// ★ 回执 = `CompleteWatchdog.CompleteAndSend()`（62861）⇒ `C_COMPLETE_PACKET`，
+        ///   语义正是"状态已应用完、TrialUI 已就绪"。`CompleteWaitCount()` 不含假人，
+        ///   所以假人局只等房主自己那一台。
+        ///
+        /// ⚠ 超时**必须宽于入场演出**（实测约 7 秒，真人客户端还要加网络往返）——
+        ///   旧实现 `(8000, 1500)` 之所以"看起来能用"，只因为那个 8000ms 恰好够；
+        ///   而 1500ms 的 grace 语义是"第一个回执到达后再等 grace 就强制放行"，
+        ///   多客户端时会把**还没建好 UI 的那几台**一起放过去。所以这里必须
+        ///   **grace == 绝对超时**（原版 `TrialManager.StartReplay` 也是这么写的：
+        ///   `WaitCompletePacket(cb, CompleteWaitCount(), num2, num2)`，179355）。
+        ///
+        /// ⚠⚠ **不能在这里发 `S_FADE_IN`** —— 顺序铁律，见 <see cref="PushReplayAfterFadeIn"/>。
         /// </summary>
         private static void WaitIntroThenReplay()
         {
@@ -341,40 +359,53 @@ namespace HideAndSeek.Features.Replay
             }
             _room = room;
 
-            room.Broadcast(new S_FADE_IN());
+            int ready = Math.Max(12000, ReplayFeature.TrialIntroWaitMs?.Value ?? 0);
+            Plugin.Log.LogInfo($"[HS-Replay] 等 {room.CompleteWaitCount()} 个真人客户端报『入场演出播完、"
+                + $"TrialUI 已建』（上限 {ready}ms）—— 此阶段**不能**发 S_FADE_IN。");
+            room.WaitCompletePacket(PushReplayAfterFadeIn, room.CompleteWaitCount(), ready, ready);
+        }
 
-            // ★ 必须**等客户端把 TrialUI 建出来**再推 Replay —— 这是硬性依赖，不是"等演出播完"。
-            //
-            //   客户端 `Handle_S_TRIAL_STATE` 里 `TrialUI == null` 时**只打一条 LogError 就跳过**：
-            //       UI_TrialEvent ui = (Managers.UI.SceneUI as UI_GameScene)?.TrialUI;
-            //       if (ui == null) LogError("…TrialUI 없음 — 스킵");   else ui.State = …;
-            //   而 `TrialUI` 是**异步转场**的产物：
-            //       `S_CHANGE_GAME_STATE{Trial}` → `Managers.UI.StartLoading(Trial)`
-            //         （只记 `_loadingTargetState`，**不建 UI**；decomp:38629-38642）
-            //       → `S_FADE_IN` → `EndLoading()` 的淡入回调（38644-38674）
-            //       → 客户端状态机收尾处才 `ShowTrialUI()` + `State = state` + `CompleteAndSend()`
-            //         （62858-62861）
-            //   ⇒ 在 `S_FADE_IN` 的**同一帧**把 `S_TRIAL_STATE{Replay}` 发出去，它必然跑在那个
-            //     收尾之前 ⇒ 整段回放被静默跳过、客户端留在 `Survive`（画面就是"闪一下又回地图"）。
-            //
-            //   实测（假人局，`TrialIntroWaitMs = 0`）：服务端 3/3 段磁带全部取回并装配成功、
-            //   播满 38.8 秒预算才收尾，而客户端：
-            //       [Trial] 테이프 수신 1/0、2/0、3/0（shots=50/67/60）   ← 磁带都到了
-            //       [Trial] S_TRIAL_STATE: TrialUI 없음 — 스킵            ← 状态包被丢弃
-            //       [Barrier] C_COMPLETE 워치독 발화(transition:Trial, 18s) ← 它自己诊断出转场没完成
-            //
-            //   ★ 回执就是那次收尾里的 `CompleteWatchdog.CompleteAndSend()` —— 语义正是
-            //     "我已把状态应用完、TrialUI 已就绪"。`CompleteWaitCount()` 不含假人，所以
-            //     假人局只会等房主自己那一台。
-            //   ⚠ `firstAckGraceMs` **必须等于**绝对超时（原版 `TrialManager.StartReplay` 也是如此：
-            //     `WaitCompletePacket(cb, CompleteWaitCount(), num2, num2)`，decomp:179355）。
-            //     否则"第一个回执到达后再等 grace 就强制放行"会把**还没建好 UI 的客户端**一起
-            //     放过去 —— 那正是本处旧实现 `(8000, 1500)` 的毛病；它之所以"看起来能用"，
-            //     只是因为 1500ms 通常够客户端建完 UI。B2 把它删成固定 800ms 后就暴露了。
-            int ready = Math.Max(8000, ReplayFeature.TrialIntroWaitMs?.Value ?? 0);
-            Plugin.Log.LogInfo($"[HS-Replay] 已发 S_FADE_IN；等 {room.CompleteWaitCount()} 个真人客户端"
-                + $"报『转场完成』（上限 {ready}ms）再推 Replay —— 推早了客户端会因 TrialUI 未建而整段跳过。");
-            room.WaitCompletePacket(BroadcastReplay, room.CompleteWaitCount(), ready, ready);
+        /// <summary>
+        /// 【⑦ 收加载页 → ⑧⑨ 推 Replay】—— **只能在入场演出跑完之后**。
+        ///
+        /// ⚠⚠ **顺序铁律**：`S_FADE_IN` → `Handle_S_FADE_IN` → `Managers.UI.EndLoading()`
+        ///   → 淡入回调里 `CloseSystemUI(_loadingUI)`（38644-38674）
+        ///   → `UI_Loading.OnDisable()` / `OnDestroy()` → **`_trialSequence?.Kill()`**（62924-62940）。
+        ///   而 Trial 的**整段入场演出（含 `ShowTrialUI()` 与那个就绪回执）就跑在 `_trialSequence` 上**
+        ///   ⇒ 在入场跑完之前发 `S_FADE_IN`，等于把"建 TrialUI + 发回执"一起杀掉：
+        ///     转场永不完成 → 18 秒看门狗兜底 → `S_TRIAL_STATE{Replay}` 因 `TrialUI == null` 被丢弃
+        ///     → **整段回放静默消失**。
+        ///   实测（2026-10-02 假人局，把 `S_FADE_IN` 放在等待之前）：
+        ///       [Host] ForceComplete: timeout, firing with 0/1, received=[]   ← 一个回执都没等到
+        ///       [Trial] S_TRIAL_STATE: TrialUI 없음 — 스킵
+        ///       [Barrier] C_COMPLETE 워치독 발화(transition:Trial, 18s)        ← 转场从未完成
+        ///
+        ///   ★ 这个顺序也正是**原版自己的顺序**（decomp:171582 附近）：
+        ///       `Broadcast(S_SEND_TRIAL_EVENT)`（客户端 `ShowTrialUI()` + `SetInfo`）
+        ///       → `SyncAllPlayer{ S_FADE_IN }`
+        ///     即"**先建 UI，再收加载页**"。
+        /// </summary>
+        private static void PushReplayAfterFadeIn()
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                if (room == null)
+                {
+                    Finish("房间已不存在");
+                    return;
+                }
+                _room = room;
+
+                // 收掉 UI_Loading：此时入场序列已经跑完，Kill 它已经无害。
+                room.Broadcast(new S_FADE_IN());
+                BroadcastReplay();
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS-Replay] 收加载页/推 Replay 失败 — {ex.Message}");
+                Finish("推送失败");
+            }
         }
 
         // ── ⑥⑦ 推 Replay 并等它放完 ────────────────────────────────────
