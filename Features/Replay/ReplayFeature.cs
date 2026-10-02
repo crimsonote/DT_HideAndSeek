@@ -133,6 +133,32 @@ namespace HideAndSeek.Features.Replay
             "每局一个子目录、保留最近 8 局）。只写文件，不改游戏状态、不发包 —— 关掉纯粹为了不占磁盘。")]
         public static ConfigEntry<bool> DumpTapes;
 
+        /// <summary>
+        /// 回放里「慢镜 / 放大」的处理方式。
+        ///
+        /// ★ 为什么只能二选一：客户端 `ApplyEdit`（decomp:32169-32182）里 `SlowTimeEdit` **同时**是
+        ///   "慢放（`TimeScale = 0.25`）"与"放大（`DOOrthoSize(300, 2)`）"的开关
+        ///   ⇒ 没有"只去掉放大、保留慢镜"这种选项。
+        /// </summary>
+        internal enum SlowEditMode
+        {
+            /// <summary>保留一拍（默认）：把"同一事件被重复登记"多出来的那枚去掉。</summary>
+            KeepOne = 0,
+
+            /// <summary>全部剔除：连慢镜一起去掉，**全程常速**（回放也更短）。</summary>
+            Remove = 1,
+        }
+
+        [ConfigField(SlowEditMode.KeepOne, "【慢镜 / 放大】回放里的「慢镜」怎么处理。" +
+            "同一幕原本会出现**两枚**：同一次刀杀被登记两次（我们 + 原版延迟约 0.4 秒那张），" +
+            "而客户端**每次**登记都会插一枚 `SlowTimeEdit`（`FindBeforeSnapshot`，事件前 0.3 秒）" +
+            "⇒ 两枚相隔 ≈0.354 秒 ⇒ 镜头「放大 → 回正 → 立刻又放大」，" +
+            "观感就是『有点频繁的放大，还有点偏』（实测 7 幕杀人幕全部如此，拿刀幕只有一拍）。" +
+            "**KeepOne（默认）** = 只保留最早那枚 ⇒ 每幕恰好一拍。" +
+            "**Remove** = 全部剔除 ⇒ 连慢镜一起去掉、全程常速。" +
+            "⚠ 无论取哪个，`NormalTimeEdit` / `GlitchEdit` 都一枚不丢 —— 回正与故障特效挂在它们身上。")]
+        public static ConfigEntry<SlowEditMode> SlowEdit;
+
         // ── 状态（**一处**便能看清走到哪了）────────────────────────────
 
         private static readonly List<Act> Acts = new List<Act>();

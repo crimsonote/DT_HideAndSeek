@@ -26,6 +26,8 @@ namespace HideAndSeek.Features.Replay
         public int RawInWindow;
         public int RosterAdded;
         public int ToxicDropped;
+        /// <summary>丢弃的**多余慢镜**（`SlowTimeEdit`）枚数 —— 见 `Assemble` 里「慢镜 / 放大」那段。</summary>
+        public int SlowDropped;
         /// <summary>排序前时间戳逆序的处数（&gt;0 说明排序在救场）。</summary>
         public int InvertedBefore;
         /// <summary>是否补了一枚 `NormalTimeEdit`（没有它，客户端会继承上一段遗留的 `TimeScale = 0.25`）。</summary>
@@ -62,7 +64,7 @@ namespace HideAndSeek.Features.Replay
 
             return $"【{Kind}#{Key}】{origin} 窗口={Window} {FramesIn}→{FramesOut} 帧"
                  + spanNote
-                 + $"（全员出场帧 +{RosterAdded} 剔毒帧 -{ToxicDropped} 排序前逆序 {InvertedBefore} 处"
+                 + $"（全员出场帧 +{RosterAdded} 剔毒帧 -{ToxicDropped} 慢镜 -{SlowDropped} 排序前逆序 {InvertedBefore} 处"
                  + (TimeEditAdded ? " 补时间编辑" : "") + $")"
                  + $" 主角=#{SubjectId} 首帧(剪影)=#{HeadId}";
         }
@@ -105,6 +107,15 @@ namespace HideAndSeek.Features.Replay
         /// 主角在动、候选也常常不够远；瞬移则直接达成"看不见"。
         /// </summary>
         private const float FarOffset = 2000f;
+
+        /// <summary>
+        /// 判定"同一事件的重复慢镜"的时间阈值（**磁带时间**，秒）。
+        ///
+        /// 实测重复对的间隔 ≈**0.354 秒**（原版那句 `PushAfter(400)` 的 400ms 在 `ClientTime` 上
+        /// 打了点折扣），而两个**不同**事件之间通常相隔 ≥1 秒 ⇒ 0.6 秒两边都留了余量。
+        /// 见 `Assemble` 里「慢镜 / 放大」那段。
+        /// </summary>
+        private const float SlowDupSeconds = 0.6f;
 
         /// <summary>
         /// 装配一段磁带。
@@ -221,6 +232,8 @@ namespace HideAndSeek.Features.Replay
 
             // ── ③ 窗口过滤 + ④ 剔毒帧 ───────────────────────────────────
             int rawInWindow = 0;
+            // 上一枚**保留下来**的慢镜时刻（用于把"同一事件的重复登记"归簇）。
+            float lastSlow = -1f;
             if (frames != null)
             {
                 foreach (var s in frames)
@@ -230,6 +243,44 @@ namespace HideAndSeek.Features.Replay
                     // 左闭右开，与现有实现的窗口语义一致
                     if (s.TimeStamp < act.Window.From || s.TimeStamp >= act.Window.To)
                         continue;
+
+                    // ── 「慢镜 / 放大」的处理 ───────────────────────────────────
+                    // 客户端 `ApplyEdit`（decomp:32169-32182）里，`SlowTimeEdit` **同时**做两件事：
+                    //     Managers.Game.TimeScale = 0.25f;        ← 慢放（磁带前进 = DeltaTime × 0.25）
+                    //     Camera.main.DOOrthoSize(300f, 2f);      ← 放大
+                    // 而它由 `ReserveSaveTape` 的 `FindBeforeSnapshot()` 在**每次登记**前 0.3 秒插一枚
+                    // （decomp:31679）。问题在于**同一次刀杀会被登记两次**：
+                    //   · 我们（`ReplayFeature.HitHook`，挂在 `OnDamaged` 的 Postfix）—— 事件那一刻；
+                    //   · 原版（decomp:175957 的 `PushAfter(400)`，DT 刀杀见 decomp:176509）—— 晚约 0.35 秒。
+                    // ⇒ 一幕的原始磁带里出现**两组** Slow/Normal，相隔 ≈0.354 秒
+                    //   ⇒ 镜头「放大 → 回正 → 立刻又放大」，中间只夹 54 毫秒。房主口径：
+                    //     "有点频繁的放大，但是有点偏移"（实测 7 幕杀人幕全部如此，拿刀幕只有一拍）。
+                    //
+                    // ⇒ 按 `ReplayFeature.SlowEdit` 处理：
+                    //   · KeepOne（默认）＝ 只保留**一拍**：相隔 < `SlowDupSeconds` 的归成一簇、每簇留最早一枚；
+                    //   · Remove         ＝ **全部剔除**：连慢镜一起去掉、全程常速
+                    //     （`SlowTimeEdit` 同时是"慢放"与"放大"的开关，做不出"只去放大、留慢镜"）。
+                    //
+                    // ⚠ **只丢 `SlowTimeEdit`**，`NormalTimeEdit` / `GlitchEdit` **一枚都不丢**：
+                    //   "回正"（`TimeScale = 1` + `DOOrthoSize(480,1)` + 开故障特效）与"关故障特效"
+                    //   都挂在它们身上。即使这里判错、切掉了某枚 `NormalTimeEdit`，客户端每段结束的
+                    //   `FinishTape()`（decomp:32058-32062）与 `Stop()`（decomp:32124-32134，还会
+                    //   `DOOrthoSize(480,1)`）也会强制复位 ⇒ 最多影响本段剩余部分，不会跨段污染。
+                    if (s.Type == ESnapShotType.EditShot && s.Edit != null
+                        && s.Edit.Type == EEditShotType.SlowTimeEdit)
+                    {
+                        if (ReplayFeature.SlowEdit?.Value == ReplayFeature.SlowEditMode.Remove)
+                        {
+                            report.SlowDropped++;      // Remove：全剔除
+                            continue;
+                        }
+                        if (lastSlow >= 0f && s.TimeStamp - lastSlow < SlowDupSeconds)
+                        {
+                            report.SlowDropped++;      // KeepOne：本簇已有更早的一枚，这枚是重复
+                            continue;
+                        }
+                        lastSlow = s.TimeStamp;
+                    }
 
                     // ⚠ 项圈自爆尸体的 `AddShot` —— 原版自身的"二次 SetInfo"缺陷，只能绕开。
                     //   客户端 `Corpse.SetInfo` 的 bomb 分支第一句就是
