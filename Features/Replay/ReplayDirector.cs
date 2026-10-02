@@ -302,9 +302,11 @@ namespace HideAndSeek.Features.Replay
                 //   只让客户端进 Trial 就同时避开这两条。
                 Plugin.Log.LogInfo($"[HS-Replay] 先让客户端建立回放 UI（{All.Count} 幕）。");
 
-                // ★ **这里也不等回执**：原来用 `WaitCompletePacket(…, 8000, 1500)`，
-                //   而它的 1500ms 同样是"第一个回执到达后就收尾" —— 触发源可能是相位收敛发来的
-                //   无关 ack（见下面 `Replay` 那处的完整说明）。给客户端一个固定的建 UI 时间即可。
+                // ⚠ 这里**只等 800ms 让加载页先显示出来**（`StartLoading` 要有画面可收），
+                //   真正的"客户端就绪"握手在 `WaitIntroThenReplay` 里 —— 那边走
+                //   `WaitCompletePacket`，等的是**客户端转场收尾时发的回执**，
+                //   而不是一个固定时长。固定在 800ms 推 Replay 会让客户端因
+                //   `TrialUI` 尚未建出而**整段静默跳过**（见 `WaitIntroThenReplay` 的完整说明）。
                 room.PushAfter(800, WaitIntroThenReplay);
                 room.Broadcast(new S_CHANGE_GAME_STATE { State = EGameState.Trial });
             }
@@ -341,9 +343,38 @@ namespace HideAndSeek.Features.Replay
 
             room.Broadcast(new S_FADE_IN());
 
-            int wait = ReplayFeature.TrialIntroWaitMs?.Value ?? 7000;
-            Plugin.Log.LogInfo($"[HS-Replay] 已发 S_FADE_IN 收掉加载页，等 {wait}ms 让入场演出播完再推 Replay。");
-            room.PushAfter(wait, BroadcastReplay);
+            // ★ 必须**等客户端把 TrialUI 建出来**再推 Replay —— 这是硬性依赖，不是"等演出播完"。
+            //
+            //   客户端 `Handle_S_TRIAL_STATE` 里 `TrialUI == null` 时**只打一条 LogError 就跳过**：
+            //       UI_TrialEvent ui = (Managers.UI.SceneUI as UI_GameScene)?.TrialUI;
+            //       if (ui == null) LogError("…TrialUI 없음 — 스킵");   else ui.State = …;
+            //   而 `TrialUI` 是**异步转场**的产物：
+            //       `S_CHANGE_GAME_STATE{Trial}` → `Managers.UI.StartLoading(Trial)`
+            //         （只记 `_loadingTargetState`，**不建 UI**；decomp:38629-38642）
+            //       → `S_FADE_IN` → `EndLoading()` 的淡入回调（38644-38674）
+            //       → 客户端状态机收尾处才 `ShowTrialUI()` + `State = state` + `CompleteAndSend()`
+            //         （62858-62861）
+            //   ⇒ 在 `S_FADE_IN` 的**同一帧**把 `S_TRIAL_STATE{Replay}` 发出去，它必然跑在那个
+            //     收尾之前 ⇒ 整段回放被静默跳过、客户端留在 `Survive`（画面就是"闪一下又回地图"）。
+            //
+            //   实测（假人局，`TrialIntroWaitMs = 0`）：服务端 3/3 段磁带全部取回并装配成功、
+            //   播满 38.8 秒预算才收尾，而客户端：
+            //       [Trial] 테이프 수신 1/0、2/0、3/0（shots=50/67/60）   ← 磁带都到了
+            //       [Trial] S_TRIAL_STATE: TrialUI 없음 — 스킵            ← 状态包被丢弃
+            //       [Barrier] C_COMPLETE 워치독 발화(transition:Trial, 18s) ← 它自己诊断出转场没完成
+            //
+            //   ★ 回执就是那次收尾里的 `CompleteWatchdog.CompleteAndSend()` —— 语义正是
+            //     "我已把状态应用完、TrialUI 已就绪"。`CompleteWaitCount()` 不含假人，所以
+            //     假人局只会等房主自己那一台。
+            //   ⚠ `firstAckGraceMs` **必须等于**绝对超时（原版 `TrialManager.StartReplay` 也是如此：
+            //     `WaitCompletePacket(cb, CompleteWaitCount(), num2, num2)`，decomp:179355）。
+            //     否则"第一个回执到达后再等 grace 就强制放行"会把**还没建好 UI 的客户端**一起
+            //     放过去 —— 那正是本处旧实现 `(8000, 1500)` 的毛病；它之所以"看起来能用"，
+            //     只是因为 1500ms 通常够客户端建完 UI。B2 把它删成固定 800ms 后就暴露了。
+            int ready = Math.Max(8000, ReplayFeature.TrialIntroWaitMs?.Value ?? 0);
+            Plugin.Log.LogInfo($"[HS-Replay] 已发 S_FADE_IN；等 {room.CompleteWaitCount()} 个真人客户端"
+                + $"报『转场完成』（上限 {ready}ms）再推 Replay —— 推早了客户端会因 TrialUI 未建而整段跳过。");
+            room.WaitCompletePacket(BroadcastReplay, room.CompleteWaitCount(), ready, ready);
         }
 
         // ── ⑥⑦ 推 Replay 并等它放完 ────────────────────────────────────

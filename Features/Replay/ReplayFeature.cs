@@ -109,14 +109,14 @@ namespace HideAndSeek.Features.Replay
             Min = 1f, Max = 60f)]
         public static ConfigEntry<float> SecondsPerClipEstimate;
 
-        [ConfigField(0, "收掉加载页后，等多久再把客户端切进 Replay 相位（毫秒）。默认 0 ＝ 立刻切。" +
-            "⚠ 这里**不要**再等'开场字幕'：那段字幕由 `Discuss` 相位的 `StartFirstTalk()` 启动，" +
-            "而回放从头到尾**不发 Discuss** ⇒ 它根本不会播。而客户端被拉进 Trial 后、" +
-            "收到第一个 `S_TRIAL_STATE` 之前的这段时间，`UI_TrialEvent` 是没有相位的" +
-            "（界面文字在 `Init()` 里就设好了，只有相位才驱动切换）⇒ 等得越久，" +
-            "画面上越久停留在一张'没按相位初始化'的界面（实测表现为：标题写着『投票结果』、" +
-            "中间却是另一条烘死的韩文）。默认值曾是 7000，理由是'避免 Kill 掉开场字幕'" +
-            "—— 那个理由基于对 `StartReplay()` 的错误假设（它只做 `WaitCompletePacket`，没有 ResetSlideVisual）。",
+        [ConfigField(0, "【超时兜底】收掉加载页后，**最多**等多久让客户端报『转场完成』（毫秒）。" +
+            "⚠ 它不是「演出时长」：正常情况客户端一就绪就立刻推进，这只是上限；" +
+            "而且**小于 8000 时按 8000 处理** —— 客户端的 Trial 转场是异步的" +
+            "（`S_FADE_IN` → 淡入回调 → 状态机收尾 `ShowTrialUI()` + `CompleteAndSend()`），" +
+            "推早了 `S_TRIAL_STATE{Replay}` 会因 `TrialUI` 还没建出来被**整段静默跳过**。" +
+            "本项曾是 7000，理由是「避免 Kill 掉开场字幕」—— 那个理由基于对 `StartReplay()` 的" +
+            "错误假设（它只做 `WaitCompletePacket`，没有 ResetSlideVisual）；" +
+            "但「要等」这件事本身是对的，只是该等的是**客户端的就绪回执**，不是固定时长。",
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
