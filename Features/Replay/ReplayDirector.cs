@@ -220,6 +220,99 @@ namespace HideAndSeek.Features.Replay
                 + $"其余 {All.Count - _sent} 幕没有客户端可用 ⇒ 走服务端合成。");
         }
 
+        /// <summary>数一数某区间里有多少帧（用于比较"房主窗口"与"磁带锚点窗口"的素材量）。</summary>
+        private static int CountIn(List<SnapShot> raw, ReplayWindow.Span span)
+        {
+            int n = 0;
+            if (raw == null)
+                return 0;
+            foreach (var s in raw)
+            {
+                if (s != null && s.TimeStamp >= span.From && s.TimeStamp < span.To)
+                    n++;
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// 客户端快照的延迟：`ReserveSaveTape` 里 `DoActionAfter(9f, … RecordingTape.Add(…)`
+        /// （decomp:31647-31675）⇒ 快照 = **9 秒后**的环形缓冲 ⇒ 末帧 ≈ 登记时刻 + 9 秒。
+        /// </summary>
+        private const float TapeSnapshotDelaySec = 9f;
+
+        /// <summary>锚点允许的最大偏差（秒）：超过它说明"标记不在带子里/认错了" ⇒ 退回房主窗口。</summary>
+        private const float MaxAnchorErrSec = 3f;
+
+        /// <summary>
+        /// 从**磁带自身**里找本幕的裁剪锚点（= 事件那一刻，**客户端时钟**）——**纯磁带，不掺服务端数据**。
+        ///
+        /// 依据两条（都在磁带里，且都离线核对过，见 `.tmps/tools/check-anchor9.mjs`）：
+        ///   ① 客户端 `ReserveSaveTape`（decomp:31647-31679）每次登记都会插一对
+        ///      `SlowTimeEdit`（事件前 0.3 秒）+ `NormalTimeEdit`（登记那一刻）；
+        ///   ② 快照是 **9 秒后**拍的 ⇒ **末帧时间戳 − 9 秒 ≈ 登记时刻**。
+        /// ⇒ 取"**离 (客户端轴末帧 − 9 秒) 最近的标记簇里最早那枚 `NormalTimeEdit`**"。
+        ///   实测 145 份 dump：该差值几乎全在 **±0.13 秒**内 ✓
+        ///
+        /// ⚠ **"两次登记间隔小于 9 秒"不影响**：9 秒是**每次登记各自的快照**延迟 ⇒
+        ///   A 的快照在 A+9、B 的在 B+9 ⇒ 各自减 9 都落在自己的登记上。
+        ///   实测 `1002-224545`：拿刀 50.93 → 杀人 58.50（相隔 **7.6 秒**），两幕都取对了 ✓
+        /// ⚠ 不能用"最近一簇"代替：拿刀幕的带子里**还留着后续刀杀的登记** ⇒ 最近那簇是**后一次事件**
+        ///   （实测偏 **7.6 秒**）✗。
+        /// ⚠ 同一簇里取**最早**那枚：一次刀杀会被登记两次（我们 + 原版晚 ≈0.4 秒）⇒ 早的那枚是我们的。
+        /// ⚠ "末帧"必须排除**录制者自己的出场帧** —— 它是 `SurvivalTime` 轴（每轮第一枚，数值 ~600），
+        ///   混进来会把末帧抬到几百秒 ⇒ 锚点整个错掉。
+        ///
+        /// <paramref name="err"/> = 锚点与估计值的偏差；超过 <see cref="MaxAnchorErrSec"/> 时
+        /// 调用方应视作"标记不在带子里"（例如环形缓冲太短、或录制稀疏）而退回房主窗口。
+        /// </summary>
+        private static bool TryTapeAnchor(List<SnapShot> raw, int recorderId, out float anchor, out float err)
+        {
+            anchor = 0f;
+            err = float.MaxValue;
+            if (raw == null)
+                return false;
+
+            var normals = new List<float>();
+            float clientMax = float.NegativeInfinity;
+            foreach (var s in raw)
+            {
+                if (s == null)
+                    continue;
+                if (s.Type == ESnapShotType.EditShot && s.Edit != null
+                    && s.Edit.Type == EEditShotType.NormalTimeEdit)
+                    normals.Add(s.TimeStamp);
+
+                bool ownSpawn = s.Type == ESnapShotType.SpawnShot
+                    && s.Spawn != null && s.Spawn.PlayerId == recorderId;
+                if (!ownSpawn && s.TimeStamp > clientMax)
+                    clientMax = s.TimeStamp;
+            }
+            if (normals.Count == 0 || float.IsNegativeInfinity(clientMax))
+                return false;
+
+            float guess = clientMax - TapeSnapshotDelaySec;
+            normals.Sort();
+
+            // ① 找离估计值最近的那枚 ⇒ 定位"是哪一个簇"
+            float nearest = normals[0];
+            foreach (var t in normals)
+            {
+                if (Math.Abs(t - guess) < Math.Abs(nearest - guess))
+                    nearest = t;
+            }
+            // ② 取该簇里**最早**那枚（同一次登记被插两次：我们 + 原版晚 0.4 秒）
+            float earliest = nearest;
+            foreach (var t in normals)
+            {
+                if (t <= nearest && nearest - t <= 0.6f && t < earliest)
+                    earliest = t;
+            }
+
+            anchor = earliest;
+            err = Math.Abs(earliest - guess);
+            return true;
+        }
+
         /// <summary>
         /// 收到一段客户端磁带（由 <see cref="ReplayFeature"/> 的 `TapeHook` 调用）。
         /// 返回 true = 这段是我们登记的、已处理（调用方不要交还原版）。
@@ -256,7 +349,43 @@ namespace HideAndSeek.Features.Replay
                 act.SilhouetteId = sil.Id;
 
                 var head = BuildHead(act, raw, sil.Id);
-                var tape = TapeAssembler.Assemble(act, raw, head, visibleInfos, out var rep);
+
+                // ── 裁剪锚点：以房主窗口为准，用**磁带自身的锚点**交叉验证（B）──────────
+                // 设计意图（见 `ReplayWindow` 类文档）：客户端磁带路的窗口应当相对"**磁带自己的**
+                // 事件节点"（`NormalTimeEdit`）—— 那样两机 `ClientTime` 基准不同也不会错位，
+                // 数据来源也保持独立（只读磁带）。
+                // ⚠ 但**仅凭磁带无法 100% 认定那枚就是我们这次登记**（key 不写进帧；9 秒快照窗口内
+                //   若又发生一次事件，最近那簇会是后一次）⇒ 所以按"谁更可信"分档处理：
+                //   · 两者一致（|Δ| ≤ 1 秒）⇒ 用**房主窗口**（现行、实测可用，锚点差实测 ±0.03s）；
+                //   · 明显冲突（|Δ| > 5 秒 ⇒ 房主窗口**必然**错位）⇒ 改用**磁带锚点**，
+                //     并要求它的窗口里帧数 ≥ 房主窗口的一半（挡住"锚点认错、落到空处"）。
+                // ── 裁剪锚点 = **磁带自身的关键节点**（B：纯磁带，不掺服务端数据）──────────
+                // `ReplayWindow` 类文档写明：窗口永远相对"事件时刻"，而客户端磁带路的锚点
+                // 就是客户端 `ReserveSaveTape` 自己插的那枚 `NormalTimeEdit`。
+                // 识别法：快照是登记后 **9 秒**拍的 ⇒ **末帧 − 9 秒 ≈ 登记时刻** ⇒ 取离它最近的标记。
+                // ⇒ 裁剪**完全不依赖房主时钟**（两机 `ClientTime` 基准不同也不会错位）。
+                //
+                // ⚠ 只在"该幕窗口是事件±固定偏移"（`OffsetsOf` 给得出）且**锚点可信**时采用；
+                //   否则退回房主窗口（行为与改动前一致），并记一条警告便于排查。
+                ReplayWindow.Span? cropOverride = null;
+                if (ReplayFeature.OffsetsOf(act.Kind, out float beforeSec, out float afterSec)
+                    && TryTapeAnchor(raw, recorderId, out float tapeAnchor, out float anchorErr))
+                {
+                    var byTape = ReplayWindow.Of(tapeAnchor, beforeSec, afterSec);
+                    if (anchorErr <= MaxAnchorErrSec && CountIn(raw, byTape) > 0)
+                    {
+                        cropOverride = byTape;
+                        Plugin.Log.LogInfo($"[HS-Replay] 裁剪锚点=**磁带自身** t={tapeAnchor:F2}"
+                            + $"（离「末帧−{TapeSnapshotDelaySec:F0}s」{anchorErr:F2}s）窗口={byTape}");
+                    }
+                    else
+                    {
+                        Plugin.Log.LogWarning($"[HS-Replay] 磁带锚点不可信（偏差 {anchorErr:F2}s > {MaxAnchorErrSec:F0}s"
+                            + $" 或窗口内无帧）⇒ 退回房主窗口 {act.Window}。");
+                    }
+                }
+
+                var tape = TapeAssembler.Assemble(act, raw, head, visibleInfos, out var rep, cropOverride);
 
                 if (tape == null)
                 {

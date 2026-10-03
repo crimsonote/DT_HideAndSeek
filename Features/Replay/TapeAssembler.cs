@@ -28,6 +28,10 @@ namespace HideAndSeek.Features.Replay
         public int ToxicDropped;
         /// <summary>丢弃的**多余慢镜**（`SlowTimeEdit`）枚数 —— 见 `Assemble` 里「慢镜 / 放大」那段。</summary>
         public int SlowDropped;
+        /// <summary>补发的**起点状态帧**枚数（房间+相机+黑灯 / 玩家状态 / 设备改动 / 朝向）。</summary>
+        public int StateFramesAdded;
+        /// <summary>裁剪区间是否取自**磁带自身的锚点**（而非幕的绝对窗口 = 房主时钟）。</summary>
+        public bool CropFromTape;
         /// <summary>排序前时间戳逆序的处数（&gt;0 说明排序在救场）。</summary>
         public int InvertedBefore;
         /// <summary>是否补了一枚 `NormalTimeEdit`（没有它，客户端会继承上一段遗留的 `TimeScale = 0.25`）。</summary>
@@ -65,7 +69,9 @@ namespace HideAndSeek.Features.Replay
             return $"【{Kind}#{Key}】{origin} 窗口={Window} {FramesIn}→{FramesOut} 帧"
                  + spanNote
                  + $"（全员出场帧 +{RosterAdded} 剔毒帧 -{ToxicDropped} 慢镜 -{SlowDropped} 排序前逆序 {InvertedBefore} 处"
-                 + (TimeEditAdded ? " 补时间编辑" : "") + $")"
+                 + (TimeEditAdded ? " 补时间编辑" : "")
+                 + (StateFramesAdded > 0 ? $" 补状态帧 +{StateFramesAdded}" : "")
+                 + (CropFromTape ? " 锚=磁带" : "") + $")"
                  + $" 主角=#{SubjectId} 首帧(剪影)=#{HeadId}";
         }
     }
@@ -142,13 +148,19 @@ namespace HideAndSeek.Features.Replay
         /// "本机自己的换道具/换状态镜头"打在未装配的替身上 ⇒ 空引用 ⇒ 整段卡死。
         /// </param>
         /// <param name="report">装配报告（无论成败都会填好）。</param>
+        /// <param name="cropOverride">
+        /// **可选的裁剪区间**。客户端磁带路径会传入"以磁带自身锚点重算"的区间
+        /// （见 `ReplayDirector.TryTapeAnchor`）—— 那样裁剪就**完全不依赖房主时钟**
+        /// （两机 `ClientTime` 基准不同也不会错位）。为 null 或非法时退回 <see cref="Act.Window"/>。
+        /// </param>
         /// <returns>合规磁带；失败返回 null（原因见 <see cref="AssemblyReport.Fail"/>）。</returns>
         internal static List<SnapShot> Assemble(
             Act act,
             List<SnapShot> frames,
             PublicPlayerInfo head,
             IReadOnlyList<PublicPlayerInfo> roster,
-            out AssemblyReport report)
+            out AssemblyReport report,
+            ReplayWindow.Span? cropOverride = null)
         {
             report = new AssemblyReport
             {
@@ -171,7 +183,11 @@ namespace HideAndSeek.Features.Replay
                 return null;
             }
 
-            float start = act.Window.From;
+            // 裁剪区间：默认用幕的绝对窗口；**客户端磁带路径**会传入"以磁带自身锚点重算"的区间
+            // （`ReplayDirector.TryTapeAnchor`）⇒ 裁剪不再依赖房主时钟。非法/缺省时退回绝对窗口。
+            var crop = cropOverride.HasValue && cropOverride.Value.IsValid ? cropOverride.Value : act.Window;
+            report.CropFromTape = cropOverride.HasValue && cropOverride.Value.IsValid;
+            float start = crop.From;
 
             // ── ① 首帧：剪影落点 ─────────────────────────────────────────
             // 客户端 `BeginTape` 用它做三件事：`_blackId`（⇒ 剪影打谁）、`ChangeMyPlayer`、`ApplySpawn`。
@@ -230,6 +246,97 @@ namespace HideAndSeek.Features.Replay
                 }
             }
 
+            // ── ②b 起点状态帧（**只读磁带**）──────────────────────────────
+            // 裁剪只保留窗口内的帧，而"状态类"帧是**稀疏事件**：
+            //   · 窗口内第一枚 `AreaShot` 实测滞后 0.15~0.98 秒；
+            //   · 换房若发生在窗口**之前**，窗口内一枚都没有。
+            // ⇒ 幕首会沿用**上一段遗留**的房间/相机目标/黑灯/玩家状态 ⇒
+            //   观感是"该黑不黑、该亮不亮、角色在墙上走、倒着走"。
+            //
+            // 做法：在**磁带自己的时间轴**上，对每一类状态帧取"时间 ≤ 裁剪点、且离它最近的那一枚"，
+            //   克隆后把时间戳盖成 `start`（与首帧/roster 同值 ⇒ 不逆序，且会在第一次 Update 连着执行）。
+            //   ⚠ **只读磁带数据**，不掺服务端采样 —— 两条素材路径各自独立（见 ReplayWindow 类文档）。
+            //   ⚠ `AddShot`（设备/尸体）**不在其列**：那是会让客户端整段卡死的毒帧，只删不补。
+            //   ⚠ 时间戳必须盖成 `start`：若保留原时间戳（早于裁剪点），排序后它成为 `tape[1]`，
+            //     而 `BeginTape` 把 `_currentTime` 置成 `tape[1].TimeStamp` ⇒ 后面的帧要等
+            //     `_currentTime` 追上来才执行 ⇒ 幕首会"空转"一段。
+            if (frames != null && frames.Count > 0)
+            {
+                SnapShot lastArea = null, lastSubjectMove = null;
+                var stateById = new Dictionary<int, SnapShot>();
+                var modifyById = new Dictionary<int, SnapShot>();
+                foreach (var s in frames)
+                {
+                    if (s == null || s.TimeStamp > start)
+                        continue;
+                    switch (s.Type)
+                    {
+                        case ESnapShotType.AreaShot:
+                            lastArea = s;                                  // 房间 + 相机目标 + 黑灯
+                            break;
+                        case ESnapShotType.StateShot:
+                            if (s.State != null)
+                                stateById[s.State.PlayerId] = s;           // 每个玩家留最新一枚
+                            break;
+                        case ESnapShotType.ModifyShot:
+                            if (s.Modify?.Info != null)
+                                modifyById[s.Modify.Info.DeviceId] = s;    // 每个设备留最新一枚
+                            break;
+                        case ESnapShotType.MoveShot:
+                            if (s.Move != null && s.Move.PlayerId == act.SubjectId)
+                                lastSubjectMove = s;                       // 主角的朝向来源
+                            break;
+                    }
+                }
+
+                if (lastArea != null)
+                {
+                    var a = lastArea.Clone();
+                    a.TimeStamp = start;
+                    result.Add(a);
+                    report.StateFramesAdded++;
+                }
+                foreach (var kv in stateById)
+                {
+                    var st = kv.Value.Clone();
+                    st.TimeStamp = start;
+                    result.Add(st);
+                    report.StateFramesAdded++;
+                }
+                foreach (var kv in modifyById)
+                {
+                    var md = kv.Value.Clone();
+                    md.TimeStamp = start;
+                    result.Add(md);
+                    report.StateFramesAdded++;
+                }
+                if (lastSubjectMove != null)
+                {
+                    // 朝向：只借它的 `LookLeft`/速度，**位置仍用 roster/首帧那份** ——
+                    // 若把位置也改成磁带里的值，客户端 `HandleMove` 会朝目标点"走过去" ⇒ 幕首漂移。
+                    PosInfo pos = head.Pos;
+                    if (roster != null)
+                    {
+                        foreach (var info in roster)
+                        {
+                            if (info != null && info.PlayerId == act.SubjectId && info.Pos != null)
+                            {
+                                pos = info.Pos;
+                                break;
+                            }
+                        }
+                    }
+                    if (pos != null)
+                    {
+                        var mv = lastSubjectMove.Clone();
+                        mv.TimeStamp = start;
+                        mv.Move.Pos = new PosInfo { X = pos.X, Y = pos.Y };
+                        result.Add(mv);
+                        report.StateFramesAdded++;
+                    }
+                }
+            }
+
             // ── ③ 窗口过滤 + ④ 剔毒帧 ───────────────────────────────────
             int rawInWindow = 0;
             // `result` 里**上一枚保留下来**的慢镜下标记（-1 = 还没有）。归簇时**留较晚**那枚，
@@ -242,7 +349,7 @@ namespace HideAndSeek.Features.Replay
                     if (s == null)
                         continue;
                     // 左闭右开，与现有实现的窗口语义一致
-                    if (s.TimeStamp < act.Window.From || s.TimeStamp >= act.Window.To)
+                    if (s.TimeStamp < crop.From || s.TimeStamp >= crop.To)
                         continue;
 
                     // ── 「慢镜 / 放大」的处理 ───────────────────────────────────

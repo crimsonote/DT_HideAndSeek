@@ -254,6 +254,43 @@ namespace HideAndSeek.Features.Replay
         ///   （`recorderId=0` / `Pending` 不收敛 / 占位降级这些分支永远执行不到），
         ///   于是"单人完美、联机全炸"就成了必然 —— 这是本项目最贵的一次教训。
         /// </summary>
+        /// <summary>
+        /// 本幕"事件时刻前/后秒数"的**单一来源**（与登记时用的是同一批配置，避免两处各写一份）。
+        ///
+        /// ★ 用途：客户端磁带路径要用**磁带自己的锚点**（= `NormalTimeEdit` 的时刻，见
+        ///   <see cref="ReplayWindow"/> 的类文档）重算窗口 ⇒ 需要这两个偏移量。
+        ///   `act.Window` 是绝对区间（房主时钟），拿它当锚点会依赖两机时钟一致 —— 那正是要避免的。
+        ///
+        /// 返回 <c>false</c> = 该幕窗口**不是**"事件 ± 固定偏移"（自爆幕按人数平铺、黑方收尾
+        /// 有自己的算法）⇒ 调用方退回绝对窗口（行为与现在一致）。
+        /// 只对**已核实过调用点**的三类给值，避免"两处各写一份偏移"的老毛病。
+        /// </summary>
+        internal static bool OffsetsOf(ActKind kind, out float before, out float after)
+        {
+            switch (kind)
+            {
+                // 与 `Add(ActKind.Knife, …)` 处一致
+                case ActKind.Knife:
+                    before = KnifeBeforeSec?.Value ?? 1f;
+                    after = KnifeAfterSec?.Value ?? 2f;
+                    return true;
+                // 与 `Add(ActKind.Kill, …)` 处一致
+                case ActKind.Kill:
+                    before = KillBeforeSec?.Value ?? 2f;
+                    after = KillAfterSec?.Value ?? 2.2f;
+                    return true;
+                // 与"结算前的最后时段"（存活者各一段）处一致
+                case ActKind.Final:
+                    before = EndBeforeSec?.Value ?? 3f;
+                    after = EndAfterSec?.Value ?? 1f;
+                    return true;
+                default:
+                    before = 0f;
+                    after = 0f;
+                    return false;
+            }
+        }
+
         internal static bool HasClient(GamePlayer p)
             => p != null && !p.IsDummy && p.Session != null;
 
