@@ -49,7 +49,7 @@ namespace HideAndSeek.Console
             ("hs_killlimit", "hs_killlimit <n|unlimited>",                        "黑方击杀次数上限"),
             ("hs_dummy",     "hs_dummy <add [座位号] [角色ID]|del <座位号>|list|clear>", "假人玩家（测试用）：生成 / 移除 / 查看靶子"),
             ("hs_flash",     "hs_flash <on|off>",                                 "开局灯效：开关闪烁（关闭后直接进入白亮黑灭的定态）"),
-            ("hs_roomname",  "hs_roomname [新名字]",                              "修改房间在 Steam 列表里显示的名字（仅房主可改）"),
+            ("hs_roomname",  "hs_roomname [新名字]",                              "修改房间名（Steam 列表 + 游戏内显示，仅房主可改）"),
             ("hs_tp",        "hs_tp <玩家ID> <x> <y> | <玩家ID> to <目标ID>",      "调试用传送：把玩家（含假人）挪到坐标或另一名玩家身边"),
             ("hs_grant",     "hs_grant <on|off>",                                  "发刀模式：on=开局随机发刀并锁死武器架，off=自行跑刀（下一局生效）"),
             ("hs_radar",     "hs_radar <on|off>",                                  "白方全图雷达：白方地图显示所有存活玩家位置（不区分阵营）"),
