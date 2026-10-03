@@ -387,14 +387,22 @@ namespace HideAndSeek.Features.Rule
         private const int MaxWidthPerLine = 40;
 
         /// <summary>
-        /// 回执被拆成多条时的**段间隔**（毫秒）。
+        /// 回执被拆成多条时的**段间隔**（毫秒）。**现为 0 = 立即全部发出。**
         ///
-        /// 不能在同一帧把多条 `S_CHAT_MESSAGE` 一起发 —— 客户端对"同一时刻刷出的多条"
-        /// 只保留一条（`DefaultTexts` 里"多条消息一次性刷出、前面的会被顶掉"说的就是这个）。
-        /// 实测踩过：自检的授权码提示折行后 4 行 ⇒ 拆 2 条 ⇒ 含算式的那条被顶掉，
-        /// 玩家看不到该算什么，只能照抄文案里的格式占位 ⇒ 必然"授权码错误"。
+        /// ★ 真正的约束**只有一条**：**一条消息最多渲染 3 行**（预制体里 TMP 的行数限制，
+        ///   代码里查不到；实测超出部分被裁掉）。所以：
+        ///   · **拆成多条 ≤3 行的消息是安全的**（客户端是**队列**，同一帧会全部派发完）；
+        ///   · **合并成一条长消息才会丢**（超过 3 行的部分被裁）。
+        ///
+        /// ⚠ 这里原先写的是"同一帧连发多条，客户端只保留一条"并把间隔设成 900ms ——
+        ///   那是**误诊**：客户端 `Handle_S_CHAT_MESSAGE`（decomp:42415）只是
+        ///   `Managers.Voice.EnqueueNormalChat/EnqueueDeviceChat` **入队**，
+        ///   而 `ProcessChatMessages()`（decomp:41248）用 `while (TryDequeue)` **把队列一次排空**，
+        ///   既没有每帧上限、也没有丢弃 ⇒ **同一帧多条不会丢**。
+        ///   间隔纯粹是多余的等待：`/help` 拆 5~6 段时用户要滴 4~5 秒（体感就是"慢"）。
+        ///   现在 0 ⇒ 走 `delayMs <= 0` 分支**逐条立即发**，`Reply` 的结构不用改。
         /// </summary>
-        private const int ReplyChunkGapMs = 900;
+        private const int ReplyChunkGapMs = 0;
 
         private static List<CommandDef> _parsed;
         private static string _parsedFrom;
