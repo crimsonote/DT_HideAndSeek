@@ -586,7 +586,20 @@ namespace HideAndSeek.Features.Replay
                 //   ⇒ 全场回放只播一幕就被掐断。让 Phase 一致，这条链从一开始就不会启动。
                 if (packet is S_STATE_SNAPSHOT snap)
                 {
-                    if (ReplayDirector.Current == ReplayDirector.Phase.Playing)
+                    // ★ **门槛必须覆盖整个回放窗口，不能只写 `Playing`**：
+                    //   `Preparing`/`Screen` 是"取带 + 入场演出握手"，实测量级十几秒 ——
+                    //   而 guest 早在 `Screen` 阶段就收到 `S_CHANGE_GAME_STATE{Trial}` 进了 Trial。
+                    //   若这期间不改写，快照仍说 `Survive` ⇒ 分裂累计满 5 秒 ⇒
+                    //   `UpdatePhaseConvergence`（decomp:34930-34943）触发 ⇒ guest 被
+                    //   `ApplyStateInstant(Survive)` **强行拉出 Trial**（回放当场断）并顺手
+                    //   `CompleteWatchdog.CompleteAndSend()`（decomp:38714）发一个**与回放无关的 ack**
+                    //   ⇒ 房主口径："正常放两幕后就立即进入下一个结局画面，而条幕/噪点滤镜还在"
+                    //     （`EndReplay` 只在 `IsPlaying` 时调 `Stop()`，幕间 `_isPlay=false` ⇒ 滤镜残留）。
+                    //   `Done` 不在此列：那之后 `Finish()` 马上就要推 `TotalResult`，
+                    //   让真实相位自然流过即可（否则会把结算也改写成 Trial）。
+                    if (ReplayDirector.Current == ReplayDirector.Phase.Preparing
+                        || ReplayDirector.Current == ReplayDirector.Phase.Screen
+                        || ReplayDirector.Current == ReplayDirector.Phase.Playing)
                         snap.Phase = (int)EGameState.Trial;
                     return;
                 }
