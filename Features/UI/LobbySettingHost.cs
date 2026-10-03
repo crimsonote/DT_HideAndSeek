@@ -31,6 +31,9 @@ namespace HideAndSeek.Features.UI
         private const string ContentPath = "Scroll View/Viewport/ETCPresetContent";
         private const string RowTemplatePath = "Scroll View/Viewport/ETCPresetContent/MastermindVoteLoss";
 
+        /// <summary>整数滑条行的占位模板（原版 WeaponMove 行：Slider + UI_GaugeSlider + NumberBg/WeaponMoveValue）。</summary>
+        private const string SliderRowTemplatePath = "Scroll View/Viewport/ETCPresetContent/WeaponMove";
+
         private const string TabOnSprite = "setting_tab_on.sprite";
         private const string TabOffSprite = "setting_tab_off.sprite";
 
@@ -147,6 +150,12 @@ namespace HideAndSeek.Features.UI
             Transform tabTemplate = tabBar != null ? tabBar.Find(OriginalEtcTabName) : null;
             Transform contentTemplate = etcPanel != null ? etcPanel.Find(ContentPath) : null;
             Transform rowTemplate = etcPanel != null ? etcPanel.Find(RowTemplatePath) : null;
+            // 滑条模板单独取：缺了只影响滑条项（记警告、跳过那一项），不能让整页失败。
+            Transform sliderRowTemplate = etcPanel != null ? etcPanel.Find(SliderRowTemplatePath) : null;
+            if (sliderRowTemplate == null)
+            {
+                Log.Warn($"找不到滑条行模板 {SliderRowTemplatePath} —— 滑条类设置项会被跳过（其余项不受影响）。");
+            }
 
             if (tabBar == null || panelRoot == null || etcPanel == null ||
                 tabTemplate == null || contentTemplate == null || rowTemplate == null)
@@ -175,7 +184,8 @@ namespace HideAndSeek.Features.UI
             {
                 var runtime = new TabRuntime { Tab = tab };
                 BuildTab(tabBar, tabTemplate.gameObject, runtime, index);
-                BuildPanel(panelRoot, etcPanel.gameObject, rowTemplate.gameObject, runtime, index);
+                BuildPanel(panelRoot, etcPanel.gameObject, rowTemplate.gameObject,
+                    sliderRowTemplate != null ? sliderRowTemplate.gameObject : null, runtime, index);
                 _tabs.Add(runtime);
                 index++;
             }
@@ -239,7 +249,8 @@ namespace HideAndSeek.Features.UI
             SetTabSelected(runtime, false);
         }
 
-        private void BuildPanel(Transform panelRoot, GameObject template, GameObject rowTemplate, TabRuntime runtime, int index)
+        private void BuildPanel(Transform panelRoot, GameObject template, GameObject rowTemplate,
+            GameObject sliderRowTemplate, TabRuntime runtime, int index)
         {
             var panelGo = UnityEngine.Object.Instantiate(template, panelRoot);
             panelGo.name = "Preset_HS_" + index;
@@ -267,6 +278,17 @@ namespace HideAndSeek.Features.UI
                         var row = SettingRowBuilder.BuildToggleRow(
                             content, rowTemplate, item, value => OnRowValueChanged(item, value));
                         runtime.Rows.Add(new RowRuntime { Row = row, Item = item });
+                        break;
+
+                    case LobbySettingKind.Slider:
+                        if (sliderRowTemplate == null)
+                        {
+                            Log.Error($"设置项 [{item.Key}] 是滑条，但没取到滑条行模板（{SliderRowTemplatePath}），已跳过。");
+                            break;
+                        }
+                        var srow = SettingRowBuilder.BuildSliderRow(
+                            content, sliderRowTemplate, item, value => OnRowValueChanged(item, value));
+                        runtime.Rows.Add(new RowRuntime { Row = srow, Item = item });
                         break;
 
                     default:
@@ -387,7 +409,15 @@ namespace HideAndSeek.Features.UI
             {
                 foreach (var row in runtime.Rows)
                 {
-                    SettingRowBuilder.SyncToggleRow(row.Row, row.Item);
+                    switch (row.Item.Kind)
+                    {
+                        case LobbySettingKind.Slider:
+                            SettingRowBuilder.SyncSliderRow(row.Row, row.Item);
+                            break;
+                        default:
+                            SettingRowBuilder.SyncToggleRow(row.Row, row.Item);
+                            break;
+                    }
                 }
             }
         }
@@ -453,6 +483,41 @@ namespace HideAndSeek.Features.UI
                 }
 
                 Log.Info($"设置项 [{item.Key}] = {value}（[{entry.Definition.Section}].{entry.Definition.Key}，已落盘）。");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"写入设置项 [{item.Key}] 失败：\n" + ex);
+            }
+        }
+
+        /// <summary>用户拖动滑条：写配置 + <b>显式落盘</b>（与开关同一条路径）。</summary>
+        private void OnRowValueChanged(LobbySettingItem item, int value)
+        {
+            if (item == null) return;
+
+            try
+            {
+                var entry = item.IntEntry != null ? item.IntEntry() : null;
+                if (entry == null)
+                {
+                    Log.Error($"设置项 [{item.Key}] 的配置项尚未绑定，本次修改被丢弃。");
+                    return;
+                }
+
+                int clamped = Mathf.Clamp(value, item.Min, item.Max);
+                entry.Value = clamped;
+
+                var config = HideAndSeek.Plugin.HsConfig;
+                if (config != null)
+                {
+                    config.Save();
+                }
+                else
+                {
+                    Log.Warn($"设置项 [{item.Key}] 已改内存，但 HsConfig 为 null，本次未能落盘。");
+                }
+
+                Log.Info($"设置项 [{item.Key}] = {clamped}（[{entry.Definition.Section}].{entry.Definition.Key}，已落盘）。");
             }
             catch (Exception ex)
             {

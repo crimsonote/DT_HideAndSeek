@@ -12,8 +12,10 @@ namespace HideAndSeek.Features.UI
         /// <summary>开关行：占位模板 = MastermindVoteLoss 行。</summary>
         Toggle,
 
+        /// <summary>整数滑条行：占位模板 = WeaponMove 行（Slider + UI_GaugeSlider + NumberBg/WeaponMoveValue）。</summary>
+        Slider,
+
         // 未来扩展位（模板已确认，见交接文档 §4.5）：
-        //   Slider   → 占位模板 WeaponMove 行（Slider + UI_GaugeSlider + NumberBg/Value）
         //   Dropdown → 占位模板 Difficulty 行的 DifficultyDropdown（TMP_Dropdown，需自持引用）
         //   Label    → 直接克隆 TitleBg（纯说明文本，无控件）
     }
@@ -39,6 +41,14 @@ namespace HideAndSeek.Features.UI
 
         /// <summary>Toggle 形态绑定的配置项（惰性取值）。</summary>
         public Func<ConfigEntry<bool>> BoolEntry { get; private set; }
+
+        /// <summary>Slider 形态绑定的配置项（惰性取值）。</summary>
+        public Func<ConfigEntry<int>> IntEntry { get; private set; }
+
+        /// <summary>Slider 的取值范围（含端点，整数步进）。</summary>
+        public int Min { get; private set; }
+
+        public int Max { get; private set; }
 
         /// <summary>
         /// 可选：该行此刻是否可编辑（null = 始终可编辑）。
@@ -67,6 +77,35 @@ namespace HideAndSeek.Features.UI
                 Title = title ?? key,
                 Kind = LobbySettingKind.Toggle,
                 BoolEntry = entry,
+                IsEditable = isEditable
+            };
+        }
+
+        /// <summary>
+        /// 声明一个**整数滑条**行（整数步进，端点含 <paramref name="min"/>/<paramref name="max"/>）。
+        /// 取值范围写在这里而不是配置项自己的 Min/Max 上：配置项可能刻意留得更宽
+        /// （例如允许高级用户直接改 .cfg 填更大的值），而设置页只暴露常用区间。
+        /// </summary>
+        public static LobbySettingItem Slider(
+            string key,
+            string title,
+            Func<ConfigEntry<int>> entry,
+            int min,
+            int max,
+            Func<bool> isEditable = null)
+        {
+            if (string.IsNullOrEmpty(key)) throw new ArgumentException("key required", nameof(key));
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            if (max < min) throw new ArgumentException("max < min", nameof(max));
+
+            return new LobbySettingItem
+            {
+                Key = key,
+                Title = title ?? key,
+                Kind = LobbySettingKind.Slider,
+                IntEntry = entry,
+                Min = min,
+                Max = max,
                 IsEditable = isEditable
             };
         }

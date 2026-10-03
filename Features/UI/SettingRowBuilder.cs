@@ -74,6 +74,100 @@ namespace HideAndSeek.Features.UI
             return row;
         }
 
+        /// <summary>
+        /// 克隆一个**整数滑条行**并绑定设置项。
+        ///
+        /// 模板 = 原版 `ETCPresetContent/WeaponMove` 行：`TitleBg` + `WeaponMoveSlider`
+        /// （`Slider` + `UI_GaugeSlider`）+ `NumberBg/WeaponMoveValue`（数值文本）。
+        /// </summary>
+        /// <param name="content">内容容器（带 VerticalLayoutGroup，会自动排布）。</param>
+        /// <param name="rowTemplate">原版滑条行模板（WeaponMove）。</param>
+        /// <param name="item">设置项声明（用 <see cref="LobbySettingItem.Min"/> / <see cref="LobbySettingItem.Max"/>）。</param>
+        /// <param name="onValueChanged">用户拖动滑条时的回调（写配置 + Save）。</param>
+        public static GameObject BuildSliderRow(
+            Transform content,
+            GameObject rowTemplate,
+            LobbySettingItem item,
+            Action<int> onValueChanged)
+        {
+            var row = UnityEngine.Object.Instantiate(rowTemplate, content);
+            row.name = "HSRow_" + item.Key;
+            row.SetActive(true);
+
+            // 标题：**按路径取**（`TitleBg` 下那个），不要用"第一个 TMP_Text"——
+            // 滑条行的数值文本也是 TMP_Text，取错就会把标题写进数值位。
+            var title = row.transform.Find("TitleBg")?.GetComponentInChildren<TMP_Text>(true)
+                        ?? row.GetComponentInChildren<TMP_Text>(true);
+            if (title != null)
+            {
+                title.text = item.Title;
+                Util.SetFontAndMaterial(title, Define.EFontMaterialType.Normal);
+                title.overflowMode = TextOverflowModes.Overflow;
+            }
+            else
+            {
+                Log.Warn($"滑条行模板里找不到标题 TMP_Text，设置项 [{item.Key}] 的标题将不会显示。");
+            }
+
+            var valueText = row.transform.Find("NumberBg/WeaponMoveValue")?.GetComponent<TMP_Text>()
+                            ?? row.transform.Find("NumberBg")?.GetComponentInChildren<TMP_Text>(true);
+
+            var slider = row.GetComponentInChildren<Slider>(true);
+            if (slider == null)
+            {
+                Log.Error($"滑条行模板里找不到 Slider，设置项 [{item.Key}] 不可交互。");
+                return row;
+            }
+
+            // ⚠ 与开关同理：Instantiate 会把原版挂在同一个 Slider 上的监听器一起复制过来
+            // （那个会改原版的 WeaponMove 参数）⇒ 必须清掉（铁律 #5）。
+            slider.onValueChanged.RemoveAllListeners();
+
+            int min = item.Min;
+            int max = item.Max;
+            slider.minValue = min;
+            slider.maxValue = max;
+            slider.wholeNumbers = true;      // 整数设置 ⇒ 步进 1，避免出现 12.34 秒
+
+            var entry = ReadIntEntry(item);
+            int current = entry != null ? Mathf.Clamp(entry.Value, min, max) : min;
+            slider.SetValueWithoutNotify(current);
+            if (valueText != null) valueText.text = current.ToString();
+
+            if (onValueChanged != null)
+            {
+                slider.onValueChanged.AddListener(v =>
+                {
+                    int iv = Mathf.Clamp(Mathf.RoundToInt(v), min, max);
+                    // 数值文本由原版 `UI_GaugeSlider` 可能也会写；这里显式写一次，保证与我们夹取后的值一致。
+                    if (valueText != null) valueText.text = iv.ToString();
+                    onValueChanged(iv);
+                });
+            }
+
+            ApplyEditable(row, item);
+            return row;
+        }
+
+        /// <summary>把滑条行同步成配置里的当前值（不改配置）。重开弹窗时用。</summary>
+        public static void SyncSliderRow(GameObject row, LobbySettingItem item)
+        {
+            if (row == null) return;
+
+            var entry = ReadIntEntry(item);
+            if (entry == null) return;
+
+            var slider = row.GetComponentInChildren<Slider>(true);
+            if (slider == null) return;
+
+            int v = Mathf.Clamp(entry.Value, item.Min, item.Max);
+            slider.SetValueWithoutNotify(v);
+
+            var valueText = row.transform.Find("NumberBg/WeaponMoveValue")?.GetComponent<TMP_Text>()
+                            ?? row.transform.Find("NumberBg")?.GetComponentInChildren<TMP_Text>(true);
+            if (valueText != null) valueText.text = v.ToString();
+        }
+
         /// <summary>把行同步成配置里的当前值（不改配置）。重开弹窗时用。</summary>
         public static void SyncToggleRow(GameObject row, LobbySettingItem item)
         {
@@ -115,6 +209,17 @@ namespace HideAndSeek.Features.UI
         private static BepInEx.Configuration.ConfigEntry<bool> ReadEntry(LobbySettingItem item)
         {
             var entry = item.BoolEntry != null ? item.BoolEntry() : null;
+            if (entry == null)
+            {
+                Log.Error($"设置项 [{item.Key}] 的配置项尚未绑定，该行不会同步配置值。");
+            }
+            return entry;
+        }
+
+        /// <summary>惰性取**整数**配置项（滑条用）。</summary>
+        private static BepInEx.Configuration.ConfigEntry<int> ReadIntEntry(LobbySettingItem item)
+        {
+            var entry = item.IntEntry != null ? item.IntEntry() : null;
             if (entry == null)
             {
                 Log.Error($"设置项 [{item.Key}] 的配置项尚未绑定，该行不会同步配置值。");

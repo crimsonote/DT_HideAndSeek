@@ -179,5 +179,12 @@ pwsh -File deploy.ps1
    页签标题过长不会自动变宽，会溢出到相邻页签上；目前标题都在 3 字以内。
 3. **中文字体取决于游戏当前语言**：`Util.SetFontAndMaterial` 按
    `Managers.Language + "_Normal_01"` 取字体。非中文语言时依赖 TMP 的 fallback 字体链。
-4. **`Extending` 的第 3 条（滑条/下拉）尚无实现**，只留了扩展位与模板对照表；
-   `LobbySettingHost` 的 `default` 分支会对未实现的形态打 Error 日志并跳过该行。
+4. **`Extending` 的第 3 条：滑条（整数）已实现**（2026-10-03）：`LobbySettingKind.Slider` +
+   `LobbySettingItem.Slider(key, title, Func<ConfigEntry<int>>, min, max)` +
+   `SettingRowBuilder.BuildSliderRow/SyncSliderRow`（模板 = 原版 `ETCPresetContent/WeaponMove` 行）。
+   首个使用者是《黑方袭击加时量》（0~60 秒，写 `[KillTimeBonus].BonusSeconds`）。
+   **下拉 / 纯文本行仍未实现**；`LobbySettingHost` 的 `default` 分支会对未实现的形态打 Error 日志并跳过该行。
+   - ⚠ 滑条行的标题**按路径取**（`TitleBg` 下那个），不能用"第一个 TMP_Text"——
+     该行的数值文本（`NumberBg/WeaponMoveValue`）也是 TMP_Text，取错会把标题写进数值位。
+   - ⚠ 取值范围写在**设置项**上（`LobbySettingItem.Min/Max`），不是配置项自己的 `Min/Max`：
+     配置项可以刻意留更宽（允许高级用户直接改 `.cfg`），设置页只暴露常用区间。

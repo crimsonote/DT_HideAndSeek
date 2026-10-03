@@ -1,5 +1,6 @@
 ﻿using HideAndSeek.Core;
 using HideAndSeek.Features.Broadcast;
+using HideAndSeek.Features.Combat;
 using HideAndSeek.Features.Replay;
 using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Weapon;
@@ -57,7 +58,14 @@ namespace HideAndSeek.Features.UI
                 // 对局结束时（因刀杀死亡的人数超过白方阈值）在结算前为所有人播一段回放：
                 // 黑方拿刀 → 每次刀杀 → 最后时段各存活者的行动。窗口长度由 [EndReplay] 的
                 // *BeforeSec/*AfterSec 配置。热开关，改后即时生效。
-                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => ReplayFeature.PlayOnEnd));
+                LobbySettingItem.Toggle("end_replay", "结束时播放回放", () => ReplayFeature.PlayOnEnd),
+
+                // 黑方袭击加时量：段 [KillTimeBonus].BonusSeconds（默认 **30** 秒）。
+                // 黑方每刀杀一人，给倒计时增加这么多秒（0 = 关闭本效果）。
+                // 它挂在 `Player.OnDeadMurder`（"被黑方刀杀"的专属路径），所以项圈自爆/自杀不计入。
+                // 设置页只暴露 **0~60** 的常用区间；配置项自身仍允许更大值（高级用户可直接改 .cfg）。
+                LobbySettingItem.Slider("kill_time_bonus", "黑方袭击加时量（秒）",
+                    () => KillTimeBonusFeature.BonusSeconds, 0, 60));
         }
     }
 }
