@@ -182,6 +182,10 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         internal static void TriggerWhiteWin(GameRoom room)
         {
+            // 【结局裁定】一局只执行一次 —— 倒计时每秒判定、尸体报告、任务全清都会走到这里。
+            if (!EndingRuleFeature.Claim("白胜", "触发白方胜利结算"))
+                return;
+
             room.ResultType = EResultType.WhiteWin;
             room.ApplyTeamResults();
 
@@ -210,6 +214,10 @@ namespace HideAndSeek.Features.Rule
         /// </summary>
         private static void TriggerBlackWin(GameRoom room)
         {
+            // 【结局裁定】一局只执行一次 —— "倒计时归零但任务进度不足"（黑方任务）与通杀都可能走到这里。
+            if (!EndingRuleFeature.Claim("黑胜", "倒计时归零但任务进度不足"))
+                return;
+
             var method = AccessTools.Method(typeof(GameRoom), "GameOver");
             if (method != null)
             {

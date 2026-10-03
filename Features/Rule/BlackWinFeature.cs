@@ -79,6 +79,11 @@ namespace HideAndSeek.Features.Rule
             if (!OnlyLunaSideAlive(room))
                 return;
 
+            // 【结局裁定】一局只执行一次 —— 本钩子挂 `OnDead` / `RuleBreaker` / 每秒 `SurvivalTick`
+            // 三个触发点，且可能与"倒计时归零"那条同时成立。
+            if (!EndingRuleFeature.Claim("黑胜", "非露娜系白方已全部淘汰"))
+                return;
+
             Plugin.Log.LogInfo("[HS] BlackWin：非露娜系白方已全部淘汰 → 判黑方胜利。");
             room.GameOver();
         }
