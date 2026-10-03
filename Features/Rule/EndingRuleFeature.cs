@@ -25,19 +25,17 @@ namespace HideAndSeek.Features.Rule
     ///   · 只有第一个认领者继续执行，其余**什么都不做**（记一条日志）；
     ///   · 每局 `StartSurvive` 复位。
     ///
-    /// 另外处理**黑胜的两类**（这是原版 `GameOver` 的一处浪费）：
-    ///   原版 `GameOver` 对 `AlivePlayers` 里**非黑非暗**者逐个点项圈（`OnDeadCollarBomb`），
-    ///   然后**无条件** `PushAfter(7500, …TotalResult)`。可是：
-    ///     · **A 类**（有人可处决：露娜幸存 / "黑方任务"判黑胜）⇒ 点了项圈 ⇒ 6 秒爆炸演出
-    ///       ⇒ 这 7.5 秒**有内容可录** ⇒ 照旧（回放要自爆幕与残留）；
-    ///     · **B 类**（黑方直接杀光 ⇒ 一个可处决者都没有）⇒ 循环一次都不跑 ⇒
-    ///       自爆幕与"最后时段"幕都**不会生成**（见 `ReplayFeature.RegisterSettlementActs`）
-    ///       ⇒ 那 7.5 秒**没有任何演出、也不丢任何画面** ⇒ **立即推进**即可。
+    /// 【暂缓项】黑胜的"等待时长"优化（原版 `GameOver` 无条件等 7.5 秒）**本轮不做**：
+    ///   2026-10-03 曾试过"黑胜且无人可处决时立即推进"，**结果末幕（最后一次作案）缺画面** ✗ ——
+    ///   原因：幕的窗口右端在事件之后（「杀人」幕 = 命中 + `KillAfterSec` 2.2s），
+    ///   立刻取带时客户端还没录到"事件之后"那段。⇒ 先回退成**与原版/自爆同一条路**（都等 7.5 秒）。
+    ///   将来要改，请走**缝②**：`JobSerializer.PushAfter<T1>(int, Action<T1>, T1)` 的 Prefix，
+    ///   判据 `ChangeGameState` + `EGameState.TotalResult`（全程序集唯一命中 `GameOver`），
+    ///   **只改 `tickAfter` 数字**，等待值 = "本局所有幕窗口都关闭所需" ⇒ **原版方法体一行不动** ✓
     /// </summary>
     [PatchFeature(
         section: "EndingRule",
-        description: "结局裁定：一局只裁定一次（倒计时/通杀/任务多条件同时成立时不再重复结算）；" +
-            "黑胜且无人可处决时跳过原版 7.5 秒空等，立即进入回放/结算。",
+        description: "结局裁定：一局只裁定一次（倒计时/通杀/任务多条件同时成立时不再重复结算）。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class EndingRuleFeature
@@ -74,26 +72,6 @@ namespace HideAndSeek.Features.Rule
             return true;
         }
 
-        /// <summary>
-        /// 本次黑胜有没有"可处决者" —— 判据与原版 `GameOver` 的循环完全一致：
-        /// `AlivePlayers` 里存在既不是黑方也不是黑幕、且不是旁观者的人。
-        /// </summary>
-        private static bool HasExecutable(GameRoom room)
-        {
-            if (room == null)
-                return false;
-
-            foreach (var p in room.AlivePlayers)
-            {
-                if (p?.PublicInfo == null || p.IsSpectator)
-                    continue;
-                if (p.Color == EPlayerColor.Black || p.Color == EPlayerColor.Dark)
-                    continue;
-                return true;
-            }
-            return false;
-        }
-
         /// <summary>每局开始复位裁定状态。</summary>
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
         internal static class RoundResetHook
@@ -104,46 +82,6 @@ namespace HideAndSeek.Features.Rule
                 _decided = false;
                 _kind = "";
                 _at = 0f;
-            }
-        }
-
-        /// <summary>
-        /// 黑胜：**无可处决者**时跳过原版那 7.5 秒（那段时间没有任何演出，也不丢画面）。
-        /// 有可处决者（A 类）⇒ 放行原版，一行不改（自爆幕需要那 6 秒）。
-        /// </summary>
-        [HarmonyPatch(typeof(GameRoom), "GameOver")]
-        internal static class FastBlackWinHook
-        {
-            [HarmonyPrefix]
-            private static bool Prefix(GameRoom __instance)
-            {
-                if (ModeRuntime.Bypass)
-                    return true;
-                if (HasExecutable(__instance))
-                    return true;                       // A 类：交给原版（含项圈自爆与 7.5 秒）
-
-                // B 类：照抄原版 GameOver 的等价收尾，但**去掉那 7.5 秒**。
-                //   · 循环体为空（没有可处决者）⇒ 不需要 S_STOP_CONTROL / OnDeadCollarBomb
-                //   · `PrimaryWinnerId` 原版取 `MasterMind?.PublicInfo.PlayerId ?? 0`；
-                //     本模块自己的 `TriggerBlackWin` 手写分支也不设它 ⇒ 这里同样不设（保持一致）
-                //   · `ChangeGameState(TotalResult)` 是**结算/回放的唯一入口**：
-                //     回放开 ⇒ 被 `ReplayFeature.SettleHook` 拦下进回放；回放关 ⇒ 直接结算 ✓
-                try
-                {
-                    __instance.AlertMessageAllPlayers(ESystemMessageType.EndClass);
-                    __instance.ResultType = EResultType.BlackWin;
-                    __instance.ApplyTeamResults();
-                    __instance.ChangeGameState(EGameState.TotalResult);
-
-                    Plugin.Log.LogInfo("[HS] 黑胜（无可处决者）：跳过原版 7.5 秒空等，立即推进结算/回放。");
-                    return false;
-                }
-                catch (Exception ex)
-                {
-                    // 任何异常都退回原版：结算绝不能卡住。
-                    Plugin.Log.LogWarning($"[HS] 黑胜快速收尾失败，退回原版 GameOver — {ex.Message}");
-                    return true;
-                }
             }
         }
     }
