@@ -120,10 +120,10 @@ namespace HideAndSeek.Features.Replay
             Min = 0f, Max = 60000f)]
         public static ConfigEntry<int> TrialIntroWaitMs;
 
-        [ConfigField(true, "回放里把黑方的昵称显示成红色，让观众一眼看出「黑刀＝黑幕」。" +
-            "做法：推回放前广播一包 `S_NOTIFY_BLACK{ PlayerId = 黑方 }` —— 这是**服务端广播**，对所有人生效。" +
-            "返回大厅时客户端自己会清空，不会带到下一局。")]
-        public static ConfigEntry<bool> RevealBlackName;
+        // ⚠ 这里曾有 `RevealBlackName`（回放里把黑方昵称显示成红色）：它靠推回放前广播一包
+        //   `S_NOTIFY_BLACK` 实现，**已连同那条广播一起移除** —— 详见 `ReplayDirector` 里的说明。
+        //   简言之：那条广播是唯一会往"活着的白方"客户端写 `KnownBlackIds` 的路径，
+        //   会让白方地图上出现红点（`WhiteRadar` 的红点问题），并重复触发两处原版演出。
 
         [ConfigField(true, "【没收到磁带时】补一段「占位磁带」，让客户端走一遍「这段没录到」的转场，" +
             "而不是让这一幕从回放里凭空消失。（服务端合成的那几幕例外，见代码注释。）")]

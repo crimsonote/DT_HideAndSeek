@@ -159,7 +159,6 @@ namespace HideAndSeek.Features.Replay
 
                 Current = Phase.Preparing;
                 EnsureServerSurvive();
-                NotifyKnownBlack(room);
 
                 Plugin.Log.LogInfo($"[HS-Replay] 开始回放，共 {All.Count} 幕：{DescribePlan()}");
 
@@ -637,27 +636,17 @@ namespace HideAndSeek.Features.Replay
             }
         }
 
-        /// <summary>广播 `S_NOTIFY_BLACK` 把黑方标成客户端的"已知黑幕" ⇒ 昵称显示为红色。</summary>
-        private static void NotifyKnownBlack(GameRoom room)
-        {
-            if (!(ReplayFeature.RevealBlackName?.Value ?? true))
-                return;
-            try
-            {
-                int blackId = FindBlackId(room);
-                if (blackId <= 0)
-                {
-                    Plugin.Log.LogWarning("[HS-Replay] 没找到黑方 id，回放里不会有红名。");
-                    return;
-                }
-                room.Broadcast(new S_NOTIFY_BLACK { PlayerId = blackId });
-                Plugin.Log.LogInfo($"[HS-Replay] 已广播 S_NOTIFY_BLACK #{blackId}（回放里黑方昵称显示为红色）。");
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS-Replay] 标记黑幕昵称失败 — {ex.Message}");
-            }
-        }
+        // ⚠ 这里曾有 `NotifyKnownBlack(room)`：推回放前 `room.Broadcast(S_NOTIFY_BLACK{黑方})`
+        //   让回放里黑方昵称显示红色。**已移除**，原因见 `docs/回放-相位与收尾.md`：
+        //   · 它是唯一会往**活着的白方**客户端 `KnownBlackIds` 里写黑方 id 的路径
+        //     （原版只发给黑方本人/黑幕/已死者/观察者）⇒ 白方"知道"了谁是黑方；
+        //   · 而 `WhiteRadar` 的 `PureDot` 模式会放行原生黑方分支 ⇒ 那个 id 在地图上变**红点**
+        //     （`WhiteRadar` 类头原本就写着"不主动发 S_NOTIFY_BLACK ⇒ 结构上不可能出现红点"，
+        //      正是这条广播破坏了那个不变量）；
+        //   · 客户端 `Handle_S_NOTIFY_BLACK` 还会**重复触发**两处原版演出：
+        //     黑幕（Dark）的 `NotifyNewBlack` + `SendWeaponSfx`/`UI_SendWeaponPopup`、
+        //     活人的 `SetBlackIntroInfo` —— 这些在"黑方诞生"时已经播过一次。
+        //   ⇒ 净收益：去掉红名（原本的卖点，接受），同时修掉"白方地图红点"与两处重复演出。
 
         /// <summary>
         /// 诊断：**首帧位置取自哪一帧**。

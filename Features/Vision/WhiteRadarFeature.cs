@@ -30,6 +30,10 @@ namespace HideAndSeek.Features.Vision
     /// 【PureDot】发 S_MODIFY_MY_PLAYER{ChangeColor, 3} 让客户端"以为自己不是白方"
     ///     门控放行 → 原生 RefreshPlayerPin 画出纯净白点；
     ///     且不主动发 S_NOTIFY_BLACK → KnownBlackIds 恒空 → 结构上不可能出现红点。
+    ///     ⚠ 2026-10-03 记：这条不变量曾被**回放**破坏 —— 推回放前那句
+    ///     `room.Broadcast(S_NOTIFY_BLACK{黑方})`（为让黑方昵称变红）是唯一会往
+    ///     **活着的白方**写 `KnownBlackIds` 的路径 ⇒ PureDot 下那个 id 变成红点。
+    ///     该广播已移除（见 `ReplayDirector`），不变量恢复。
     ///     ⚠️ 代价（客户端硬编码，绕不开）：StatusWhite 面板消失、目标文本空白、
     ///     **雷达期间无法与武器库交互取武器**；结算前必须复原，否则胜负不记录。
     ///     因此配合 DurationSeconds 做限时脉冲。
