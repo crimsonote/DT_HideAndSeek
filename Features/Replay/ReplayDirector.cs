@@ -169,9 +169,15 @@ namespace HideAndSeek.Features.Replay
                 // ② 索要素材（每 key 单发 —— 一次塞多个 key 会让客户端按它自己的硬编码窗口裁，裁出空带）
                 FetchTapes(room);
 
-                // ③ 等一会儿再进回放画面（客户端收到请求即回包，给一点余量）
+                // ③ 等回包 —— **回包到齐就立刻走，`TapeWaitMs` 只作上限**。
+                //
+                //   这一段是"玩家在地图上发呆"的主要来源（房主口径）：此时游戏画面还在，
+                //   而客户端要等我们推 `Trial` 才开始进加载/过场。原先**固定**等 2500ms，
+                //   即使磁带 100ms 就全回来了也照等 ⇒ 白等约 2 秒。
+                //   ⇒ 改成轮询：`Pending` 空了（每个登记过的 key 都有回包）就走；否则每 100ms 再看一次，
+                //     到上限仍未齐才放弃（缺失的幕由后面的合成/占位补齐，与原先一致）。
                 int wait = ReplayFeature.TapeWaitMs?.Value ?? 2500;
-                room.PushAfter(wait, BeginReplayScreen);
+                room.PushAfter(Math.Min(100, wait), new Action(() => WaitTapesThenScreen(wait, 100)));
                 return true;
             }
             catch (Exception ex)
@@ -191,6 +197,50 @@ namespace HideAndSeek.Features.Replay
         }
 
         // ── ② 索要素材 ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// 等客户端回包：**到齐就走**，`TapeWaitMs` 只作上限（每 <paramref name="pollMs"/> 检查一次）。
+        ///
+        /// 为什么不让 `TapeWaitMs` 当"固定等待"：那段时间玩家还停在地图上（客户端要等我们推
+        /// `Trial` 才开始进加载/过场）⇒ 磁带早就到齐也照样白等。实测这是"发呆"的主要来源。
+        /// 缺失的幕不在这里补 —— 后面 `FillMissing` 照旧合成/占位，与原先行为一致。
+        /// </summary>
+        private static void WaitTapesThenScreen(int deadlineMs, int pollMs, int elapsedMs = 0)
+        {
+            try
+            {
+                if (Pending.Count == 0)
+                {
+                    if (elapsedMs > 0)
+                        Plugin.Log.LogInfo($"[HS-Replay] 磁带已全部回包（等了 {elapsedMs}ms，上限 {deadlineMs}ms）⇒ 立即推进。");
+                    BeginReplayScreen();
+                    return;
+                }
+
+                int next = elapsedMs + pollMs;
+                if (next >= deadlineMs)
+                {
+                    Plugin.Log.LogInfo($"[HS-Replay] 等磁带到达上限 {deadlineMs}ms，仍有 {Pending.Count} 幕未回包"
+                        + "（这些幕随后由合成/占位补齐）⇒ 推进。");
+                    BeginReplayScreen();
+                    return;
+                }
+
+                var room = GameRoom.Instance;
+                if (room == null)
+                {
+                    BeginReplayScreen();
+                    return;
+                }
+                room.PushAfter(pollMs, new Action(() => WaitTapesThenScreen(deadlineMs, pollMs, next)));
+            }
+            catch (Exception ex)
+            {
+                // 轮询本身绝不能把回放卡住。
+                Plugin.Log.LogWarning($"[HS-Replay] 等磁带轮询异常，直接推进 — {ex.Message}");
+                BeginReplayScreen();
+            }
+        }
 
         private static void FetchTapes(GameRoom room)
         {
