@@ -189,6 +189,24 @@ namespace HideAndSeek.Features.Replay
             report.CropFromTape = cropOverride.HasValue && cropOverride.Value.IsValid;
             float start = crop.From;
 
+            // ── ①b 自爆幕：补"所有被处决者"的项圈触发帧 ────────────────────────
+            //
+            //  【为什么客户端磁带会缺】服务端 `OnDeadCollarBomb`（decomp:176007）在**非**抓黑幕的分支里
+            //  走 `BroadcastWorldVFX(DyingVfx, id, pos)`（decomp:172052-172066），而它**只发给距被处决者
+            //  ≤ 896 世界单位的存活玩家** ⇒ 离得远的录制者**根本收不到**别人的触发帧，
+            //  磁带里只剩"自己那枚"（自己与自己距离 0）。合成路不受此限 ——
+            //  `HostRecorder.NoteEffect` 挂在**服务端广播那一层**（`ReplayFeature.cs:644-648`）。
+            //
+            //  【为什么必须补】自爆幕是**按人数平铺**的：只有**含 t0 的那一片**能启动动画，
+            //  其余片靠**跨幕延续**（`PlayDying` 是目标不绑 GameObject 的 DOTween，换幕的
+            //  despawn/respawn 不会打断它；且 mod 不订阅 `OnTapeFinished` ⇒ 幕间无空档）。
+            //  ⇒ 缺了触发帧，后面几片的主角**永远不闪**（房主实测："真人第二自爆幕没有样式"）。
+            //
+            //  ⚠ 触发帧**只该出现一次**：它一出现就 `PlayDying()`（`Kill` 旧序列、从 0 重来）。
+            //     所以时间戳 clamp 到 `crop.From`，交给既有的窗口过滤把它留在**含 t0 的那一片**；
+            //     若落到后面的片里，反而会把已经跑到中段的动画**重启**（递进丢失，比"不闪"更差）。
+            InjectCollarTriggers(act, frames, crop);
+
             // ── ① 首帧：剪影落点 ─────────────────────────────────────────
             // 客户端 `BeginTape` 用它做三件事：`_blackId`（⇒ 剪影打谁）、`ChangeMyPlayer`、`ApplySpawn`。
             //
@@ -618,6 +636,56 @@ namespace HideAndSeek.Features.Replay
         {
             var st = s?.Add?.Device?.StateList;
             return st != null && st.Count > 3 && st[3] != 0;
+        }
+
+        /// <summary>
+        /// 自爆幕：把**所有**被处决者的项圈触发帧补进磁带。
+        ///
+        /// 客户端磁带路专用 —— 服务端合成路已经在 `HostSynth` 里补过（所以这里按设备**去重**，
+        /// 避免同一枚触发帧出现两次；触发帧一出现就 `PlayDying()`，重复会重启动画）。
+        ///
+        /// 时间戳 clamp 到 <paramref name="crop"/>.From：既有的窗口过滤（左闭右开）会把它
+        /// 留在**含 t0 的那一片** —— 这正是"跨幕延续"需要的：所有人都在第 1 片起闪，
+        /// 后面的片切到各自主角时，动画已经跑到对应的中段。
+        /// </summary>
+        private static void InjectCollarTriggers(Act act, List<SnapShot> frames, ReplayWindow.Span crop)
+        {
+            if (act == null || frames == null || act.Kind != ActKind.SelfDestruct)
+                return;
+
+            foreach (var b in HostRecorder.BombList())
+            {
+                float t = Math.Max(b.Time, crop.From);   // clamp ⇒ 一定落在本片窗口内
+                if (t < crop.From || t >= crop.To)
+                    continue;                            // 不属于这一片
+                if (HasDyingTrigger(frames, b.DeviceId))
+                    continue;                            // 合成路已经补过 ⇒ 不重复触发
+
+                frames.Add(new SnapShot
+                {
+                    Type = ESnapShotType.EffectShot,
+                    TimeStamp = t,
+                    Effect = new EffectSnapShot
+                    {
+                        Type = EEffectType.DyingVfx,
+                        DeviceId = b.DeviceId,
+                        Pos = b.Pos?.Clone(),
+                    },
+                });
+            }
+        }
+
+        /// <summary>磁带里是否已有该设备的项圈触发帧（`DyingVfx`）。</summary>
+        private static bool HasDyingTrigger(List<SnapShot> frames, int deviceId)
+        {
+            foreach (var s in frames)
+            {
+                if (s == null || s.Type != ESnapShotType.EffectShot || s.Effect == null)
+                    continue;
+                if (s.Effect.Type == EEffectType.DyingVfx && s.Effect.DeviceId == deviceId)
+                    return true;
+            }
+            return false;
         }
     }
 }
