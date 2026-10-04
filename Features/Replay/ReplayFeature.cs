@@ -683,21 +683,15 @@ namespace HideAndSeek.Features.Replay
                 var subjects = AliveWhites(room);
                 var window = ActTable.SelfDestruct(t0,
                     SelfDestructBeforeSec?.Value ?? 0f, SelfDestructAfterSec?.Value ?? 0.5f);
-
-                // ★★ **不做时间平铺**：`GameOver` 的循环是**一次性点完所有存活白方**（decomp:171395-171402），
-                //    他们的项圈是**同一刻开始闪**、同一刻爆炸 ⇒ 每一片都该覆盖**同一个完整窗口**
-                //    `[t0, t0 + 6 + after]`，**只是主角不同**（与「巡礼」同一做法）。
-                //
-                //    ⚠ 这里曾用 `ReplayWindow.Tile(seq, count, window, 1.5f)` 把窗口按人数切成先后片段 ——
-                //    那是**错的**：第 2/3 片的窗口从 `t0+1.5` / `t0+3.25` 才开始 ⇒ 窗口里**没有闪烁启动帧**
-                //    ⇒ 观众看到"第二个人没有自爆（项圈闪烁）动画" ✗（房主实测）。
-                //    平铺只适用于"**先后发生**"的事件，不适用于同时发生的事件。
+                int seq = 0;
                 foreach (int id in subjects)
                 {
                     if (Acts.Count >= (MaxClips?.Value ?? 12))
                         break;
+                    var seg = ReplayWindow.Tile(seq, subjects.Count, window, 1.5f);
                     var p = FindPlayer(room, id);
-                    Add(ActKind.SelfDestruct, id, HasClient(p) ? id : 0, window, $"被处决者 #{id}");
+                    Add(ActKind.SelfDestruct, id, HasClient(p) ? id : 0, seg, $"被处决者 #{id}");
+                    seq++;
                 }
 
                 int blackId = FindBlackId(room);
