@@ -52,7 +52,9 @@ namespace HideAndSeek.Features.UI
                 // 公开黑方身份（角色名 + 玩家昵称）：段 [Broadcast].RevealBlackOnKnife。
                 // 注意：这不是播报总开关（那是 [Broadcast].AnnounceEnabled），
                 // 只控制"是否把黑方身份通告出去"。
-                LobbySettingItem.Toggle("reveal_black", "启用自动通告黑幕", () => BroadcastFeature.RevealBlackOnKnife),
+                // ⚠ 显示文字曾写作"黑幕"（把 Dark 与 Black 搞混）—— 本功能实际公开的是**黑方**，
+                //   已按房主口径改为"黑方"。**键名 `reveal_black` 不动**（改了会让旧 cfg 失效）。
+                LobbySettingItem.Toggle("reveal_black", "启用自动通告黑方", () => BroadcastFeature.RevealBlackOnKnife),
 
                 // 结束时播放回放：段 [EndReplay].PlayOnEnd。
                 // 对局结束时（因刀杀死亡的人数超过白方阈值）在结算前为所有人播一段回放：
