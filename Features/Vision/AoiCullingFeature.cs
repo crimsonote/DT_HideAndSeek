@@ -336,7 +336,8 @@ namespace HideAndSeek.Features.Vision
                 //   ② 死亡 / 幽灵 —— MakeSpectatorGhost（:175590）置 Hide + IsGhost=true。
                 // 原版 SearchAndUpdatePlayer（:173429）同样跳过；少了这一条，主动补 AddPlayer
                 // 就会把死人的幽灵、以及柜子里的活人一起塞给黑方。
-                if (other.State == EPlayerState.Hide)
+                // ⚠ `IsSpectator` 要**单独判**：服务端 `Player` 上没有 `IsGhost`（幽灵 = `IsSpectator`，由 `MakeSpectatorGhost` 设置）✓
+                if (other.State == EPlayerState.Hide || other.IsSpectator)
                     continue;
                 // 命中任一范围（自身 ∪ 小熊）且没被墙挡住 ⇒ 确保可见
                 if (InAnyEnter(other, out ClipRange hit, out float dEnter)
@@ -358,6 +359,19 @@ namespace HideAndSeek.Features.Vision
             // 美幸扫描期：暂时解除 AOI，让黑方看到全图（1 秒后由扫描功能收回）
             if (MiyukiScanFeature.IsUnlocking(player))
                 return true;
+
+            // ★★ **被介绍的人自己**若是幽灵 / 躲藏者，绝不允许进入任何活人（含黑方）的视野。
+            //
+            //   为什么必须挡在这里：原版 `RestoreGhostVisibility`（`GameRoom.StartSurvive` 里
+            //   对 `DeadPlayers.Count > 0` 会调用；死亡路径也会用）会把幽灵**重新加回**观察列表
+            //   —— 它**绕过**本类所有"跳过 Hide"的主动补加逻辑 ⇒ 实测症状："黑方视野里有时冒出幽灵"。
+            //   （本类自己的补加路径见上面的 `if (other.State == Hide) continue;`，那条只保护了主动补加。）
+            //   ⇒ 出口只此一个：所有 `AddPlayer` 都走这个 Prefix，所以判据落在这里最可靠。
+            if (__instance.State == EPlayerState.Hide || __instance.IsSpectator)
+            {
+                __result = false;
+                return false;
+            }
 
             Diagnostics.Hit("AoiCulling");
 
@@ -384,6 +398,36 @@ namespace HideAndSeek.Features.Vision
 
             VisibleSince[PairKey(player.PublicInfo.PlayerId, __instance.PublicInfo.PlayerId)]
                 = TimeManager.Instance.SurviveTime;
+        }
+
+        /// <summary>
+        /// 变幽灵的**那一刻**就从所有黑方视野里撤掉。
+        ///
+        /// 为什么不能只靠每秒 tick：tick 最多晚 1 秒才撤 ⇒ 实测"黑方视野里**有时**冒出幽灵"
+        /// （就是这 1 秒的窗口）。这里补一个即时出口。
+        /// </summary>
+        [HarmonyPatch(typeof(GamePlayer), "MakeSpectatorGhost")]
+        internal static class GhostRemoveHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GamePlayer __instance)
+            {
+                if (ModeRuntime.Bypass || __instance?.PublicInfo == null)
+                    return;
+
+                var room = GameRoom.Instance;
+                if (room == null)
+                    return;
+
+                var all = room.Players;
+                for (int i = 0; i < all.Count; i++)
+                {
+                    var black = all[i];
+                    if (black == null || black == __instance || !IsBlack(black))
+                        continue;
+                    __instance.RemovePlayer(black);      // 幂等：不在列表就不发 S_DESPAWN
+                }
+            }
         }
 
         // ── ② 黑方移动：立即校正可见性（消除"慢一拍"）────────────────────
@@ -443,7 +487,8 @@ namespace HideAndSeek.Features.Vision
 
                     // Hide 状态（死亡幽灵 / 躲藏者）不该出现在任何观察列表里。
                     // 它可能从别处进过 SharedPlayers，所以这里要主动移除。
-                    if (other.State == EPlayerState.Hide)
+                    // ⚠ `IsSpectator` 单独判：幽灵**不一定**同时是 `Hide`（死亡路径不止一条）✓
+                    if (other.State == EPlayerState.Hide || other.IsSpectator)
                     {
                         other.RemovePlayer(black);
                         continue;
