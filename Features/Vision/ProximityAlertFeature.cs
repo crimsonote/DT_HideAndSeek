@@ -22,8 +22,8 @@ namespace HideAndSeek.Features.Vision
     ///   **收到了"这里有个音源"的包，却什么也听不到**：把"通知了客户端"当成了"提醒"。
     ///
     ///   现在：先算出本次心跳的**音效可听范围**（= 会写进 `S_PLAY_WORLD_SFX.MaxDistance` 的那个值），
-    ///   再按它决定发给谁，并把这个范围**原样写进包** —— 收到包的白方必然在音效可听范围内，
-    ///   "提醒"因此才成立（范围与可听范围是同一个数）。
+    ///   再按 `提醒范围 = min(音效范围, MaxRange)` 决定发给谁，并把这个范围**原样写进包** ——
+    ///   收到包的白方必然在音效可听范围内，"提醒"因此才成立（范围与可听范围是同一个数）。
     ///
     ///   原版证据（`Assembly-CSharp.decompiled.cs`）：
     ///     :172111  `SendWorldSFX(Player, ESoundType, PosInfo, float distance = 896f)`
@@ -43,7 +43,9 @@ namespace HideAndSeek.Features.Vision
     ///   2. **听不到的人不发** —— 超出提醒范围就完全不管（包里的 `MaxDistance` 与它同值）
     ///   3. **站着不动也要响** —— 节拍挂在 1 Hz 的 `SurvivalTick` 上，不依赖任何人的移动
     ///
-    /// "没有声音就没有提醒"：主拍音效留空或写 `none` ⇒ 整段不发（回声/背景音一起跳过，也不记账）。
+    /// "没有声音就没有提醒"（明确不发心跳的两种情形）：
+    ///   · 主拍音效留空或写 `none` ⇒ 整段不发（回声/背景音一起跳过，也不记账）
+    ///   · 解析出的提醒范围 ≤ 0（例如上限被设成 0）⇒ 整段不发
     ///
     /// 节拍怎么表达"缓急"：`SurvivalTick` 只有 1 Hz，所以用"每个 tick 发几拍"来做：
     ///   外围（远）：每 2 个 tick 发 1 拍 ⇒ 0.5 Hz
@@ -66,13 +68,41 @@ namespace HideAndSeek.Features.Vision
         /// </summary>
         private const float VanillaSfxRange = 896f;
 
+        /// <summary>
+        /// 提醒范围硬上限的**默认值** = 黑方升到 2 级视野后的地图视野范围（世界单位，固定值）。
+        ///
+        /// 出处（全是**默认值**链，逐行可查；单位 = 世界单位，224 = 一格）：
+        ///   · `Features/Vision/AoiCullingFeature.cs:54`  ExitRange 默认 **900**（黑方地图视野基准）
+        ///   · `Features/Combat/KillUpgradeFeature.cs:50` VisionBonusPerLevel 默认 **0.5**（"+50% / 级"）
+        ///   · `Features/Combat/KillUpgradeFeature.cs:321-323`  `k = 1 + 0.5 × 等级`，直接乘在 ExitRange 上
+        ///   ⇒ 2 级 = 900 × (1 + 0.5×2) = 900 × 2 = **1800**
+        ///
+        /// 各档（同一基准 900）：未升级 900（4.0 格）/ 1 级 1350（6.0 格）/
+        /// 2 级 **1800**（8.0 格）/ 3 级 2250（10.0 格）。
+        /// ⚠ 若房主改过 `AoiCulling.ExitRange` 或 `KillUpgrade.VisionBonusPerLevel`，
+        ///   本默认值**不跟着变**（需求要的就是"固定值"）—— 需要时请直接改 MaxRange。
+        /// </summary>
+        private const float BlackVisionLevel2Range = 1800f;
+
         [ConfigField(true, "启用接近预警。")]
         public static ConfigEntry<bool> AlertEnabled;
 
         [ConfigField(1.4f, "预警外圈倍率：以 AoiCulling.ExitRange（黑方地图视野）为基准，乘这个倍数就是最外层的感知范围"
-            + "（它同时就是心跳音效的可听范围）。",
+            + "（它同时就是心跳音效的可听范围，再受 MaxRange 上限封顶）。",
             Min = 1f, Max = 3f)]
         public static ConfigEntry<float> RangeMul;
+
+        /// <summary>
+        /// 提醒范围的**硬上限**：提醒范围 = min(音效可听范围, 本上限)，音效也按这个范围发。
+        /// 默认取「黑方 2 级视野」是有意的 —— 既覆盖"能看见黑方走过来"的距离，
+        /// 又不会随视野升到 3 级（2250）把心跳铺得整个地图都是。
+        /// </summary>
+        [ConfigField(BlackVisionLevel2Range,
+            "提醒范围硬上限（世界单位）。提醒范围 = min(音效可听范围, 本上限)；"
+            + "默认 1800 = 黑方升到 2 级视野后的地图视野范围（AoiCulling.ExitRange 默认 900 × (1 + 0.5×2)）。"
+            + "0 = 静音（不发心跳，等于关掉预警）；负数 = 不设上限（跟随 视野 × RangeMul）。",
+            Min = -1f, Max = 5000f)]
+        public static ConfigEntry<float> MaxRange;
 
         [ConfigField("IgniteSfx", "主拍音效（咚）。ESoundType 名。")]
         public static ConfigEntry<string> SignalSfx;
@@ -130,18 +160,36 @@ namespace HideAndSeek.Features.Vision
                     sight = VanillaSfxRange;
                 }
 
-                // ② 提醒范围 = 音效可听范围（会原样写进包的 MaxDistance）；拿不到就退回原版默认 896
-                float alertRange = sight * (RangeMul?.Value ?? 1.4f);
-                if (!(alertRange > 0f) || float.IsNaN(alertRange) || float.IsInfinity(alertRange))
+                // ② 音效可听范围（会原样写进包的 MaxDistance）；拿不到就退回原版默认 896
+                float sfxRange = sight * (RangeMul?.Value ?? 1.4f);
+                if (!(sfxRange > 0f) || float.IsNaN(sfxRange) || float.IsInfinity(sfxRange))
                 {
                     Note($"音效范围算不出来（视野 {sight:F0} × 外圈倍率）⇒ 退回原版默认 {VanillaSfxRange:F0}。");
-                    alertRange = VanillaSfxRange;
+                    sfxRange = VanillaSfxRange;
+                }
+
+                // ③ 提醒范围 = min(音效可听范围, 上限)。0 = 静音；负数 = 不设上限。
+                float cap = MaxRange?.Value ?? BlackVisionLevel2Range;
+                float alertRange = cap == 0f
+                    ? 0f
+                    : (cap < 0f ? sfxRange : global::System.Math.Min(sfxRange, cap));
+
+                if (!(alertRange > 0f))
+                {
+                    Note("提醒范围上限为 0 ⇒ 范围为 0，不产生提醒。");
+                    return;
+                }
+                if (cap > 0f && cap < sfxRange)
+                {
+                    Note($"音效范围 {sfxRange:F0} 超过上限 {cap:F0}，已封顶为 {alertRange:F0}"
+                        + "（包里的 MaxDistance 同步收窄，收包者一定听得见）。");
                 }
                 if (float.IsNaN(_lastRange) || global::System.Math.Abs(alertRange - _lastRange) > 0.5f)
                 {
                     _lastRange = alertRange;
                     Plugin.Log.LogInfo(
-                        $"[HS] ProximityAlert：提醒范围 = 音效可听范围 = {alertRange:F0}（黑方视野 {sight:F0}）。");
+                        $"[HS] ProximityAlert：提醒范围 = {alertRange:F0}（音效可听范围 {sfxRange:F0}，"
+                        + $"上限 {(cap < 0f ? "不限" : cap.ToString("F0"))}，黑方视野 {sight:F0}）。");
                 }
 
                 _tick++;
