@@ -243,7 +243,7 @@ DiscoverFeatures(自己程序集)
 |---|---|:--:|---|
 | `WeaponGrant` | `Features/Weapon/WeaponGrantFeature.cs` | **开** | 自行跑刀（默认）或开局直接给随机一人发刀；自动发刀时会锁死武器架并没收第二把刀 |
 
-### 3.4 Rule —— 胜负与规则（9 段）
+### 3.4 Rule —— 胜负与规则（10 段）
 
 | 段名 | 文件 | 默认 | 一句话作用 |
 |---|---|:--:|---|
@@ -256,6 +256,7 @@ DiscoverFeatures(自己程序集)
 | `PowerRepair` | `Features/Rule/PowerRepairFeature.cs` | **开** | 电力恢复条件放宽：已修电箱数达标即恢复供电（默认 1 = 修好任意一个） |
 | `FuseboxReveal` | `Features/Rule/FuseboxRevealFeature.cs` | **开** | 把"可拆电箱"标记包也发给黑方（原版只发黑幕），让黑方地图/平板上看得见目标 |
 | `LockDoor` | `Features/Rule/LockDoorFeature.cs` | **开** | 锁门命令的底层：白方看到原生锁定，黑方看到"只是关着"从而能按 E 秒解 |
+| `GhostPhaseRefresh` | `Features/Rule/GhostPhaseRefreshFeature.cs` | **开** | **【临时补丁】**操作发信机时被刀杀死的人会整段 Survive 拿不回操作权 ⇒ 服务端只对他定向补一次「当前阶段」刷新（走原版换阶段的解锁路）；官方修复后应整段移除 |
 
 ### 3.5 Rule —— 命令通道（3 段）
 
@@ -614,6 +615,78 @@ MigrateInt/Float/Bool(section, key, oldDefault, newDefault)
 | v4 | `Broadcast.WelcomeDelayMs` 2500→10000 |
 | v5 | `AoiCulling.EnterRange` 750→900 |
 | v6 | `AoiCulling.ExitRange` 1100→900、`EnterRange` 900→700；`KillUpgrade.VisionBonusPerLevel` 0.5→0.6 |
+
+### 4.8 【**临时补丁**】操作发信机时被刀杀死 ⇒ 定向补一次「当前阶段」刷新 —— `Features/Rule/GhostPhaseRefreshFeature.cs`
+
+> ⚠ **这是临时补丁。官方修好客户端之后应整段作为冗余代码删除。** 段名 `GhostPhaseRefresh`（默认开），
+> 关掉即完全回到原版行为。移除条件见本节末。
+
+**症状**（房主原话）：**生存阶段**里，某人**正在操作发信机**（`ChatDevice` / `UI_ChatDevicePopup`）时被刀杀死，
+他会**整段 Survive 拿不回操作权**（不能动、也开不了平板），直到下一次换阶段（回大厅）才恢复。
+
+**根因（原版客户端缺陷；证据见 `.tmps/幽灵卡死-独立复核.md` §1/§8）**：
+
+- 被刀命中那一刻服务端发 `S_STOP_CONTROL`（`Player.OnDamaged` `:175952`），客户端只做一件事：
+  `Managers.Game.CanControl = false`（`:42338-42341`）。
+- 一局内在 Survive 里能把它置回 true 的路**只有一条**：死亡时那条约 6.0 秒「你已死亡」提示的
+  **最后一个 DOTween 回调**（`UI_ClassPopup.<ShowDeadMessage>b__10_0` `:61050`）。
+- 而 `UI_ClassPopup.OnDisable` / `OnDestroy` 会把那条序列 **`Kill(false)`**（`:61156-61166`）
+  —— `complete=false` ⇒ 回调永不执行 ⇒ **解锁永久丢失**。
+- 原版还有一条后路是"下一次换阶段"（`UIManager.<EndLoading>b__31_0` `:38652`）；但本玩法
+  **禁用了报告尸体** ⇒ 侦探/审判阶段不再发生 ⇒ 那条后路被拉远到结算/回大厅，症状就成了"卡到本局结束"。
+
+**本补丁做什么**：服务端**只对那一个人**补一次「当前阶段」刷新，让他重走原版每次换阶段都在走的那条路：
+
+```csharp
+p.Session.Send(new S_CHANGE_GAME_STATE { State = room.State });   // 单人定向，不广播
+// 等他的 C_COMPLETE_PACKET（带超时）
+p.Session.Send(new S_FADE_IN());                                  // 客户端 EndLoading 回调把 CanControl 置 true
+```
+
+顺序不能反（反了会被客户端 `UIManager.EndLoading` 开头的 `if (_loadingUI == null) return;` `:38646` 吃掉）。
+**服务端真实状态不变**（这里不动 `room.State`，也不走 `ChangeGameState` —— 后者开头就是
+`if (State == state) return;`，对"当前阶段"是空转）。写法与 `ReplayDirector` 里那套同源。
+
+**触发判据（确定性，不猜客户端行为）**：
+
+| 信号 | 位置 | 为什么确定性 |
+|---|---|---|
+| 死时 `PublicInfo.State == EPlayerState.Interact(5)` | `Player.OnDead` 的 **Prefix**（`:175970` 之前） | 客户端开界面会发 `C_MODIFY_PLAYER{ChangePlayerState=5}`，服务端 `Player.ModifyPlayer` 该分支**无条件写入**（`:176801`；守卫只挡 Hide/Sit） |
+| 「在发信机上被打」 | `Server.Game.ChatDevice.OnUserDamaged`（`:162331`，private） | 它挂在 `player.OnDamagedEvent` 上（`:162315-316`），被调用的位置正是 `OnDamaged` 那发 400ms 回调里、**`OnDead` 的前一行**（`:175955` / `:175961`） |
+
+⚠ **必须是 `OnDead` 的 Prefix**：`OnDead` 末尾的 `ExitPlayer()` 会把 `State` 改成 `Hide`（`:176098`），Postfix 读到的是错的。
+⚠ `ChatDevice` 客户端/服务端**同名** ⇒ 代码里用别名 `GameChatDevice = Server.Game.ChatDevice`（本仓库同名类型坑之一）。
+
+**两个当初的未知项怎么兜的**：
+
+1. 「客户端收到**同状态**的 `S_CHANGE_GAME_STATE` 会不会自己忽略」——**不需要它不忽略**：客户端
+   `Handle_S_CHANGE_GAME_STATE` 不判重，直接 `StartLoading(state)`；而 `GameManagerEX.State` 的 setter
+   自带 `_state != value` 守卫（`:28716`）⇒「设成同一个 Survive」本身**无副作用**，整条路照走、回执照发、最后解锁。
+2. 「服务端**没有等待者**时收到那发 `C_COMPLETE_PACKET` 有没有害」——**已核实无害**：
+   `GameRoom.CompletePacket`（`:169808` → 基类 `:173031`）整段体就是 `if (_completeAction != null) { … }`，
+   无等待者时**一个字都不做**。所以本补丁**不注册、也不碰**原版那套等待者集合，只挂一个纯观察 Postfix。
+
+等回执仍**带超时**；**超时也补发 `S_FADE_IN`** —— 只 WARN 不补的话客户端会停在 `_loadingUI != null`
+的加载态，**比不修更糟**（超时也可能只是客户端走了 `IsCatchingUp` 的同步解锁路径）。
+补发前还会再查一次房间是否已被**真实**换阶段/回放接管 —— 那种情况下那次转换自己会发 `S_FADE_IN`，我们让给原版。
+
+**实机上怎么确认它生效**（`VerboseLog` 默认开）：
+
+```text
+[HS] GhostPhaseRefresh： #N（名字）死时在操作发信机（State=Interact:True 近期被打:False） ⇒ 8000ms 后定向补一次当前阶段刷新。
+[Warning:HideAndSeek] [HS] GhostPhaseRefresh（临时补丁）：#N（名字）死时在操作发信机，已定向补发 S_CHANGE_GAME_STATE{Survive}，等回执（超时 2500ms）后补 S_FADE_IN。
+[Info   :HideAndSeek] [HS] GhostPhaseRefresh（临时补丁）：#N（名字）已收到客户端回执 ⇒ 已补发 S_FADE_IN（客户端 EndLoading 回调会把 CanControl 置 true）。
+[Info   :HideAndSeek] [HS] GhostPhaseRefresh（临时补丁）：#N（名字）补刷新后 6000ms：坐标已变化（他拿回操作权并动了）。
+```
+
+最后那行是**唯一的直接证据**：服务端看不到 `CanControl`，但看得到坐标有没有变。若它显示"仍未变化"，
+就要在客户端加 `set_CanControl` 探针（调查报告 §8.8 的 P1）再看一眼。
+
+**移除条件**（满足任意一条即可整段删掉本文件）：
+
+- 官方修掉客户端 `UI_ClassPopup.OnDisable` / `OnDestroy` 的 `Kill(false)`（不再取消那个回调，或把解锁做成幂等）；
+- 或官方让"拿回操作权"不再只依赖那一条 DOTween 回调（例如服务端给一发能直接置 `CanControl` 的包）；
+- 或本玩法的换阶段后路恢复（重新允许报告尸体 / 恢复侦探阶段）。
 
 ---
 
