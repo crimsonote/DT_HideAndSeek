@@ -34,6 +34,9 @@ namespace HideAndSeek.Features.Rule
         private static MethodInfo _clearMission;
         private static MethodInfo _currentPointSetter;
 
+        /// <summary>反射是否已熔断（供命令层打诊断日志，区分"真为 0"与"读不到"）。</summary>
+        internal static bool Failed => _failed;
+
         private static bool Ensure()
         {
             if (_failed)
@@ -62,11 +65,15 @@ namespace HideAndSeek.Features.Rule
             // 对非公开访问器的处理，这里直接取 setter 的 MethodInfo 自己 Invoke，行为确定。
             _currentPointSetter = AccessTools.PropertySetter(_type, "CurrentPoint");
 
-            if (_instance == null || _clearMission == null || _progressList == null)
+            // ⚠ 必须把 CurrentPoint / GoalPoint 也纳入熔断判据：
+            //   少了它们时 ReadFloat 会**静默**返回 fallback（0f）⇒ 表现正好是
+            //   "命令说任务进度为 0、而界面显示有进度"（房主 2026-10-05 实报，出现在首局）。
+            if (_instance == null || _clearMission == null || _progressList == null
+                || _currentPoint == null || _goalPoint == null)
             {
                 _failed = true;
                 Plugin.Log.LogWarning(
-                    "[HS] MissionManager 反射不完整（Instance / ClearMission / ProgressMissionList 有缺失），任务系统相关功能停用。");
+                    "[HS] MissionManager 反射不完整（Instance / ClearMission / ProgressMissionList / CurrentPoint / GoalPoint 有缺失），任务系统相关功能停用。");
                 return false;
             }
             return true;
