@@ -12,8 +12,8 @@ namespace HideAndSeek
     [BepInPlugin(Guid, "HideAndSeek", Version)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Guid = "YumeHatsuyuki.DeadlyTrick.HideAndSeek";
-        public const string Version = "1.4.5";
+        public const string Guid = "HideAndSeek";
+        public const string Version = "1.4.6";
 
         public static Plugin Instance { get; private set; }
 

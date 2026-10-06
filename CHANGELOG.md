@@ -4,6 +4,15 @@
 
 > 版本号来源：`HideAndSeek.csproj` 与 `Plugin.cs`（`verify.ps1` 会校验两者一致）。
 
+## v1.4.6
+
+- chore: 插件 GUID 由 `YumeHatsuyuki.DeadlyTrick.HideAndSeek` 改为 `HideAndSeek`
+  —— 旧值借用了 DT_Tools 作者的名义，而上游自己的 GUID 就是 `DT_Tools`；本模块不该挂他人之名
+- fix(dt): 适配 DT_Tools v1.0.9.0 —— 命令桥重写、配置入口双探、写盘隔离（新段 `[DtMirror]`）
+- fix(dummy): StartPick 钩子钉 `Priority.First+1` —— 上游 SpectatorJoin 会整替该方法
+- fix(tools): 修正两个检查器的提取缺陷（别名归一、段名认位置参数）
+- chore(verify): 增加行尾检查
+- docs: 回写 DT_Tools v1.0.9.0 适配结论；增补「提交纪律」；补 LICENSE（GPL-3.0）
 ## v1.4.5
 
 - release: v1.4.5 —— 修「降级时黑方被幽灵化」（剪影 IsGhost 判据）

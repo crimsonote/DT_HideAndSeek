@@ -34,7 +34,7 @@
 |---|---|
 | 模块路径 | `D:\git\DT_Tools\HideAndSeek\`（独立 git 仓库；开发在 `dev`，发布打 tag） |
 | 上游 | `D:\git\DT_Tools\DT_Tools\`（**绝对不可修改**） |
-| 插件 GUID / 版本 | `YumeHatsuyuki.DeadlyTrick.HideAndSeek` / `1.4.0`（`Plugin.cs:16-17`） |
+| 插件 GUID / 版本 | `HideAndSeek` / `1.4.6`（`Plugin.cs:15-16`） |
 | 产物 | `bin\Release\netstandard2.1\HideAndSeek.dll` → 复制到 `BepInEx\plugins\` |
 | 共享引用 | 游戏安装目录 `DeadlyTrick_Data\Managed\*.dll`（默认，唯一权威来源）+ `BepInEx\core\` 的 `BepInEx.dll` / `0Harmony.dll`。**不依赖 DT_Tools 仓库的 `libs/`** —— 本插件是独立仓库，单独 clone 只填 `GameDir` 即可构建 |
 
