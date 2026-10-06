@@ -1,2 +1,9 @@
 [Bb]in/
 [Oo]bj/
+*.log
+*.user
+*.suo
+.vs/
+.vscode/
+.tmps/
+BepInEx/
