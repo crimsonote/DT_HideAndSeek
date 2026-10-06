@@ -111,14 +111,11 @@ namespace HideAndSeek.Features.Skill
         public static ConfigEntry<int> SodaItemId;
 
         [ConfigField(24,
-            "进度条起始值（槽位刻度 0..24，条 = 值/24）。24 = 满。",
-            Min = 0f, Max = 24f)]
-        public static ConfigEntry<int> SodaValueFrom;
-
-        [ConfigField(16,
-            "进度条结束值。24 → 16 即「下降 1/3 槽位」。",
-            Min = 0f, Max = 24f)]
-        public static ConfigEntry<int> SodaValueTo;
+            "进度条满值（槽位刻度；条 = 值/满值）。" +
+            "条反映的是「剩余使用次数」：剩余次数 ÷ 总次数 × 满值。" +
+            "3 次上限时依次是 24 → 16 → 8 → 0。",
+            Min = 1f, Max = 24f)]
+        public static ConfigEntry<int> SodaMaxValue;
 
         [ConfigField(80,
             "进度条每一步的间隔（毫秒）。原版进度条没有补间，平滑下降靠服务端按这个节拍连发递减值。",
@@ -140,8 +137,7 @@ namespace HideAndSeek.Features.Skill
         private static float VfxRangeValue => VfxRange != null ? VfxRange.Value : 896f;
         private static bool SwapToSodaValue => SwapToSoda == null || SwapToSoda.Value;
         private static int SodaItemIdValue => SodaItemId != null ? SodaItemId.Value : 1039;
-        private static int SodaValueFromValue => SodaValueFrom != null ? SodaValueFrom.Value : 24;
-        private static int SodaValueToValue => SodaValueTo != null ? SodaValueTo.Value : 16;
+        private static int SodaMax => SodaMaxValue != null ? SodaMaxValue.Value : 24;
         private static int SodaStepMsValue => SodaStepMs != null ? Math.Max(20, SodaStepMs.Value) : 80;
         private static int SodaHoldMsValue => SodaHoldMs != null ? Math.Max(0, SodaHoldMs.Value) : 500;
 
@@ -432,13 +428,13 @@ namespace HideAndSeek.Features.Skill
                     }
                 }
 
-                // ── ④ 临时换汽水 + 进度条下降 ────────────────────────────
-                if (SwapToSodaValue)
-                    StartSodaSwap(owner, room);
-
-                // ── ⑤ 计数 / CD / 用尽回收 ──────────────────────────────
+                // ── ④ 计数 —— 进度条按「剩余次数」画，必须先算出来 ────────
                 int used = UsedTeleports(pid) + 1;
                 Teleports[pid] = used;
+
+                // ── ⑤ 临时换汽水 + 进度条（刻度 = 剩余次数比例）──────────
+                if (SwapToSodaValue)
+                    StartSodaSwap(owner, room, used);
 
                 if (used >= MaxTeleportsValue)
                 {
@@ -531,7 +527,7 @@ namespace HideAndSeek.Features.Skill
         ///   所以包的收件人必须**只有他本人**（S_ADD_ITEM 本来就是单发给他）。
         ///   反过来说：光改 `PublicInfo.HandItemId` 只会让所有人看到角色手上拿着汽水、而他自己的屏幕上**没有条**。
         /// </summary>
-        private static void StartSodaSwap(GamePlayer player, GameRoom room)
+        private static void StartSodaSwap(GamePlayer player, GameRoom room, int used)
         {
             if (player == null || player.PublicInfo == null || player.Session == null)
                 return;
@@ -547,7 +543,7 @@ namespace HideAndSeek.Features.Skill
                 {
                     DataId = SodaItemIdValue,
                     ObjectId = ObjectUtils.GenerateNewId(),   // 全局唯一，避免与真实物品撞 id
-                    Value = SodaValueFromValue
+                    Value = SodaValueFor(MaxTeleportsValue - used + 1, MaxTeleportsValue)
                 };
 
                 SodaSwaps[pid] = soda;
@@ -562,8 +558,11 @@ namespace HideAndSeek.Features.Skill
                 return;
             }
 
-            int from = SodaValueFromValue;
-            int to = SodaValueToValue;
+            // 条 = 「剩余次数 ÷ 总次数」× 满值。房主口径（2026-10-06）：它反映**还剩几次**，
+            // 而不是每次固定掉一段 —— 3 次上限时：第 1 次 24→16、第 2 次 16→8、第 3 次 8→0。
+            int total = MaxTeleportsValue;
+            int from = SodaValueFor(total - used + 1, total);
+            int to = SodaValueFor(total - used, total);
             int step = SodaStepMsValue;
             int steps = Math.Abs(to - from);
 
@@ -611,7 +610,7 @@ namespace HideAndSeek.Features.Skill
                 }
             }
 
-            int finishAt = SodaTotalMs;
+            int finishAt = step * steps + SodaHoldMsValue;
             if (finishAt < 0)
                 finishAt = 0;
 
@@ -627,9 +626,18 @@ namespace HideAndSeek.Features.Skill
             Plugin.Log.LogInfo($"[HS] MioTeleport：#{pid} 本机临时换成汽水 {SodaItemIdValue}（{from} → {to}，{finishAt}ms 后还原）。");
         }
 
-        /// <summary>进度条整段时长（毫秒）= 步进总时长 + 末尾停留；也是收尾回调的延迟。</summary>
-        private static int SodaTotalMs
-            => SodaStepMsValue * Math.Abs(SodaValueToValue - SodaValueFromValue) + SodaHoldMsValue;
+        /// <summary>
+        /// 进度条刻度 = 「剩余次数 ÷ 总次数」映射到 0..<see cref="SodaMax"/>。
+        /// 剩余为 0（次数用尽）或次数非法时返回 0。
+        /// </summary>
+        private static int SodaValueFor(int remaining, int total)
+        {
+            if (total <= 0 || remaining <= 0)
+                return 0;
+            if (remaining >= total)
+                return SodaMax;
+            return (int)global::System.Math.Round(SodaMax * (double)remaining / total);
+        }
 
         /// <summary>
         /// 还原**他本人的本地手部**：撤掉汽水 → 把服务端权威的当前手部重新发给他。

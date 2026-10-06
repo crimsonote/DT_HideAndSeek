@@ -512,7 +512,12 @@ namespace HideAndSeek.Features.Broadcast
             //   ② 紧随其后的"开头提示"= 自提刀时那条通告的文案（WeaponTaken「捉迷藏开始了~」）
             //   ③ 最后才是自动发刀模式专属的正文（StartBodyWhite）
             // 循环外只算一次：所有白方拿到的是同一条文本，而且该条整体还要作为一条记录进公共发信机。
-            string whiteTip = null;
+            // ⚠ 这条「要留档到公共发信机」的文本，**两种发刀模式都必须有**。
+            //   旧写法把它整段放在 `if (auto)` 里 ⇒ 自行拿刀模式（auto == false）下它恒为 null，
+            //   于是下面那发 NoticeToWhiteChannel 被 `whiteTip != null` 挡掉，
+            //   白方在公共发信机里**一条开局记录都没有**（房主 2026-10-06 报的正是这个）。
+            //   （核对过：昨天的 d83e247 里条件一模一样 ⇒ 这不是回归，是这块留档一直只覆盖了自动发刀模式。）
+            string whiteTip;
             if (auto)
             {
                 // 需求确认（#6）：「开头的提示」= 自提刀时那条通告的**原文**（WeaponTaken「捉迷藏开始了~」）。
@@ -522,6 +527,12 @@ namespace HideAndSeek.Features.Broadcast
                 string head = TextService.Format(WeaponTaken?.Value) + "\n"
                             + Titled(TextService.Format(StartBodyWhite?.Value));
                 whiteTip = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
+            }
+            else
+            {
+                // 自行拿刀模式：白方气泡拿到的就是 StartBodySelfServe（见下面循环里的 `!auto` 分支），
+                // 留档用同一条，保证"气泡内容"与"发信机记录"一致。
+                whiteTip = Titled(TextService.Format(StartBodySelfServe?.Value));
             }
 
             foreach (var player in room.Players)
