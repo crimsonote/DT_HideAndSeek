@@ -107,6 +107,16 @@ namespace HideAndSeek.Features.Rule
 
         private static float ReadFloat(PropertyInfo prop, string member, float fallback)
         {
+            // ⚠ 先 Ensure()：`prop` 是**按值**传进来的字段快照，首次调用时它还是 null，
+            //   只在下面 Instance() 里才绑定是来不及的（参数副本不会跟着变）。
+            if (!Ensure())
+                return fallback;
+
+            // 迟到绑定兜底：本函数收到的 member 与属性名一一对应，
+            // 所以即使调用方传进来的是 null 快照，也能在这里重新取到。
+            if (prop == null)
+                prop = AccessTools.Property(_type, member);
+
             object inst = Instance();
             if (inst == null || prop == null)
                 return fallback;
@@ -148,31 +158,63 @@ namespace HideAndSeek.Features.Rule
             }
         }
 
-        internal static float CurrentPoint => ReadFloat(_currentPoint, "CurrentPoint", 0f);
+        // ⚠⚠ 下面这些包装**必须先 Ensure() 再取字段**，不能用表达式体直接传 `_currentPoint` 之类。
+        //
+        // 原因（房主 2026-10-06 实报"本局第一次 /sta 读不到任务进度、第二次就好了"）：
+        //   `_currentPoint` / `_goalPoint` 这两个 **PropertyInfo 字段**只在 Ensure() 里赋值，
+        //   而 Ensure() 是被读取函数**内部**的 Instance() 才触发的。
+        //   写成 `TryReadFloat(_currentPoint, …)` 时，字段是**按值**传进去的：
+        //   首次调用时它还是 null ⇒ 参数副本永远是 null ⇒ `prop == null` 直接判失败，
+        //   里面那次(迟到的)绑定救不回来。旧代码走 ReadFloat 时同样命中这一支，
+        //   于是**静默返回 fallback 0f** —— 那正是"任务进度明明有却说为 0"的老症状。
+        //   先把 Ensure() 跑掉，字段就绪后再取值，这条路径才彻底消失。
+
+        internal static float CurrentPoint
+        {
+            get
+            {
+                if (!Ensure())
+                    return 0f;
+                return ReadFloat(_currentPoint, "CurrentPoint", 0f);
+            }
+        }
 
         /// <summary>
         /// 读 <c>CurrentPoint</c>，**把"读不到"与"读到 0"彻底分开**。
-        ///
-        /// 为什么必须有它（房主 2026-10-06 实报：界面上还有进度，命令却说"任务进度为 0"）：
-        /// <see cref="ReadFloat"/> 在拿不到实例/属性时**静默返回 fallback 0f**，
-        /// 而调用方无法区分"读不到"与"真的是 0" ⇒ 把读取失败也报成"进度为 0"。
         /// 返回 false 时调用方应当报"读不到任务进度"，而不是"进度为 0"。
         /// </summary>
         internal static bool TryCurrentPoint(out float value)
-            => TryReadFloat(_currentPoint, "CurrentPoint", out value);
+        {
+            value = 0f;
+            if (!Ensure())
+                return false;
+            return TryReadFloat(_currentPoint, "CurrentPoint", out value);
+        }
 
         /// <summary>
         /// 读 <c>GoalPoint</c>（同上：区分"读不到"与"为 0"）。
         /// 它还有一个独立用途 —— `MissionAllocator`(:166613) 负责给它赋值
         /// （`GoalPoint = 存活人数 × 15`），所以 **`GoalPoint &lt;= 0` 就是"本局任务系统尚未就绪"**
-        /// 的确定性判据（首局在 `GameStart()` 之前读到的正是 0）。
+        /// 的确定性判据。
         /// </summary>
         internal static bool TryGoalPoint(out float value)
-            => TryReadFloat(_goalPoint, "GoalPoint", out value);
+        {
+            value = 0f;
+            if (!Ensure())
+                return false;
+            return TryReadFloat(_goalPoint, "GoalPoint", out value);
+        }
 
         private static bool TryReadFloat(PropertyInfo prop, string member, out float value)
         {
             value = 0f;
+
+            // 同上：先绑定，再(必要时)重新取一次字段 —— 否则首次调用必然因为
+            // 拿到 null 快照而失败，正是"第一次读不到任务进度"的直接原因。
+            if (!Ensure())
+                return false;
+            if (prop == null)
+                prop = AccessTools.Property(_type, member);
 
             object inst = Instance();
             if (inst == null || prop == null)
