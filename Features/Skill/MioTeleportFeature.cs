@@ -44,7 +44,8 @@ namespace HideAndSeek.Features.Skill
     ///      ⚠ 这是**纯本机幻觉**（房主 2026-10-06 口径）：换汽水只是为了显示进度条而做的变通，
     ///      不是玩法改动 ⇒ 相关包**只发给本人**，服务端权威手部（`Player.Hand` /
     ///      `HandItemObjectId` / `PublicInfo.HandItemId`）全程不动，**别人看到的他还是原来的样子**；
-    ///      进度条窗口内还会忽略他的「丢弃物品」操作（既不许丢那件汽水，也不许丢他原本的东西）。
+    ///      进度条窗口内还会忽略他的「丢弃物品」与「拾取物品」操作（既不许把幻觉汽水弄丢，
+    ///      也不许把真实原物品丢出去；被打断时立刻重申持有，**进度条要一路放到收尾**）。
     ///      ⚠ 进度条必须靠"客户端真的持有 1039"（客户端 Inventory.InsertHand → StartHand → DataId==1039
     ///      才 ShowItemUI&lt;UI_ShakingSlider&gt;），所以仍然要发 `S_ADD_ITEM` —— 但收件人只有他一个。
     ///      ⚠ 原版 SetInfo(:91069) 是**直接赋值**、没有补间 ⇒ "下降动画"只能由服务端按节拍连发递减值。
@@ -86,8 +87,7 @@ namespace HideAndSeek.Features.Skill
         public static ConfigEntry<int> RecallCdSec;
 
         [ConfigField(1000,
-            "传送后锁操作的毫秒数。用 EBuffType.Stop（只锁操作，不会丢下手上的物品）。" +
-            "若进度条比它长，会**自动延长到覆盖整个进度条**（进度条期间要挡住丢弃操作）。",
+            "传送后锁操作的毫秒数。用 EBuffType.Stop（只锁操作，不会丢下手上的物品）。",
             Min = 0f, Max = 10000f)]
         public static ConfigEntry<int> LockMs;
 
@@ -420,16 +420,11 @@ namespace HideAndSeek.Features.Skill
                 }
 
                 // ── ③ 锁操作（默认 Stop：只锁操作、不丢物品）──────────────
-                // 时长取 max(配置值, 进度条整段 + 余量)：进度条期间必须一直是锁着的，
-                // 否则玩家能在条没走完时去丢手上的东西（房主明确要求那段窗口内忽略丢弃）。
-                int lockMs = LockMsValue;
-                if (SwapToSodaValue)
-                    lockMs = Math.Max(lockMs, SodaTotalMs + 50);
-                if (lockMs > 0)
+                if (LockMsValue > 0)
                 {
                     try
                     {
-                        owner.BuffComponent?.AddBuff(UseStunValue ? EBuffType.Stun : EBuffType.Stop, lockMs);
+                        owner.BuffComponent?.AddBuff(UseStunValue ? EBuffType.Stun : EBuffType.Stop, LockMsValue);
                     }
                     catch (Exception ex)
                     {
@@ -582,7 +577,8 @@ namespace HideAndSeek.Features.Skill
                     room.PushAfter(step * i, delegate
                     {
                         var p = FindPlayer(pid);
-                        if (p == null || !SodaSwaps.ContainsKey(pid))
+                        ItemInfo cur;
+                        if (p == null || !SodaSwaps.TryGetValue(pid, out cur))
                             return;
                         if (!p.IsAlive || room.State != EGameState.Survive)
                         {
@@ -592,6 +588,10 @@ namespace HideAndSeek.Features.Skill
 
                         try
                         {
+                            // 记住当前刻度：客户端若被打断，ResendSoda 用这个值重建，
+                            // 条才不会跳回起点。
+                            cur.Value = value;
+
                             // ⚠ 不能走 `Item.Value` 的 setter：它内部读的是**服务端 Hand**
                             //   （`SendChangeItemValue` :176956），而我们的汽水只是本机幻觉、
                             //   服务端 Hand 根本没变 ⇒ 那样会发出**原物品**的值。
@@ -627,11 +627,7 @@ namespace HideAndSeek.Features.Skill
             Plugin.Log.LogInfo($"[HS] MioTeleport：#{pid} 本机临时换成汽水 {SodaItemIdValue}（{from} → {to}，{finishAt}ms 后还原）。");
         }
 
-        /// <summary>
-        /// 进度条整段时长（毫秒）= 步进总时长 + 末尾停留。
-        /// 操作锁的时长要**取它和 <c>LockMs</c> 的较大者**，否则锁会先于进度条结束，
-        /// 玩家就能在进度条还在时去丢手上的东西（房主明确要求那段窗口内忽略丢弃）。
-        /// </summary>
+        /// <summary>进度条整段时长（毫秒）= 步进总时长 + 末尾停留；也是收尾回调的延迟。</summary>
         private static int SodaTotalMs
             => SodaStepMsValue * Math.Abs(SodaValueToValue - SodaValueFromValue) + SodaHoldMsValue;
 
@@ -672,25 +668,61 @@ namespace HideAndSeek.Features.Skill
             }
         }
 
-        // ══════════════════ ⑤ 进度条期间忽略「丢弃物品」══════════════════
+        // ══════════════════ ⑤ 进度条期间：不许被换掉、不许被丢 ══════════════════
 
         /// <summary>
-        /// 进度条窗口内忽略玩家的「丢下手中的物品」操作。
+        /// 再把「你手上正拿着这瓶汽水」告诉客户端一次 —— **进度条被打断后的恢复**。
         ///
-        /// 为什么必须拦：进度条那件汽水**只发给本人**，是一段本地幻觉；而这个包一旦放行，
-        /// 服务端 <c>ItemManager.DropItem</c>(:172739) 丢掉的是 <c>Player.Hand</c> ——
-        /// 也就是他**原本手上**的东西（服务端 Hand 从头到尾没改过）⇒ 会真的掉到地上。
-        /// 房主明确要求：那段窗口里既不能丢掉进度的汽水，也不能丢掉原来的物品。
+        /// 什么时候需要：客户端可能在本地先清过手部再发包（最典型的是 `DropHand`(:4754)：
+        /// 它先 `InsertHand(null)` 才把 `C_DROP_ITEM` 发出来 —— 哪怕那个包被我们拦下，
+        /// 它自己屏幕上的进度条已经没了）。补发时用的 `ItemInfo.Value` 是**当前刻度**
+        /// （每步节拍都会更新它），所以条不会跳回起点，进度看起来是连续的。
+        /// </summary>
+        private static void ResendSoda(GamePlayer player, ItemInfo soda)
+        {
+            if (player == null || player.Session == null || soda == null)
+                return;
+
+            try
+            {
+                player.Session.Send(new S_ADD_ITEM { Item = soda });
+                player.Session.Send(new S_MODIFY_MY_PLAYER
+                {
+                    Type = EModifyMyPlayerEvent.ChangeItemValue,
+                    Value = soda.Value
+                });
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] MioTeleport：重申持有汽水失败（{ex.Message}）。");
+            }
+        }
+
+        /// <summary>发这个包的玩家是否正处在"进度条窗口"里；不是就返回 null（调用方直接放行）。</summary>
+        private static GamePlayer InSodaWindow(IPacketSink session)
+        {
+            if (SodaSwaps.Count == 0 || ModeRuntime.Bypass)
+                return null;
+
+            var peer = session as HostPeerSession;
+            var player = peer != null ? peer.Player : null;
+            if (player == null || player.PublicInfo == null)
+                return null;
+
+            return SodaSwaps.ContainsKey(player.PublicInfo.PlayerId) ? player : null;
+        }
+
+        /// <summary>
+        /// 进度条窗口内忽略「丢下手中的物品」。
         ///
-        /// 为什么拦在这一层而不是 <c>ItemManager.DropItem</c>：
-        /// `DropItem` 还被原版内部流程调用（最典型的是 `InsertInven`(:172713) 在捡起新物品前
-        /// 先把旧的丢掉），在那里拦会让"捡东西"半途而废。
-        /// `Handle_C_DROP_ITEM`(:174867) 是**客户端主动丢弃的唯一入口**（客户端 `DropHand`:4754
-        /// 发 `C_DROP_ITEM`），拦它最精准。
+        /// 拦 `HostPacketHandler.Handle_C_DROP_ITEM`(:174867，客户端主动丢弃的**唯一**入口)，
+        /// 而**不是** `ItemManager.DropItem`(:172739)：后者还被原版内部流程调用
+        /// （`InsertInven`(:172713) 捡新物品前会先丢旧的），在那一层拦会让"捡东西"半途而废。
         ///
-        /// 客户端自己仍会先 `InsertHand(null)`（本地手部清空、进度条 UI 随之消失）——
-        /// 这一点服务端管不到；但收尾时我们会用 `player.Hand`（真值）重新把他的手部对齐，
-        /// 所以**物品不会错乱**，最多是那一帧进度条提前收场。
+        /// 注：幻觉汽水本来就落不到世界上（服务端 `Player.Hand` 全程没动过），
+        /// 这一拦防的是"玩家在窗口内把他**真实的**原物品丢出去"。
+        /// 拦下的同时会 `ResendSoda` —— 因为客户端已经先把自己的手部清空了，
+        /// 不重申一次，进度条就在这一帧断掉。
         /// </summary>
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_DROP_ITEM")]
         internal static class BlockDropHook
@@ -698,24 +730,40 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session)
             {
-                if (SodaSwaps.Count == 0)
-                    return true;                 // 不在换物窗口，零开销直接放行
-                if (ModeRuntime.Bypass)
+                var player = InSodaWindow(session);
+                if (player == null)
                     return true;
 
-                var peer = session as HostPeerSession;
-                var player = peer != null ? peer.Player : null;
-                if (player == null || player.PublicInfo == null)
-                    return true;
-                if (!SodaSwaps.ContainsKey(player.PublicInfo.PlayerId))
-                    return true;
+                ItemInfo soda;
+                SodaSwaps.TryGetValue(player.PublicInfo.PlayerId, out soda);
 
-                Plugin.Log.LogInfo($"[HS] MioTeleport：#{player.PublicInfo.PlayerId} 在进度条期间尝试丢弃物品，已忽略。");
+                Plugin.Log.LogInfo($"[HS] MioTeleport：#{player.PublicInfo.PlayerId} 在进度条期间尝试丢弃物品，已忽略并重申持有。");
+                ResendSoda(player, soda);
                 return false;
             }
         }
 
-        // ══════════════════ ⑤ 跨局清理 ══════════════════
+        /// <summary>
+        /// 进度条窗口内也忽略「拾取物品」—— 拾取走 `ItemManager.AcquireItem`(:172788) →
+        /// `InsertInven`(:172713)，会**换掉**他手上的东西（并先把旧的丢掉），进度条随即断掉。
+        /// 窗口只有 1 秒出头、这段时间本来还锁着操作，代价可以忽略。
+        /// </summary>
+        [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_ACQUIRE_ITEM")]
+        internal static class BlockAcquireHook
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(IPacketSink session)
+            {
+                var player = InSodaWindow(session);
+                if (player == null)
+                    return true;
+
+                Plugin.Log.LogInfo($"[HS] MioTeleport：#{player.PublicInfo.PlayerId} 在进度条期间尝试拾取物品，已忽略。");
+                return false;
+            }
+        }
+
+        // ══════════════════ ⑥ 跨局清理 ══════════════════
         //
         // 必须清：`SurviveTime` 每局被 ResetSurvival() 设回 420（:178650），
         // 而换汽水是**持久副作用**（手部 + 物品列表）—— 不收尾就会把汽水带进下一局。
