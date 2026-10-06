@@ -188,6 +188,15 @@ namespace HideAndSeek.Features.Skill
                 if (ModeRuntime.Bypass || _pendingLanding == null)
                     return;
 
+                // ⚠ 抑制计数（Suppress）由**别的功能**在自己播黑洞特效的前后增减：
+                //    TeleportCommandFeature.cs:270 与 MioTeleportFeature（澪传送）。
+                //    这个字段此前只被写、**没有任何地方读** —— 抑制是空转的，
+                //    于是"我们自己发的那发特效"照样会被下面改写到上一次技能的旧落点。
+                //    判据必须放在最前面：它与 _pendingLanding 的过期窗口无关，
+                //    而是"这一发是我自己发的，别碰"。
+                if (Suppress > 0)
+                    return;
+
                     // 过期即作废：该字段只写不清，没有窗口会一直影响后续所有黑洞广播。
                     // 判据必须要求时间戳落在**过去**（now >= _pendingAt）：SurviveTime 每局被
                     // ResetSurvival() 设回 420（不是从 0），跨局时 now - _pendingAt 会是负数，
