@@ -97,8 +97,17 @@ namespace HideAndSeek.Features.Skill
             "与「临时换汽水」直接冲突；只在确认这套表现可接受时才打开。")]
         public static ConfigEntry<bool> UseStunInsteadOfStop;
 
+        [ConfigField("TeleportVfx",
+            "传送特效类型（填 EEffectType 的名字）。默认 TeleportVfx = 原版**普通传送门**（拉杆）用的那一款；" +
+            "想换黑洞就填 BlackHoleVfx（它还能按包内坐标渲染，AOI 剔除时不会丢）。")]
+        public static ConfigEntry<string> VfxType;
+
+        [ConfigField("TeleportSfx",
+            "传送音效（填 ESoundType 的名字；填 none 关闭）。默认 TeleportSfx = 原版传送门同款。")]
+        public static ConfigEntry<string> SfxType;
+
         [ConfigField(896f,
-            "传送黑洞特效的可见半径（原版黑洞技能用的是 1792）。",
+            "传送特效/音效的可见（可听）半径。原版黑洞技能用的是 1792。",
             Min = 100f, Max = 5000f)]
         public static ConfigEntry<float> VfxRange;
 
@@ -135,6 +144,31 @@ namespace HideAndSeek.Features.Skill
         private static int LockMsValue => LockMs != null ? LockMs.Value : 1000;
         private static bool UseStunValue => UseStunInsteadOfStop != null && UseStunInsteadOfStop.Value;
         private static float VfxRangeValue => VfxRange != null ? VfxRange.Value : 896f;
+
+        /// <summary>传送特效类型；填了不认识的名字时回退 TeleportVfx（普通传送门那款）。</summary>
+        private static EEffectType VfxTypeValue
+        {
+            get
+            {
+                string raw = VfxType != null ? VfxType.Value : null;
+                EEffectType parsed;
+                if (!string.IsNullOrEmpty(raw)
+                    && global::System.Enum.TryParse(raw, true, out parsed))
+                    return parsed;
+                return EEffectType.TeleportVfx;
+            }
+        }
+
+        /// <summary>传送音效；返回 false 表示不播（空值或填了 none）。</summary>
+        private static bool TrySfxType(out ESoundType type)
+        {
+            type = ESoundType.TeleportSfx;
+            string raw = SfxType != null ? SfxType.Value : null;
+            if (string.IsNullOrEmpty(raw)
+                || raw.Equals("none", global::System.StringComparison.OrdinalIgnoreCase))
+                return false;
+            return global::System.Enum.TryParse(raw, true, out type);
+        }
         private static bool SwapToSodaValue => SwapToSoda == null || SwapToSoda.Value;
         private static int SodaItemIdValue => SodaItemId != null ? SodaItemId.Value : 1039;
         private static int SodaMax => SodaMaxValue != null ? SodaMaxValue.Value : 24;
@@ -389,30 +423,37 @@ namespace HideAndSeek.Features.Skill
                 // ── ① 先搬人（服务端权威 + S_RESPAWN 全服广播）──────────────
                 owner.Move(dest, force: true);
 
-                // ── ② 黑洞特效 ──────────────────────────────────────────
-                // deviceId 传"澪自己"：客户端 PlayBlackHoleEffect(:27152) 优先按**该玩家实时位置**渲染，
-                // 所以必须**先 Move 再发包**，否则特效会留在传送前的位置。
-                // pos 也一并填对，作为 AOI 把这个玩家剔除时的双保险（客户端会回落到包里的坐标）。
-                // ⚠ TeleportGuardFeature.VfxHook(:186) 会改写所有 BlackHoleVfx 广播的 deviceId/pos
-                //   —— 它用 Suppress 计数豁免，而那个计数此前**写了从没被读过**（空转）。本次一并修好。
+                // ── ② 传送特效 + 音效（类型可配，默认＝普通传送门那款）──────
+                // deviceId 传**澪自己的 id**：这两类特效都是"按该实体播"、不是按包内坐标播
+                //   （TeleportVfx → PlayCommonEffect(:26958 default)，BlackHoleVfx → PlayBlackHoleEffect(:27152)），
+                //   所以必须**先 Move 再发包**，否则特效会留在传送前的位置。
+                //   pos 仍一并填对：黑洞那款在客户端找不到该玩家时会回落到包内坐标。
+                // ⚠ 默认 TeleportVfx 与**原版普通传送门**（拉杆 InteractTeleport :162965）同款，
+                //   观感统一；且它不是 BlackHoleVfx ⇒ 不会被 TeleportGuardFeature.VfxHook 改写。
+                //   ⚠ TeleportVfx/PlayCommonEffect **不用包内坐标**：deviceId 传 0 只会打一条
+                //     Log.Assert、什么都看不见 —— 所以这里必须传真实玩家 id。
                 try
                 {
                     if (room != null)
                     {
-                        TeleportGuardFeature.Suppress++;
+                        TeleportGuardFeature.Suppress++;      // 只在 vfx 是 BlackHoleVfx 时才起作用，留着无害
                         try
                         {
-                            room.BroadcastWorldVFX(EEffectType.BlackHoleVfx, pid, dest, VfxRangeValue);
+                            room.BroadcastWorldVFX(VfxTypeValue, pid, dest, VfxRangeValue);
                         }
                         finally
                         {
                             TeleportGuardFeature.Suppress--;
                         }
+
+                        ESoundType sfx;
+                        if (TrySfxType(out sfx))
+                            room.BroadcastWorldSFX(sfx, dest, VfxRangeValue);
                     }
                 }
                 catch (Exception ex)
                 {
-                    Plugin.Log.LogWarning($"[HS] MioTeleport：传送特效失败（{ex.Message}）。");
+                    Plugin.Log.LogWarning($"[HS] MioTeleport：传送特效/音效失败（{ex.Message}）。");
                 }
 
                 // ── ③ 锁操作（默认 Stop：只锁操作、不丢物品）──────────────
