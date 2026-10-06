@@ -137,7 +137,7 @@ SettingRegistry.Register("更多", 200,
 ## 7. 验收步骤
 
 ```powershell
-cd D:\git\DT_Tools\.tmps\hs-ui-framework
+cd .tmps\hs-ui-framework
 # 1) 补 BOM（write/edit 之后必做，否则中文编译期就坏了）
 #    脚本见 AGENTS.md「编码」节
 dotnet build -c Release --nologo          # 期望 0 警告 0 错误

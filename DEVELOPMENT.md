@@ -32,8 +32,8 @@
 
 | 项 | 值 |
 |---|---|
-| 模块路径 | `D:\git\DT_Tools\HideAndSeek\`（独立 git 仓库；开发在 `dev`，发布打 tag） |
-| 上游 | `D:\git\DT_Tools\DT_Tools\`（**绝对不可修改**） |
+| 模块路径 | ``（独立 git 仓库；开发在 `dev`，发布打 tag） |
+| 上游 | `DT_Tools\`（**绝对不可修改**） |
 | 插件 GUID / 版本 | `HideAndSeek` / `1.4.6`（`Plugin.cs:15-16`） |
 | 产物 | `bin\Release\netstandard2.1\HideAndSeek.dll` → 复制到 `BepInEx\plugins\` |
 | 共享引用 | 游戏安装目录 `DeadlyTrick_Data\Managed\*.dll`（默认，唯一权威来源）+ `BepInEx\core\` 的 `BepInEx.dll` / `0Harmony.dll`。**不依赖 DT_Tools 仓库的 `libs/`** —— 本插件是独立仓库，单独 clone 只填 `GameDir` 即可构建 |
@@ -806,15 +806,15 @@ p.Session.Send(new S_FADE_IN());                                  // 客户端 E
 
 | 文件 | 内容 | 后果 |
 |---|---|---|
-| `D:\git\DT_Tools\global.json` | `"rollForward": "disable"`, `"version": "7.0.410"` | 本机只有 **6.0.420 / 8.0.303**，`rollForward: disable` 意味着**在仓库根执行 `dotnet build` 直接失败**（上游 `DT_Tools` 自身也构建不了） |
-| `D:\git\DT_Tools\HideAndSeek\global.json` | `"rollForward": "latestMajor"` | 只约束本目录，用已安装的最新 SDK；**不影响上游** |
+| `global.json` | `"rollForward": "disable"`, `"version": "7.0.410"` | 本机只有 **6.0.420 / 8.0.303**，`rollForward: disable` 意味着**在仓库根执行 `dotnet build` 直接失败**（上游 `DT_Tools` 自身也构建不了） |
+| `global.json` | `"rollForward": "latestMajor"` | 只约束本目录，用已安装的最新 SDK；**不影响上游** |
 
 所以：`cd HideAndSeek` 再构建。这不是习惯问题，是硬约束。
 
 ### 6.2 构建
 
 ```powershell
-cd D:\git\DT_Tools\HideAndSeek
+cd HideAndSeek
 dotnet build -c Release --nologo
 ```
 

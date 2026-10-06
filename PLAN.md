@@ -9,7 +9,7 @@
 
 | 项 | 决定 |
 |---|---|
-| 位置 | `D:\git\DT_Tools\HideAndSeek\`（与 `DT_Tools\` 同级） |
+| 位置 | ``（与 `DT_Tools\` 同级） |
 | 产物 | `HideAndSeek.dll` —— 独立 BepInEx 插件、独立 GUID、独立版本 |
 | 上游 | **零修改**：不引用 `DT_Tools.dll`、不动它的任何文件、不提 issue |
 | 集成 | 纯反射：配置 Bind 到它的 `ConfigFile`；命令挂它的 `ExecuteCommand`；失败则静默降级 |
@@ -21,7 +21,7 @@
 ## 1. 目录结构
 
 ```text
-D:\git\DT_Tools\
+
 ├── DT_Tools\                    # 上游（一个字节都不改）
 ├── libs\                        # 游戏 DLL —— 两个项目共享引用
 ├── global.json                  # ⚠️ 见 §2.3

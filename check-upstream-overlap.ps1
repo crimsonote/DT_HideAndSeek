@@ -1,6 +1,6 @@
 ﻿# check-upstream-overlap.ps1 —— 与上游 DT_Tools 的 Harmony 补丁目标重叠检查
 #
-# 用法：pwsh -File check-upstream-overlap.ps1 [-Upstream D:\git\DT_Tools\DT_Tools]
+# 用法：pwsh -File check-upstream-overlap.ps1 [-Upstream DT_Tools]
 # 退出码非 0 表示有 FAIL。
 #
 # 为什么需要它：两个插件 Prefix 同一个方法时，**Harmony 只让第一个 return false 的 Prefix 生效**；

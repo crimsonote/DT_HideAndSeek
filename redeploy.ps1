@@ -5,7 +5,7 @@
 #       本脚本只是把这一串手工操作收敛成一条命令。
 #
 # 用法：
-#   pwsh -File D:\git\DT_Tools\HideAndSeek\redeploy.ps1
+#   pwsh -File redeploy.ps1
 #   pwsh -File ...\redeploy.ps1 -NoLaunch        # 只构建+部署，不自动启动
 #   pwsh -File ...\redeploy.ps1 -FixBom          # 发现缺 BOM 时自动补齐（默认只报错）
 

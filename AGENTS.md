@@ -11,7 +11,7 @@
 > 无编译期依赖、不含它的代码或二进制；DT_Tools 是**可选依赖**，
 > 不装它本模块也完整工作（装了才多出控制台集成与配置页）。
 
-**核心约束：零改动上游。** 不修改 `D:\git\DT_Tools\DT_Tools\` 下任何文件。
+**核心约束：零改动上游。** 不修改 `DT_Tools\` 下任何文件。
 
 > ### 术语：本文档里的「上游」= DT_Tools（**可选依赖**，不是 git 上下游）
 >
@@ -105,7 +105,7 @@ while ($stack.Count -gt 0) {
 
 ```powershell
 # 构建（必须在 HideAndSeek 目录内：根目录的 global.json 钉的是未安装的 7.0.410）
-cd D:\git\DT_Tools\HideAndSeek
+cd HideAndSeek
 dotnet build -c Release --nologo
 
 # 游戏不在默认路径时
@@ -296,7 +296,7 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
   会把我们的条目一并写进 `DT_Tools.cfg`（2026-10-07 实测：那个文件 89 段里有 41 段来自本模块）。
   现在在 `ConfigFile.Save` 的 Prefix 把我们的键**临时摘出**、Finalizer 放回 ⇒ 落盘时物理上
   没有我们的条目，而 CONFIG 页照旧能列能改。⚠️ 只对新版 DT_Tools（`Core.Engine`）生效。
-- **前端增强走本地 fork**（分支 `local/webui-list-mode`，工作树 `D:\git\DT_Tools\.tmps\wt-dt-webui`，
+- **前端增强走本地 fork**（分支 `local/webui-list-mode`，工作树 `.tmps\wt-dt-webui`，
   **不属于本仓库**）：① 配置页加「网格/列表」切换，列表行显示分类说明与段摘要
   （摘要直接取该段 `Enabled` 项的 description ⇒ 不需要后端补字段）；
   ② 顶栏加**平铺模式**：窗口铺满「顶栏之下、Dock 之上」、隐藏标题栏、禁用拖动缩放、
@@ -475,7 +475,7 @@ internal static class XxxFeature            // L0
 
 ## 知识复用纪律（动手前必读）
 
-> 背景：本项目的调查结论曾长期只落在 `D:\git\DT_Tools\.tmps\`（**不进 git，每个 clone 都没有**），
+> 背景：本项目的调查结论曾长期只落在 `.tmps\`（**不进 git，每个 clone 都没有**），
 > 于是新会话看不见、只能从零倒查源文件 —— 同一件事被查了不止一遍（现已积累 **44 份**过程材料）。
 > 下面五条就是为此定的：**它们不是建议，是流程。**
 >
@@ -528,10 +528,10 @@ internal static class XxxFeature            // L0
 
 ```text
 【必读，动手前读完，不要跳】
-1. D:\git\DT_Tools\HideAndSeek\docs\README.md      ← 知识索引，先看你要动的机制域
-2. D:\git\DT_Tools\HideAndSeek\docs\事实索引.md     ← 硬事实表，命中就直接引用
-3. D:\git\DT_Tools\HideAndSeek\docs\<机制-主题>.md  ← 与本次任务相关的那一份耐久文档
-4. D:\git\DT_Tools\HideAndSeek\AGENTS.md           ← 铁律与踩坑
+1. docs\README.md      ← 知识索引，先看你要动的机制域
+2. docs\事实索引.md     ← 硬事实表，命中就直接引用
+3. docs\<机制-主题>.md  ← 与本次任务相关的那一份耐久文档
+4. AGENTS.md           ← 铁律与踩坑
 禁止：一上手全仓 grep 倒查源码（前面已有 44 份调查，大概率是重复劳动）。
 
 【交付格式，逐条写】
@@ -543,7 +543,7 @@ internal static class XxxFeature            // L0
 - 过程材料写进 .tmps\（不进 git）；耐久结论按上面第 2 条回写 docs\
 
 【不许做的事】
-- 不许改 D:\git\DT_Tools\DT_Tools\ 下任何文件（上游零改动）
+- 不许改 DT_Tools\ 下任何文件（上游零改动）
 - 不许把结论只留在会话里：会话一结束就没了，等于没查
 ```
 
