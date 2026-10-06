@@ -2354,17 +2354,34 @@ namespace HideAndSeek.Features.Rule
             why = null;
 
             float cur = MissionBridge.CurrentPoint;
-            if (cur <= 0f) { why = T("SpendNoProgress"); return false; }
+            float goal = MissionBridge.GoalPoint;    // 先读 goal：诊断要用
+            if (cur <= 0f)
+            {
+                // 诊断（房主 2026-10-06 实报：CurrentPoint 已到 10 仍被判为 0 ⇒ 必须能区分三种情形）：
+                //   Failed=true  ⇒ 反射熔断，读不到（不是真为 0）
+                //   Failed=false ⇒ 读到的是真值 0（该字段此刻确实 ≤ 0）
+                //   同时打印 goal，便于判断"是不是拿错了 MissionManager 实例"。
+                Plugin.Log.LogWarning($"[HS] 命令：任务进度读作 {cur:F2}（goal={goal:F2}，反射已熔断={MissionBridge.Failed}，消耗比例={percent}%）"
+                    + (MissionBridge.Failed ? " ⇒ 读不到，非真为 0" : " ⇒ 读到真值，该字段此刻确实 ≤ 0"));
+                why = T("SpendNoProgress");
+                return false;
+            }
 
-            float goal = MissionBridge.GoalPoint;
             float effective = goal > 0f ? goal : cur;
             float cost = effective * percent / 100f;
             if (cost < 1f) cost = 1f;
-            if (cost > cur) cost = cur;              // 不能扣成负数
-            if (cur < cost) { why = T("SpendInsufficient", "x", cur.ToString("F0"), "y", cost.ToString("F0")); return false; }
+            // ⚠ 这里**不再**无条件 `if (cost > cur) cost = cur;` —— 那会让下面"不足"分支永不成立（死代码），
+            //   于是所有"不够"都被上面那句说成"为 0"。现在只在真会扣成负数时才算不足。
+            if (cur < cost)
+            {
+                Plugin.Log.LogWarning($"[HS] 命令：任务进度不足 — cur={cur:F2} cost={cost:F2} goal={goal:F2} 反射已熔断={MissionBridge.Failed}");
+                why = T("SpendInsufficient", "x", cur.ToString("F0"), "y", cost.ToString("F0"));
+                return false;
+            }
 
             if (!MissionBridge.SetCurrentPoint(cur - cost))
             {
+                Plugin.Log.LogWarning($"[HS] 命令：扣减任务进度失败（写 CurrentPoint 失败）— cur={cur:F2} cost={cost:F2} 反射已熔断={MissionBridge.Failed}");
                 why = T("SpendUnavailable");
                 return false;
             }
