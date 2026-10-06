@@ -1,4 +1,4 @@
-# HideAndSeek 开发规范
+﻿# HideAndSeek 开发规范
 
 《Deadly Trick》的**房主端**捉迷藏玩法模块，参照 DT_Tools 的框架实现。
 
@@ -395,7 +395,7 @@ internal static class XxxFeature            // L0
 动手前按顺序读：
 
 1. `HideAndSeek\docs\README.md` —— 知识分层约定 + 44 份过程材料的**主题索引**（按 10 个机制域归类）
-2. `HideAndSeek\docs\事实索引.md` —— 硬事实表（事实 / 出处 / 置信度 / 谁验证过 / 未验证项）
+2. `HideAndSeek\docs\facts.md` —— 硬事实表（事实 / 出处 / 置信度 / 谁验证过 / 未验证项）
 3. 命中就**直接引用**；只在"你即将改动的那几行"上用新版程序集的 IL 复核（`Mono.Cecil`，脚本见 `.tmps\tools\il-*.ps1`）
 
 **禁止**一上手就全仓 grep、逐文件倒查源码。把两个词分清：
@@ -416,7 +416,7 @@ internal static class XxxFeature            // L0
 
 - 结论必须带三件套：**出处**（`文件:行` 或 `IL`）+ **置信度**（高 / 中 / 低）+ **未验证项**（【推测】/ 未实机 / 未用新版 IL 复核）。
 - **不许只留指针**：`docs\` 里不能写"详见 `.tmps\xxx.md`"就完事 —— `.tmps\` 不在任何 clone 里，指针必死。
-- 新结论顺手进 `docs\事实索引.md`；新主题顺手在 `docs\README.md` 的对应机制域加一行。
+- 新结论顺手进 `docs\facts.md`；新主题顺手在 `docs\README.md` 的对应机制域加一行。
 
 ### 3. 行号必须带版本
 
@@ -437,7 +437,7 @@ internal static class XxxFeature            // L0
 ```text
 【必读，动手前读完，不要跳】
 1. D:\git\DT_Tools\HideAndSeek\docs\README.md      ← 知识索引，先看你要动的机制域
-2. D:\git\DT_Tools\HideAndSeek\docs\事实索引.md     ← 硬事实表，命中就直接引用
+2. D:\git\DT_Tools\HideAndSeek\docs\facts.md     ← 硬事实表，命中就直接引用
 3. D:\git\DT_Tools\HideAndSeek\docs\<机制-主题>.md  ← 与本次任务相关的那一份耐久文档
 4. D:\git\DT_Tools\HideAndSeek\AGENTS.md           ← 铁律与踩坑
 禁止：一上手全仓 grep 倒查源码（前面已有 44 份调查，大概率是重复劳动）。
@@ -459,7 +459,7 @@ internal static class XxxFeature            // L0
 
 | 你要写的东西 | 放哪 | 进 git |
 |---|---|---|
-| 一条会被反复引用的硬事实 | `docs\事实索引.md` | ✓ |
+| 一条会被反复引用的硬事实 | `docs\facts.md` | ✓ |
 | 一个机制的规格 / 约束 / 排查依据 | `docs\<机制>-<主题>.md` | ✓ |
 | 部署后逐条验的通过标准 | `docs\测试清单.md` | ✓ |
 | 原始日志、探针脚本、草稿、被证伪方案 | `.tmps\` | ✗ |
