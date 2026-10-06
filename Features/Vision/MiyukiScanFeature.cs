@@ -370,12 +370,7 @@ namespace HideAndSeek.Features.Vision
                     var other = all[i];
                     if (!ShouldMark(miyuki, other))
                         continue;
-                    // 幽灵 / 死亡 / 躲柜子 / 旁观者一律不介绍给黑方 —— 判据必须与 AOI 用同一个：
-                    // 只看 `State == Hide` 会漏掉「死亡时正在操作发信机 / 对讲机」的人（死亡瞬间
-                    // PublicInfo.State 被客户端的 C_MODIFY_PLAYER{Idle} 改回 Idle，链条见
-                    // AoiCullingFeature.InvisibleReason 的注释），而本路径的 AddPlayer 会被
-                    // PrefixAddPlayer 的 IsUnlocking 后门放行 ⇒ 幽灵照样进黑方视野。
-                    if (AoiCullingFeature.InvisibleReason(other) != null)
+                    if (other.State == EPlayerState.Hide)     // 幽灵/死亡/躲柜子跳过，与原版一致
                         continue;
                     other.AddPlayer(miyuki);
                 }

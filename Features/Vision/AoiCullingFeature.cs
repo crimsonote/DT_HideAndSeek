@@ -30,9 +30,6 @@ namespace HideAndSeek.Features.Vision
     ///     · SurvivalTick 每秒兜底
     ///   进入用 EnterRange、退出用 ExitRange，构成滞回；AddPlayer 幂等，重复调用无害。
     ///
-    /// ★ 该被剔除的不止"太远的人"：死者 / 幽灵 / 躲进柜子的活人 / 旁观者一律不该进黑方视野，
-    ///   判据统一在 <see cref="InvisibleReason"/>（本类唯一的"谁能被看见"入口）。
-    ///
     /// ★ 技能感知豁免（SkillAware）—— 两类技能需要"看得见目标"才能在客户端选中：
     ///   - TimeStop（Seol）：SkillData.IsTarget=true、Range=3.0×224=672。客户端
     ///     GetSkillTarget（:31443）只遍历本地 Players，672 内无人则 CanUseSkillCondition=false，
@@ -102,15 +99,6 @@ namespace HideAndSeek.Features.Vision
         /// <summary>(黑方 PlayerId, 对方 PlayerId) → 首次可见的 SurviveTime。</summary>
         private static readonly Dictionary<long, int> VisibleSince = new Dictionary<long, int>();
 
-        /// <summary>
-        /// (黑方 PlayerId, 被藏者 PlayerId) → 本局是否已经为这一对打过"藏起来"的日志。
-        ///
-        /// 用途：实机确认"谁被藏了、因为哪条判据" —— 这是本修复**唯一**能在日志里看见的正向证据
-        /// （修复生效时本类什么都不做，所以没有别的输出）。不用它就会每秒每对刷一行。
-        /// 每局在 <c>StartSurvive</c> 清空。
-        /// </summary>
-        private static readonly HashSet<long> HiddenLogged = new HashSet<long>();
-
         // SkillComponent._summonId 是私有字段，反射读取（失败则整体降级为不使用召唤物圆心）
         private static AccessTools.FieldRef<GameSkill, int> _summonIdRef;
         private static bool _summonIdFailed;
@@ -122,59 +110,6 @@ namespace HideAndSeek.Features.Vision
 
         private static bool IsBlack(GamePlayer player)
             => player != null && player.Color == EPlayerColor.Black;
-
-        /// <summary>
-        /// 「这个人此刻不该出现在任何活人（含黑方）的视野里」
-        /// —— **本类唯一的"幽灵 / 躲藏 / 旁观"判据，别在别处再写一遍。**
-        ///
-        /// 返回原因（写日志用）；该被看见时返回 <c>null</c>。
-        ///
-        /// ★ **为什么不能只看 `State == Hide`** —— 这正是"黑方砍完正在操作对讲机的人，幽灵依旧可见"的直接原因：
-        ///   死亡时**若该客户端正处于 `EPlayerState.Interact`（操作发信机 / 对讲机）**，
-        ///   服务端的 `PublicInfo.State` 会被改回 `Idle`，链条（行号 = .tmps/decomp/Assembly-CSharp.decompiled.cs）：
-        ///   ① 服务端 <c>Player.OnDead</c>（:175968）：<c>IsAlive = false</c>（:175974）→
-        ///      <c>Session.Send(new S_DEAD())</c>（:175978）→ 末尾 <c>ExitPlayer()</c>（:176004）置
-        ///      <c>State = Hide</c> + <c>PublicInfo.IsGhost = true</c>（:176098-176099）。
-        ///   ② 客户端收 <c>S_DEAD</c> → <c>GameManagerEX.Dead()</c>（:28956）→ <c>CancelAllInteract()</c>（:28969）→
-        ///      <c>CloseInteractUI()</c>（:28982-28988）：`MyPlayer.State == Interact` 时发
-        ///      <c>C_MODIFY_PLAYER{ChangePlayerState = Idle}</c>（:13248-13257）。
-        ///   ③ 服务端 <c>Player.ModifyPlayer</c> 的守卫是 <c>IsAlive &amp;&amp; (State == Hide || State == Sit)</c>（:176785）
-        ///      —— **死人整条守卫被跳过** ⇒ <c>PublicInfo.State = Idle</c> 被无条件写入（:176801）并广播（:176803）。
-        ///   ⇒ 这个死人既不是 <c>Hide</c>、<c>IsSpectator</c> 也是 false，旧判据（<c>Hide || IsSpectator</c>）全盘放行。
-        ///
-        /// ★ 但**原版在死亡那一刻其实已经清理干净了**：
-        ///   <c>ExitPlayer()</c>（:176004）末尾会调 <c>GameRoom.EnterGhostVisibility(this)</c>（:176116），
-        ///   它给所有人发 <c>S_DESPAWN</c>（:169860-169863）并把双方从 <c>SharedPlayers</c> 互删（:169866-169873）。
-        ///   ⇒ **幽灵是被本类自己重新加回去的**（<c>RevealNearby</c> 与每秒 tick 那两处主动 <c>AddPlayer</c>）。
-        ///   修判据 = 不再加回去，而不是"再补一次清理"。
-        ///
-        /// ★ 判据与另外两处"够不够格被看见"保持一致，别再各写各的：
-        ///   <c>BlackFootprintFeature.LeavesFootprint</c>（Features/Vision/BlackFootprintFeature.cs:154-162）、
-        ///   <c>BearMapMarkFeature.IsEligible</c>（Features/Skill/BearMapMarkFeature.cs:101-111）。
-        ///
-        /// ⚠ <c>PublicInfo.IsGhost</c> **不是** <c>Player.IsGhost</c>：服务端 <c>Player</c> 上**没有** <c>IsGhost</c>
-        ///   属性（只有 <c>IsAlive</c> / <c>IsDummy</c> / <c>IsSpectator</c>，:175304-175308），幽灵标志在
-        ///   <c>PublicInfo</c>（<c>Protocol.PublicPlayerInfo</c>，字段表 :148473；<c>Player.PublicInfo</c> 声明在 :175284）上。
-        ///
-        /// ⚠ 刻意**不跳过假人**（<c>IsDummy</c>）：假人是场上的靶子，活着就该被看见
-        ///   （与 BlackFootprint / BearMapMark 的取舍一致）。已死的假人当然落进 <c>!IsAlive</c> 这一支，
-        ///   而原版 <c>AttackPlayer</c>（:171790-171793）本来就不让砍死人 ⇒ 无影响。
-        /// </summary>
-        internal static string InvisibleReason(GamePlayer p)
-        {
-            if (p?.PublicInfo == null)
-                return null;
-
-            if (!p.IsAlive)
-                return "已死（Player.IsAlive = false）";
-            if (p.PublicInfo.IsGhost)
-                return "幽灵标志（PublicInfo.IsGhost = true）";
-            if (p.State == EPlayerState.Hide)
-                return "躲藏 / 幽灵（State = Hide）";
-            if (p.IsSpectator)
-                return "旁观者（Player.IsSpectator = true）";
-            return null;
-        }
 
         private static ESkillType? SkillTypeOf(GamePlayer player)
             => player?.SkillComponent?.Data?.Type;
@@ -380,25 +315,6 @@ namespace HideAndSeek.Features.Vision
         }
 
         /// <summary>
-        /// 为这一对「（黑方, 不该被看见的人）」打一次日志 —— **每局每对只打一次**，否则每秒每对刷一行。
-        ///
-        /// 这是本次修复**唯一**能在实机日志里看见的正向证据：修复生效时本类的作用是"什么都不做"
-        /// （不再把幽灵加回黑方视野），所以不会像"剔除超范围的人"那样天然有日志。
-        /// 想看成没生效：黑方砍死一个正在操作对讲机的人之后，搜这行 ——
-        /// <c>[HS] AoiCulling：黑方 #N 不显示 #M —— 已死（Player.IsAlive = false）</c>。
-        /// </summary>
-        private static void LogHiddenOnce(GamePlayer black, GamePlayer other, string why)
-        {
-            if (black?.PublicInfo == null || other?.PublicInfo == null)
-                return;
-            if (why == null || !HiddenLogged.Add(PairKey(black.PublicInfo.PlayerId, other.PublicInfo.PlayerId)))
-                return;
-
-            Plugin.Log.LogInfo(
-                $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 不显示 #{other.PublicInfo.PlayerId} —— {why}");
-        }
-
-        /// <summary>
         /// 对黑方附近的人主动确保可见。黑方移动时立即调用，
         /// 避免只靠每秒一次的 tick 而产生"靠近后慢一拍"的观感。
         /// </summary>
@@ -415,18 +331,14 @@ namespace HideAndSeek.Features.Vision
                 var other = all[i];
                 if (other == null || other == black)
                     continue;
-                // 不该被看见的人（死者 / 幽灵 / 躲进柜子的活人 / 旁观者）一个都不补 —— 判据见 InvisibleReason。
-                // ⚠ **只看 `State == Hide` 是不够的**：死亡时若该客户端正在操作发信机 / 对讲机，
-                //   服务端的 `PublicInfo.State` 会被改回 `Idle`（链条见 InvisibleReason 的注释），
-                //   于是 Hide 这个标记消失，这里的主动补 AddPlayer 就会把幽灵塞回黑方视野。
-                //   原版在死亡那一刻已用 `ExitPlayer → EnterGhostVisibility`（:176116）把他 despawn 过，
-                //   所以这里"不把他加回来"就是全部该做的事。
-                string why = InvisibleReason(other);
-                if (why != null)
-                {
-                    LogHiddenOnce(black, other, why);
+                // 跳过 Hide 状态。它有两个来源，都要跳：
+                //   ① 活人躲进柜子 —— Cabinet.HideCabinet（:162129）置 State=Hide + HidePlayer；
+                //   ② 死亡 / 幽灵 —— MakeSpectatorGhost（:175590）置 Hide + IsGhost=true。
+                // 原版 SearchAndUpdatePlayer（:173429）同样跳过；少了这一条，主动补 AddPlayer
+                // 就会把死人的幽灵、以及柜子里的活人一起塞给黑方。
+                // ⚠ `IsSpectator` 要**单独判**：服务端 `Player` 上没有 `IsGhost`（幽灵 = `IsSpectator`，由 `MakeSpectatorGhost` 设置）✓
+                if (other.State == EPlayerState.Hide || other.IsSpectator)
                     continue;
-                }
                 // 命中任一范围（自身 ∪ 小熊）且没被墙挡住 ⇒ 确保可见
                 if (InAnyEnter(other, out ClipRange hit, out float dEnter)
                     && !WallBlocks(black, other, hit.Cx, hit.Cy, dEnter))
@@ -448,30 +360,16 @@ namespace HideAndSeek.Features.Vision
             if (MiyukiScanFeature.IsUnlocking(player))
                 return true;
 
-            // ★★ **被介绍的人自己**若是死者 / 幽灵 / 躲藏者 / 旁观者，绝不允许进入黑方的视野。
+            // ★★ **被介绍的人自己**若是幽灵 / 躲藏者，绝不允许进入任何活人（含黑方）的视野。
             //
-            //   `X.AddPlayer(Y)` 的语义是"把 X 介绍给 Y"（原版 `AddPlayer` :175822 会给 Y 发 S_SPAWN），
-            //   原版 `SearchAndUpdatePlayer`（:173427-173440，由 `Player.Move` :175895 调用）
-            //   与本类两处主动补加、以及 `MiyukiScanFeature` 的解封补加，**全都走这个出口**
-            //   ⇒ 判据落在这里最可靠。
-            //   ⚠ **必须是 Prefix**：Postfix 跑的时候 S_SPAWN 已经发出去了。
-            //
-            //   ⚠ 为什么"幽灵会重新出现"：原版在死亡那一刻**已经处理干净** ——
-            //     `OnDead`（:175968）→ `ExitPlayer()`（:176004）→ `GameRoom.EnterGhostVisibility(this)`（:176116）
-            //     会给所有人发 `S_DESPAWN`（:169860-169863）并把双方从 `SharedPlayers` 互删（:169866-169873）。
-            //     ⇒ 幽灵是**被本类自己重新加回去的**（`RevealNearby` 与每秒 tick 的两处 `AddPlayer`）：
-            //       旧判据只看 `State == Hide`，而"死时正在操作发信机"那条路把 `PublicInfo.State` 改回了 `Idle`。
-            //
-            //   （勘误：早前注释把 `GameRoom.RestoreGhostVisibility`（:169896）当成本钩子拦的路径 ——
-            //     它其实是**给死者自己**直发 `S_SPAWN` / `S_DESPAWN`（让幽灵看得见全场），
-            //     **完全不经过 `AddPlayer`**，与本 Prefix 无关。）
-            string why = InvisibleReason(__instance);
-            if (why != null)
+            //   为什么必须挡在这里：原版 `RestoreGhostVisibility`（`GameRoom.StartSurvive` 里
+            //   对 `DeadPlayers.Count > 0` 会调用；死亡路径也会用）会把幽灵**重新加回**观察列表
+            //   —— 它**绕过**本类所有"跳过 Hide"的主动补加逻辑 ⇒ 实测症状："黑方视野里有时冒出幽灵"。
+            //   （本类自己的补加路径见上面的 `if (other.State == Hide) continue;`，那条只保护了主动补加。）
+            //   ⇒ 出口只此一个：所有 `AddPlayer` 都走这个 Prefix，所以判据落在这里最可靠。
+            if (__instance.State == EPlayerState.Hide || __instance.IsSpectator)
             {
                 __result = false;
-                Plugin.Log.LogInfo(
-                    $"[HS] AoiCulling：拒绝把 #{__instance.PublicInfo?.PlayerId} 介绍给黑方 "
-                    + $"#{player.PublicInfo?.PlayerId} —— {why}");
                 return false;
             }
 
@@ -505,10 +403,8 @@ namespace HideAndSeek.Features.Vision
         /// <summary>
         /// 变幽灵的**那一刻**就从所有黑方视野里撤掉。
         ///
-        /// 为什么还要这一个：`MakeSpectatorGhost`（:175590，"中途以旁观者进场"那条路）**不会**走
-        /// `ExitPlayer → EnterGhostVisibility`，所以它没有原版那次即时 despawn，必须自己补。
-        /// （死亡那条路原版已经在 `ExitPlayer()`（:176116）里 despawn 过了，本类的职责只是
-        ///   **不要再把他加回来** —— 见 InvisibleReason 与 PrefixAddPlayer。）
+        /// 为什么不能只靠每秒 tick：tick 最多晚 1 秒才撤 ⇒ 实测"黑方视野里**有时**冒出幽灵"
+        /// （就是这 1 秒的窗口）。这里补一个即时出口。
         /// </summary>
         [HarmonyPatch(typeof(GamePlayer), "MakeSpectatorGhost")]
         internal static class GhostRemoveHook
@@ -589,22 +485,12 @@ namespace HideAndSeek.Features.Vision
                     if (other == null || other == black)
                         continue;
 
-                    // 不该被看见的人（死者 / 幽灵 / 躲进柜子的活人 / 旁观者）必须主动从观察列表里撤掉。
-                    // ⚠ 原版只在"变成幽灵那一刻"撤过一次（`ExitPlayer` → `EnterGhostVisibility` :176116），
-                    //   之后本类的主动 `AddPlayer`（上面那段与 `RevealNearby`）会把他塞回来，
-                    //   所以这里必须自己判、自己撤 —— 判据见 InvisibleReason。
-                    //   （只看 `State == Hide` 会漏掉"死时正在操作发信机"的人：他的 State 被改回了 Idle。）
-                    string why = InvisibleReason(other);
-                    if (why != null)
+                    // Hide 状态（死亡幽灵 / 躲藏者）不该出现在任何观察列表里。
+                    // 它可能从别处进过 SharedPlayers，所以这里要主动移除。
+                    // ⚠ `IsSpectator` 单独判：幽灵**不一定**同时是 `Hide`（死亡路径不止一条）✓
+                    if (other.State == EPlayerState.Hide || other.IsSpectator)
                     {
-                        // 幂等：不在列表就不发 S_DESPAWN。返回 true ⇒ 他确实溜进过观察列表，单独记一行。
-                        if (other.RemovePlayer(black))
-                        {
-                            Plugin.Log.LogInfo(
-                                $"[HS] AoiCulling：黑方 #{black.PublicInfo.PlayerId} 视野里撤下 "
-                                + $"#{other.PublicInfo.PlayerId} —— {why}（他此前溜进了 SharedPlayers）");
-                        }
-                        LogHiddenOnce(black, other, why);
+                        other.RemovePlayer(black);
                         continue;
                     }
 
@@ -665,7 +551,6 @@ namespace HideAndSeek.Features.Vision
         private static void PostfixStartSurvive()
         {
             VisibleSince.Clear();
-            HiddenLogged.Clear();           // 上局的"已打过日志"不能带进新局，否则关键那行不再出现
         }
     }
 }
