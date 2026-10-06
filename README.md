@@ -108,3 +108,12 @@ dotnet build -c Release
 - 游戏不在默认路径时：`dotnet build -c Release -p:GameDir="D:\...\Deadly Trick"`
 - 需要固定到仓库内快照（可复现构建）时：`-p:GameManaged=..\libs`
 - `global.json` 只约束本目录（`rollForward: latestMajor`），不影响仓库根的配置
+
+
+---
+
+## 许可证
+
+**GNU General Public License v3.0**，全文见 [`LICENSE`](LICENSE)。
+
+DT_Tools 是本模块的**可选依赖**：不装它本模块也完整工作（装了才多出控制台集成与配置页）。

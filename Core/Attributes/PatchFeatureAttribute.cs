@@ -7,7 +7,7 @@ namespace HideAndSeek.Core
     /// 并按 DefaultEnabled 决定是否在本机挂载补丁。
     /// 同段子项用 <see cref="ConfigFieldAttribute"/> 声明，由 ConfigBinder 自动 Bind。
     ///
-    /// 写法与 DT_Tools 的声明式功能保持同构（本插件独立实现，不引用其程序集）。
+    /// 写法**受 DT_Tools 的声明式功能启发**（本插件独立实现：不引用其程序集、不含其代码）。
     /// </summary>
     [AttributeUsage(AttributeTargets.Class, Inherited = false)]
     public sealed class PatchFeatureAttribute : Attribute
