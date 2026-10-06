@@ -151,6 +151,49 @@ namespace HideAndSeek.Features.Rule
         internal static float CurrentPoint => ReadFloat(_currentPoint, "CurrentPoint", 0f);
 
         /// <summary>
+        /// 读 <c>CurrentPoint</c>，**把"读不到"与"读到 0"彻底分开**。
+        ///
+        /// 为什么必须有它（房主 2026-10-06 实报：界面上还有进度，命令却说"任务进度为 0"）：
+        /// <see cref="ReadFloat"/> 在拿不到实例/属性时**静默返回 fallback 0f**，
+        /// 而调用方无法区分"读不到"与"真的是 0" ⇒ 把读取失败也报成"进度为 0"。
+        /// 返回 false 时调用方应当报"读不到任务进度"，而不是"进度为 0"。
+        /// </summary>
+        internal static bool TryCurrentPoint(out float value)
+            => TryReadFloat(_currentPoint, "CurrentPoint", out value);
+
+        /// <summary>
+        /// 读 <c>GoalPoint</c>（同上：区分"读不到"与"为 0"）。
+        /// 它还有一个独立用途 —— `MissionAllocator`(:166613) 负责给它赋值
+        /// （`GoalPoint = 存活人数 × 15`），所以 **`GoalPoint &lt;= 0` 就是"本局任务系统尚未就绪"**
+        /// 的确定性判据（首局在 `GameStart()` 之前读到的正是 0）。
+        /// </summary>
+        internal static bool TryGoalPoint(out float value)
+            => TryReadFloat(_goalPoint, "GoalPoint", out value);
+
+        private static bool TryReadFloat(PropertyInfo prop, string member, out float value)
+        {
+            value = 0f;
+
+            object inst = Instance();
+            if (inst == null || prop == null)
+                return false;                 // 读不到 —— 调用方必须区别对待，不能再当成 0
+
+            try
+            {
+                object raw = prop.GetValue(inst);
+                if (raw == null)
+                    return false;
+                value = global::System.Convert.ToSingle(raw);
+                return true;
+            }
+            catch (global::System.Exception ex)
+            {
+                Fail(member, ex);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// 直接改写 CurrentPoint（原版 setter 是 private）。
         /// 走 setter 的 MethodInfo 而不是 PropertyInfo.SetValue —— 行为与访问器可见性解耦。
         /// </summary>

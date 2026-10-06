@@ -157,6 +157,11 @@ namespace HideAndSeek.Features.Rule
             "RefreshDone = [刷新完成]\n" +
             "RefreshFailed = 网络连接异常，刷新失败。\n" +
             "SpendNoProgress = 当前任务进度为 0\n" +
+            // ⚠ 刻意用**新键**而不是给 SpendNoProgress 加参数：三层文案查找里
+            //   玩家 .cfg 里的旧覆盖值优先，改旧键的默认文案对老用户无效，就看不到真值了。
+            "SpendNoProgressAt = 当前任务进度为 0（{x}/{y}）\n" +
+            "SpendNotSurvive = 只能在生存阶段消耗任务进度\n" +
+            "SpendNotReady = 本局任务系统尚未就绪\n" +
             "SpendInsufficient = 进度不足（现有 {x}，需要 {y}）\n" +
             "SpendUnavailable = 读不到任务进度\n" +
             // ── 鱼（KeyLockFeature 复用本表；同一张表才能统一热改）──
@@ -2353,17 +2358,58 @@ namespace HideAndSeek.Features.Rule
         {
             why = null;
 
-            float cur = MissionBridge.CurrentPoint;
-            float goal = MissionBridge.GoalPoint;    // 先读 goal：诊断要用
+            // ── ① 阶段判据：任务进度只在生存阶段有意义 ──────────────────────
+            //
+            // 说明：命令引擎 `Execute()` 里**已有**同样的判据（`!def.AllowOutsideSurvive &&
+            // room.State != Survive` ⇒ 静默拒绝），`/sta`、`/rep` 都没开 `AllowOutsideSurvive`，
+            // 所以正常路径下这里不会命中 —— 它是第二道闸，防的是将来有人给这两条命令
+            // 打开 `AllowOutsideSurvive`、或别处直接调用本方法。
+            // ⚠ 不要把它当成"界面有进度却报 0"的解释：那条路已被引擎挡掉，走不到这里。
+            var room = GameRoom.Instance;
+            if (room == null || room.State != EGameState.Survive)
+            {
+                why = T("SpendNotSurvive");
+                return false;
+            }
+
+            // ── ② 读取：把"读不到"与"读到 0"分开 ───────────────────────────
+            //
+            // 这是**真修复**：旧实现用 `MissionBridge.CurrentPoint`（内部 fallback 0f），
+            // 于是"反射拿不到值"与"值真的是 0"在调用方看来一模一样，
+            // 前者被当成后者报给玩家 —— 那正是"明明有进度却说为 0"的一个真实来源。
+            float goal;
+            if (!MissionBridge.TryGoalPoint(out goal))
+            {
+                why = T("SpendUnavailable");
+                return false;
+            }
+
+            // ── ③ 就绪判据：GoalPoint 由 MissionAllocator(:166613) 赋值（存活人数 × 15）， ──
+            //    为 0 说明本局任务系统还没初始化 —— 这同样不该被说成"进度为 0"。
+            if (goal <= 0f)
+            {
+                why = T("SpendNotReady");
+                return false;
+            }
+
+            float cur;
+            if (!MissionBridge.TryCurrentPoint(out cur))
+            {
+                why = T("SpendUnavailable");
+                return false;
+            }
+
             if (cur <= 0f)
             {
-                // 诊断（房主 2026-10-06 实报：CurrentPoint 已到 10 仍被判为 0 ⇒ 必须能区分三种情形）：
-                //   Failed=true  ⇒ 反射熔断，读不到（不是真为 0）
-                //   Failed=false ⇒ 读到的是真值 0（该字段此刻确实 ≤ 0）
-                //   同时打印 goal，便于判断"是不是拿错了 MissionManager 实例"。
-                Plugin.Log.LogWarning($"[HS] 命令：任务进度读作 {cur:F2}（goal={goal:F2}，反射已熔断={MissionBridge.Failed}，消耗比例={percent}%）"
-                    + (MissionBridge.Failed ? " ⇒ 读不到，非真为 0" : " ⇒ 读到真值，该字段此刻确实 ≤ 0"));
-                why = T("SpendNoProgress");
+                // 服务端确实没有进度了。做两件事：
+                //   · 把**真值**广播一次 —— 客户端的进度条有可能停在旧值上（它只认
+                //     S_MISSION_PROGRESS_PERCENT，原版只有 MissionAllocator / ClearMission /
+                //     SendMissionStateTo 三个发送点），这一发能把界面拉回与服务端一致；
+                //   · 回执里带上 **(当前值/目标值)** —— 玩家因此永远能看见服务端真值，
+                //     不必再靠界面猜"到底还有没有进度"。
+                BroadcastMissionPercent();
+                Plugin.Log.LogInfo($"[HS] 命令：任务进度已耗尽（{cur:F1}/{goal:F1}），已广播真值纠正客户端进度条。");
+                why = T("SpendNoProgressAt", "x", cur.ToString("F0"), "y", goal.ToString("F0"));
                 return false;
             }
 
