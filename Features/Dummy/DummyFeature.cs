@@ -72,6 +72,12 @@ namespace HideAndSeek.Features.Dummy
         [HarmonyPatch(typeof(GameRoom), "StartPick")]
         internal static class StartPickHook
         {
+            // DT_Tools SpectatorJoin（满房观战）也 Prefix StartPick，而且是 **bool Prefix 整替原方法**
+            // （它自己重写了一遍：清空存活池 → 分配颜色 → 随机黑方 → 起选角计时）。
+            // 它标了 Priority.First，本钩子必须**比它更早**跑：假人得在它那份列表快照之前进入
+            // __instance.Players，否则假人会落在颜色分配之外、不进 AlivePlayers，本局等于没生成。
+            // 模式关闭时下面的 Bypass 直接返回，完全让给 DT_Tools（AGENTS.md 第 9 条）。
+            [HarmonyPriority(Priority.First + 1)]
             [HarmonyPrefix]
             private static void Prefix()
             {
