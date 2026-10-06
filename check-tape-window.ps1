@@ -6,7 +6,7 @@
 # 用法：pwsh -File check-tape-window.ps1 [-DumpDir <tapedump 目录>]
 
 param(
-    [string]$DumpDir = "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick\BepInEx\plugins\tapedump"
+    [string]$DumpDir = $(if ($env:DEADLYTRICK_DIR) { $env:DEADLYTRICK_DIR } else { "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick" }) + "\BepInEx\plugins\tapedump"
 )
 
 if (-not (Test-Path $DumpDir)) { Write-Host "找不到 $DumpDir"; exit 1 }

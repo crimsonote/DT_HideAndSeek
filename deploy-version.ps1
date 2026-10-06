@@ -17,7 +17,7 @@
 
 param(
     [string]$Version,
-    [string]$GameDir = "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick",
+    [string]$GameDir = $(if ($env:DEADLYTRICK_DIR) { $env:DEADLYTRICK_DIR } else { "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick" }),
     [switch]$List
 )
 

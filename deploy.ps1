@@ -5,7 +5,7 @@
 #   pwsh -File deploy.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Deadly Trick"
 
 param(
-    [string]$GameDir = "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick",
+    [string]$GameDir = $(if ($env:DEADLYTRICK_DIR) { $env:DEADLYTRICK_DIR } else { "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick" }),
     [switch]$SkipFreshnessCheck
 )
 

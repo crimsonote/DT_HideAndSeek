@@ -17,7 +17,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$gameDir = "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick"
+$gameDir = $(if ($env:DEADLYTRICK_DIR) { $env:DEADLYTRICK_DIR } else { "C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick" })
 $projectDir = $PSScriptRoot
 $srcDll = Join-Path $projectDir 'bin\Release\netstandard2.1\HideAndSeek.dll'
 $dstDll = Join-Path $gameDir 'BepInEx\plugins\HideAndSeek.dll'
