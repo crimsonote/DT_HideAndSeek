@@ -1,0 +1,17 @@
+# 行尾与文本/二进制判定。
+# ⚠ 本项目的 .cs/.ps1 一律要 UTF-8 BOM（Roslyn / PowerShell 在中文 Windows 上
+#   会把无 BOM 的源码当 GBK 读，中文字面量在编译期就损坏且不报错）。
+#   BOM 本身由仓库内容承载，这里只保证行尾与文本判定——不声明 eol=crlf，
+#   以免对已有文件做全量重新规范化（工作区已是 CRLF，仓库内是 LF）。
+* text=auto
+
+*.cs       text
+*.ps1      text
+*.md       text
+*.csproj   text
+*.json     text
+
+*.dll      binary
+*.png      binary
+*.zip      binary
+*.bundle   binary

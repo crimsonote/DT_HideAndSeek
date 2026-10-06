@@ -1,4 +1,4 @@
-# HideAndSeek 开发接手文档
+﻿# HideAndSeek 开发接手文档
 
 > 《Deadly Trick》(Steam appid 3088400, 对照版本 **0.1.14b**) 的**房主端**捉迷藏玩法模块。
 > BepInEx 5.4.23.5 + HarmonyX 2.x，`netstandard2.1`，Unity Mono，仅房主安装。

@@ -1,4 +1,4 @@
-# HideAndSeek — 捉迷藏模式
+﻿# HideAndSeek — 捉迷藏模式
 
 《Deadly Trick》的**房主端**玩法模块。**只需房主安装**，其他玩家不需要任何 Mod。
 
