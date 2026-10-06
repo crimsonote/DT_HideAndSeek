@@ -127,6 +127,25 @@ pwsh -File deploy.ps1
 
 ---
 
+## 提交纪律：改完就提交，别攒着
+
+**每个功能 / 修复做完（构建通过、verify.ps1 跑过）就提交，不要先跑去部署。**
+
+为什么（2026-10-07 实际踩过）：一批改动（9 个文件、含一个新文件）做完后直接构建 + 部署，
+工作区一直晾着未提交 ⇒ 丢改动的风险、回不到改动前、没法 review 中间过程；
+`git log` 里那段时间是空白的，事后也说不清"部署出去的 DLL 对应哪一版源码"。
+
+- 一次提交 = 一个逻辑改动。别把"适配上游 + 修检查器 + 文档回写"塞进同一个提交。
+- 提交信息沿用本仓库风格：`类型(范围): 中文一句话`，正文写清**为什么**。
+- **部署前先提交**：部署出去的产物必须能对应到一个提交。
+- 提交后 `git status` 必须干净 —— 含**新增文件**（`git add` 容易漏掉 `??`）。
+- 行尾：工作区一律 **CRLF**（`.gitattributes` 声明 `text`，仓库内 LF、检出 CRLF）。
+  ⚠️ `edit` / `write` 这类工具写出来的文件可能是 **LF 或混合行尾**，编辑完要复查：
+  `git ls-files --eol <文件>` 应显示 `w/crlf`。`verify.ps1` 有这项检查。
+- 提交者身份：本仓库用 `crimsonote <crimsonote@outlook.com>`。
+  ⚠️ DT_Tools 的 fork 仓库**没配** identity，在那里提交要带
+  `git -c user.name=... -c user.email=... commit ...`。
+
 ## 代码组织
 
 - 命名空间与目录一致：`HideAndSeek.Features.Vision` ↔ `Features/Vision/`。
