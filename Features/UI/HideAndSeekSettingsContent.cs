@@ -3,7 +3,6 @@ using HideAndSeek.Features.Broadcast;
 using HideAndSeek.Features.Combat;
 using HideAndSeek.Features.Replay;
 using HideAndSeek.Features.Rule;
-using HideAndSeek.Features.Skill;
 using HideAndSeek.Features.Weapon;
 
 namespace HideAndSeek.Features.UI
@@ -68,14 +67,7 @@ namespace HideAndSeek.Features.UI
                 // 它挂在 `Player.OnDeadMurder`（"被黑方刀杀"的专属路径），所以项圈自爆/自杀不计入。
                 // 设置页只暴露 **0~60** 的常用区间；配置项自身仍允许更大值（高级用户可直接改 .cfg）。
                 LobbySettingItem.Slider("kill_time_bonus", "黑方袭击加时量（秒）",
-                    () => KillTimeBonusFeature.BonusSeconds, 0, 60),
-
-                // 澪·定点传送：段 [MioTeleport].MaxTeleports。
-                // 放小熊后按技能＝传送到小熊处（不再切视野），每只熊可传这么多次；
-                // 用尽即回收小熊并进入放置 CD。⚠ 该段默认**关闭**，要先去 CONFIG 面板
-                // 勾上 [MioTeleport].Enabled（段开关），这一项才起作用。
-                LobbySettingItem.Slider("mio_max_teleports", "澪：每只小熊可传送次数",
-                    () => MioTeleportFeature.MaxTeleports, 1, 10));
+                    () => KillTimeBonusFeature.BonusSeconds, 0, 60));
         }
     }
 }
