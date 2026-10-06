@@ -12,7 +12,9 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # 用 Windows runner：verify.ps1 是按 Windows 路径写的（\\Core\\、\\obj\\ 这类反斜杠匹配），
+    # 在 Linux 上会误报。项目本身就是 Windows 独占（引用游戏程序集、脚本走 PowerShell）。
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
