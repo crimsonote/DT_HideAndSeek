@@ -36,6 +36,22 @@ foreach ($f in $cs) {
 if ($noBom.Count -eq 0) { Ok ("BOM：全部 " + $cs.Count + " 个 .cs 都带 UTF-8 BOM") }
 else { Fail ("BOM 缺失：" + ($noBom -join ', ')) }
 
+# ── 1b) 行尾（工作区必须 CRLF）─────────────────────────────────────────
+# .gitattributes 声明 text：仓库内 LF、检出 CRLF。用工具（编辑器 / write 类 API）
+# 写出的文件常是 LF 或混合行尾 —— 提交时 git 会转换，但工作区不一致会让
+# 下一次 git touch 产生"全文件 diff"噪音。这里只 WARN，不阻塞提交。
+$eolBad = @()
+Get-ChildItem $PSScriptRoot -Recurse -File -Include *.cs, *.ps1, *.md, *.csproj, *.json |
+    Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | ForEach-Object {
+        $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+        $bareLf = 0
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 10 -and ($i -eq 0 -or $bytes[$i - 1] -ne 13)) { $bareLf++ }
+        }
+        if ($bareLf -gt 0) { $eolBad += ($_.Name + "（裸 LF " + $bareLf + "）") }
+    }
+if ($eolBad.Count -eq 0) { Ok "行尾：全部 CRLF" }
+else { Warn ("行尾不是 CRLF（工作区应为 CRLF）：" + (($eolBad | Select-Object -First 8) -join ', ')) }
 # ── 2) 版本一致性（Plugin.cs / csproj / 最近 tag）─────────────────────
 $pluginTxt = ReadText (Join-Path $root 'Plugin.cs')
 $csprojTxt = ReadText (Join-Path $root 'HideAndSeek.csproj')
