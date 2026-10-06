@@ -68,7 +68,7 @@ if ($tagExit -eq 0 -and $tag) {
 # ── 3) 段名唯一 ──────────────────────────────────────────────────────
 $sections = @()
 foreach ($f in $cs) {
-    foreach ($m in [regex]::Matches((ReadText $f.FullName), 'section:\s*"([^"]+)"')) {
+    foreach ($m in [regex]::Matches((ReadText $f.FullName), '\[PatchFeature\(\s*(?:section:\s*)?"([^"]+)"')) {
         $sections += $m.Groups[1].Value
     }
 }

@@ -47,6 +47,18 @@ function Normalize([string]$type, [string]$member) {
 }
 
 function Scan-Lines($lines, [string]$origin) {
+    # 展开 using 别名（形如 using GamePlayer = Server.Game.Player;）。
+    # 为什么必须做：本模块为避开同名类型（Player / Corpse / Item / DeviceManager / Summon
+    # 全局与服务端各有一份）大量使用别名，而 Normalize 只按类型名末段比对 —— 不展开就会把
+    # 上游的 Server.Game.Player 与本模块的 GamePlayer 判成两个目标，真实的 Prefix 重叠被
+    # **静默漏报**（StartWeaponCooltime 就是这么漏掉的，见 AGENTS.md 第 9 条）。
+    $aliases = @{}
+    foreach ($line in $lines) {
+        if ($line -match '^\s*using\s+(\w+)\s*=\s*([\w\.]+)\s*;') {
+            $aliases[$Matches[1]] = $Matches[2]
+        }
+    }
+
     $out = @()
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
@@ -72,6 +84,9 @@ function Scan-Lines($lines, [string]$origin) {
             }
             if ($prio -and $hook -ne '?') { break }
         }
+
+        # 别名先落回真实类型再归一，否则别名写法与上游的全名写法对不上
+        if ($aliases.ContainsKey($type)) { $type = $aliases[$type] }
 
         $out += [pscustomobject]@{
             Target = (Normalize $type $member)
