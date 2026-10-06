@@ -1,0 +1,66 @@
+﻿# 事实索引（可引用事实表）
+
+> 用法：写代码、写结论、派子会话之前**先在这张表里查**。命中就直接引用，**不要重新推导**。
+> 每条都带出处与置信度；**没有出处的条目不许进这张表**。
+> 表里没有的 → 去 [README.md](README.md) 第 3 节找该机制域的原始调查 → 仍没有才做全仓调查（做完回写本表）。
+
+---
+
+## 0. 口径与版本（**引用行号前必读**）
+
+| 口径 | 指什么 | 时间 | 怎么用 |
+|---|---|---|---|
+| `ACS:N` | `.tmps/decomp/Assembly-CSharp.decompiled.cs`（旧反编译），180168 行，游戏 0.1.14b | 2026-09-22 | 本表绝大多数行号出自它。**它已被新版程序集取代** ⇒ 改代码前用新版 IL 复核你要动的那几行 |
+| `IL` | 新版程序集 `…\DeadlyTrick_Data\Managed\Assembly-CSharp.dll`，MVID `fbd56bfe-9ce4-4ae7-bafb-3dc77be19ee8`，2817536 B | 2026-10-02 | 用 BepInEx 自带 `Mono.Cecil` 读 IL 复核成员名与语义（脚本见 `../../.tmps/tools/il-*.ps1`） |
+| `HS:路径:行` | 本仓库（HideAndSeek）当前代码 | 随提交漂移 | **定位用方法名，不要用行号**；行号只在"写下这条时"有效 |
+| 待核 | 本表里凡"未验证项"写着"未用新版 IL 复核"的，都属于此列 | — | 用之前花 30 秒复核，比推倒重来便宜得多 |
+
+**谁验证过**的取值含义：`父会话` = 2026-10-06 汇总本索引的那一轮会话（其行号复核基于旧反编译 09-22）；
+`该报告作者` = 对应 `.tmps/` 文档的作者，**本轮没有复核它的原文行号**；`实机` = 在游戏里实测过。
+
+---
+
+## 1. 硬事实表
+
+| 事实 | 出处 | 置信度 | 谁验证过 | 未验证项 |
+|---|---|---|---|---|
+| `S_STOP_CONTROL` 全程序只有 **3 个**来源：`Player::OnDamaged`（:175952，只发给受害者）/ `GameRoom::GameOver`（:171399，黑胜）/ `MissionManager::ClearAllMission`（:166895，白胜，含已死幽灵） | 旧反编译 ACS；父会话复核 | 高 | 父会话 | 三个行号未用新版 IL 逐条复核 |
+| `Player::OnDead`（:175968）唯一早退是 `if(!IsAlive) return;`（:175970）；`S_DEAD` 全程序唯一发送点在 :175978 | 旧反编译 ACS；父会话复核 | 高 | 父会话 | 同上 |
+| 死亡路径**唯一**的"重新允许操作"点 = `UI_ClassPopup.ShowDeadMessage` 的 **6 秒 DOTween 回调**（:61050）；取消入口 `OnDisable`(:61156) / `OnDestroy`(:61162) 都走 `Kill(false)`；由 ESC 触发（`Managers.UI.Update` :38571-38609 → `CloseKeyUI` :39006-39031） | 旧反编译 ACS + `../../.tmps/幽灵卡死-调查与方案.md` + `../../.tmps/幽灵卡死-独立复核.md` | 高 | 父会话 + 独立复核（新版 IL 复核过该链路） | 实机上"卡死"的复现条件没有记录 |
+| `CanControl = true` 一局内共 **9 处**（:38652 / :38712 / :38752 / :38691 / :42057 / :61050 / :28906 / :28942 / :28799）；`Survive` 内可达只有 4 处，其中**只有 :61050 是"死一次必然发生一次"** | 旧反编译 ACS；父会话复核 | 高 | 父会话 | 9 个行号未用新版 IL 复核 |
+| 世界音效可听范围 = 包字段 `S_PLAY_WORLD_SFX.MaxDistance`（第 4 字段，:130908 / :130961）；默认 **896**（:172111 / :36459） | 旧反编译 ACS；父会话复核 | 高 | 父会话 | 默认值是否被 `.cfg` 覆盖未核 |
+| 黑方视野半径 = `ExitRange`（默认 **900**，`Features/Vision/AoiCullingFeature.cs:54`）× `VisionBonusPerLevel`（**0.5**，`KillUpgradeFeature.cs:50`）⇒ 各档 **900 / 1350 / 1800 / 2250** | 本仓库代码 | 高 | 父会话 | 代码行号会漂，改前用方法名定位 |
+| 幽灵可见根因：原版死亡走 `ExitPlayer()`(:176004) → `GameRoom.EnterGhostVisibility`(:176116)，其间已发 `S_DESPAWN`(:169860) 并互删 `SharedPlayers`(:169866)；**本 mod 的 `AoiCullingFeature` 两处主动 `AddPlayer`**（`RevealNearby` :345 / `PostfixSurvivalTick` :501）判据只有 `State==Hide` 或 `IsSpectator`，而死时 `State` 被写成 `Idle` ⇒ 幽灵被加回 | 旧反编译 ACS + 本仓库代码 | 高 | 父会话（本轮新核） | 修复后的实机表现未记录 |
+| `EPlayerState.Hide` 有**两个**来源（躲柜子的活人 `Cabinet.HideCabinet`:162129 / 死亡幽灵 `MakeSpectatorGhost`:175590），AOI 跳过时两个都要跳；原版 `SearchAndUpdatePlayer`(:173429) 同样跳过 | `AGENTS.md` 坑 §4 + `../../.tmps/刀杀与DT-判定-调查.md` §6 | 高 | 实机（曾因只理解成"死亡"而出错） | 无 |
+| AOI **只有距离、没有墙壁遮挡**（`AoiCullingFeature.cs:98` 用 `DistanceSq`；:211 / :234 / :320 全是距离比较，全仓无遮挡实现） | `../../.tmps/AOI-墙壁遮挡-调查.md` §1 | 中（快照） | 该报告作者（只读） | 该报告之后是否已加遮挡未复核 |
+| `X.AddPlayer(Y)` 的语义是"把 X 介绍给 Y"；原版让人**重新可见**的唯一途径是被观察者自己移动（`Player.Move` → `SearchAndUpdatePlayer`）⇒ 站着不动的目标一旦被 `RemovePlayer` 就没有路径加回来，AOI 必须自己补 | `../../.tmps/MiyukiScan-只读调查报告.md` §1.1 + `AGENTS.md` 坑 §4 | 高 | 实机（AGENTS 坑 §4） | 无 |
+| 世界箭头 = `UI_Arrow` + `EArrowType.CharacterArrow`，只由 `UI_GameScene.RefreshComplyRulesPin` 创建且要求 pin ID 能查到 `Player`；`S_PIN_MOVE` 的同一个 `Type` **无条件**喂给 `UI_GameScene` + `UI_GameTablet` ⇒ "只要箭头、不要平板痕迹"在房主端**做不到**；唯一替代是 `S_NOTIFY_ARROW{Type=CharacterArrow}` | `../../.tmps/场景箭头-调查.md` §0 | 高 | 该报告作者（只读源码） | 旧反编译行号；未实机 |
+| 黑灯是客户端的本地状态，只由 `S_AREA_PUBLIC` 驱动，且发它时 **`RoomId` 必须合法**（`RoomId=0` 会在客户端 `RoomDic[RoomId]` 抛 `KeyNotFoundException`）；回大厅时原版自行 `Darkness=false`（客户端 :29110）⇒ **不要**自己写"解除黑灯" | `AGENTS.md` 坑 §5 | 高 | 实机（多写的解除逻辑会在切区域时把灯重新涂黑） | 无 |
+| 刀杀与 DT 是两条独立路径（`Server.Game.Player.UseWeapon`:176263 / `UseDeadlyTrick`:176314），**都只查距离、不查视线与掩体**，也都不查露娜护盾（护盾只在客户端 `HasLunaShield`:14414） | `../../.tmps/刀杀与DT-判定-调查.md` §0 | 高 | 该报告作者（纯读源码） | 未实机验证 |
+| 客户端 DT 的门比服务端严（客户端还要"目标在 DT zone 内 + 无遮挡 + ≤224"，服务端只看 ≤672）⇒ 客户端能发则服务端必放行，反向不成立 | `../../.tmps/刀杀与DT-判定-调查.md` §0 | 中 | 该报告作者（纯读源码） | 未实机验证 |
+| 澪·小熊 = `Server.Game.Summon`(:163257)；原版"切视野" = `PossessMarionette()`(:177325) **只切相机**；三条消失路都汇到 `ResetMarionette()`(:177357)；`EBuffType.Stun`(=1) 会 `DropHand()` 丢物(:4754)；CD 立刻更替必须走 `CoolSkill(60)`(:177253)；进度条硬门槛 `Hand.DataId == 1039`、条 = `Value/24`(:91071) | 旧反编译 ACS；父会话复核 | 高 | 父会话 | 旧行号未用新版 IL 复核 |
+| 断电时"能不能用某个设备"的判据 = 设备自己的 `CanUseDarkness`(:7793) **且** 全房 `Darkness`(:8098-8101)（魔法阵 / 水池 / 柜子都走这一条）⇒ 骗客户端只需单独给它发 `S_AREA_PUBLIC{IsLight=true}`（客户端 :29592 用它写 `Managers.Game.Darkness`） | `../../.tmps/莲-实现笔记.md` ① | 高 | 该报告作者（只读源码）+ 已实现 | 未实机验证 |
+| 任务进度真相源 = `MissionManager.CurrentPoint` / `GoalPoint`（`Core/MissionBridge.cs:144` 读）；界面百分比来自 `S_MISSION_PROGRESS_PERCENT`，**只是回显、没有独立来源** | 旧反编译 ACS + 本仓库代码 | 高 | 父会话 | 无 |
+| `ModifyPlayer` 的守卫 `IsAlive && (Hide \|\| Sit)`(:176785) 对**死人整条跳过** ⇒ :176801 是无条件写入 | 旧反编译 ACS；父会话复核 | 中 | 父会话 | 行号未用新版 IL 复核 |
+| 大厅「详细设置」= `UI_LobbyPreset`（`ACS:56407`），入口文本键 `AdvancedSettings`；页签是 **prefab 预置子物体**，按**名字**绑定并**按枚举声明顺序**取索引，**没有**数据驱动的 Tabs 列表 | `../../.tmps/HideAndSeek_独立化与捉迷藏设置页_调查报告.md` §0 + `../../.tmps/大厅设置标签页-调查报告.md` §0 | 高 | 两报告作者 + 已落地实现 | 无 |
+| 页签栏 `FooterToggleGroup` 自带 `ToggleGroup` + `HorizontalLayoutGroup` + `ContentSizeFitter` ⇒ 克隆一个页签插进去**自动**参加互斥与排布，不需要手写定位；克隆出的控件**必须** `RemoveAllListeners()` | `../../.tmps/设置页签-交接文档.md` §0 + `AGENTS.md` 设置页框架 | 高 | 实机（已被实现验证） | 无 |
+| `[ConfigField]` 共 **126** 项，其中 **11** 项会被代码在运行期写入、**115** 项纯只读 ⇒ 除那 11 项外都是"放上页不会自己变回去"的安全 UI 候选 | `../../.tmps/大厅设置候选键-运行期写入审计.md` §0 | 中（快照） | 该报告作者（全仓扫描） | 基线是 `wt-standalone` 工作树；键数会随代码增长，引用前重扫 |
+| `Features/UI` 的 `Slider` / `NumberBox` 只接受 `Func<ConfigEntry<float>>`（`LobbySettingItem.cs:156-182` / `:225-251`），全仓 46 处 `ConfigEntry<int>` 没有任何 int→float 桥 ⇒ 30 条候选里 13 条 int 型**编译不过**，真正能上的是 **14 条** | `../../.tmps/配置上页-代码清单.md` §0 D1 | 中（快照） | 该报告作者（逐字段核对） | int 通道后来是否已扩未复核 |
+| 游戏里**没有任何**现成的"数值拖框"组件（`NumberBg` 只有 Image + HorizontalLayoutGroup + ContentSizeFitter）；单行文本框的可用模板**不在** `UI_LobbyPreset` 里，推荐 `UI_GameScene/Lobby/DirectChat/DirectChatField` | `../../.tmps/UI控件-可克隆模板调查.md` §0 | 中 | 该报告作者（UnityPy dump + 反编译） | 未实机；控件框架后来是否已实现未复核 |
+| 改 `[ConfigField]` 的默认值**不会**影响已有 `.cfg`（BepInEx 只在键**不存在**时写默认值）⇒ 必须同一次提交里改 `.cfg` 并列出改了哪些键；`ConfigVersion` 只在真的搬键（段名 / 键名 / 类型变动）时 +1 | `AGENTS.md`「改默认值时必须同时改 .cfg」 | 高 | 实机（踩过两次：段名迁移空转、`LanternItemId` 旧值卡住） | 无 |
+| 段开关（`defaultEnabled: false`）会让 PatchLoader 对**整个类**跳过 PatchAll ⇒ 该段所有钩子（含与自动化无关的基础能力）都不挂；排查先看日志的「失败 N」与「已跳过功能」，它才能区分"没运行"和"没打日志" | `AGENTS.md` 坑 §8 | 高 | 实机（Dummy / DummyPick 案例） | 无 |
+| 补丁嵌套只有**一层**：L2 嵌套类**永不挂载**，而且不计入「失败 N」（`FailedCount++` 只统计扫到的那层）；多个补丁要平级放，工具方法放最外层 | `AGENTS.md`「补丁的嵌套层级只有一层」 | 高 | 实机（`FuseboxReveal.BecomeBlackHook`） | 无 |
+| 与上游改同一方法**必须**显式写 `[HarmonyPriority]`（值大者先跑：`First=800`、`Last=0`）；当前 **4 处**重叠已钉死（`BlackKillLimit` / `StartWeaponCooltime` / `PushSurvivalJob` / `LOBBY_MIN_PLAYER`），复核用 `check-upstream-overlap.ps1` | `AGENTS.md` 坑 §9 | 高 | `check-upstream-overlap.ps1` 实测输出 | 上游继续演进会产生新重叠，加功能前重跑 |
+| 尸体箭头（莲·骷髅头不消失）根因**不在客户端**（删除包从未发出）：`LianAltarFeature.TickHook` 把"到期发删除包"写在无关功能 `EnableVision`（默认 `false`）的守卫之后 | `../../.tmps/尸体箭头-根因调查.md` §0 | 高 | 该报告作者（源码路径 + 无删除包） | 修复后是否复发未记录 |
+| 门锁计数**不能**挂在 `GameDoor.Interact`：客户端每次按 E 都发**新**的 `C_INTERACT_DOOR`，服务端在 `player.InteractLock`(ACS:163737) 丢弃 500 ms 内的包，而该钩子（:162541）在它**之后** ⇒ 按键永久丢失；推荐落点 `DeviceManager.Interact` 的 Prefix(ACS:163734) | `../../.tmps/门锁-交互与过期-重查.md` 结论 1-3 | 高 | 该报告作者（只读源码） | 代码尚未改；旧反编译行号 |
+| 跨局残留的时间戳必须用 `UnityEngine.Time.realtimeSinceStartup`（进程内单调），**不能**用 `SurviveTime`（每局 `ResetSurvival` 回 420，旧时间戳会变成"未来"） | `../../.tmps/门锁-交互与过期-重查.md` 结论 4（ACS:178532 / :178557 / :178653） | 高 | 该报告作者 | 无 |
+
+---
+
+## 2. 本表的维护规则
+
+1. **只收录"会被反复用到"的硬事实**（判断标准：下一个人会不会再查一遍）。一次性结论留在 `.tmps/` 原文里。
+2. 每条必须写清 **出处**（`文件:行` 或 `IL` + 哪一版）与 **置信度**（高 / 中 / 低）。
+3. 置信度不是高，就必须在**未验证项**里写明"差什么、怎么补"；`【推测】` 一律不许升格成"事实"。
+4. 事实被推翻时**改状态、不删行**，并写清推翻它的是哪一份文档。
+5. 本表只放**结论**；推导过程留在 `../../.tmps/` 与 `docs/` 的机制文档里。
