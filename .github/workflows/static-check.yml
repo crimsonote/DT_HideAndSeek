@@ -1,0 +1,22 @@
+# 静态检查（任何机器都能跑，不需要游戏程序集，因此能在 Linux runner 上执行）。
+#
+# 为什么不在这里编译：本项目引用游戏目录 DeadlyTrick_Data\Managed 与 BepInEx\core 下的程序集，
+# 那些是游戏本体文件、不能进仓库 ⇒ CI 上没有它们，dotnet build 必然失败。
+# 所以 CI 只跑 verify.ps1（BOM / 版本一致 / 段名唯一 / 无手写 Config.Bind / 迁移表 /
+# 补丁嵌套层级 / 死配置），它覆盖的正是本项目最容易静默出错的那几类问题。
+name: static-check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # verify.ps1 会调 git describe --tags，需要完整 tag 历史
+      - name: verify.ps1（0 FAIL 才算通过）
+        shell: pwsh
+        run: ./verify.ps1
