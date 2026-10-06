@@ -61,6 +61,8 @@
 | 项 | 内容 |
 |---|---|
 | 权威来源 | `BepInEx/config/HideAndSeek.cfg`（`HsConfigFile.Open()`，`Plugin.Start` 第一句） |
+| 上游配置入口 | **v1.0.9.0 起是 `DT_Tools.Core.Engine.Config`（`public static`）**；更早挂在 `Plugin.Instance.Config` 上。`DtBridge.TryGetDtConfig` 两条路都探，取到哪个用哪个 —— 否则新上游下会取空并误报"未检测到 DT_Tools" |
+| 上游配置页数据源 | `ConfigService.List(Engine.Config)`，它遍历 **ConfigFile 的全部条目** ⇒ 镜像进 ConfigFile 依旧会显示（这一点跨版本没变） |
 | 旧值搬迁 | `Core/Config/LegacyConfigImport.cs`：首次独立运行（自有文件尚不存在）时，把 `DT_Tools.cfg` 里**只属于本模块**的段搬进 `OrphanedEntries`。必须早于 Bind |
 | 镜像实现 | 反射取上游 `ConfigFile` 的私有条目表 `<Entries>k__BackingField`，把本模块的条目逐个放进去 |
 | 为什么不需要同步 | 两侧是**同一批对象**，值只有一份。经 DT 页面改写 `BoxedValue` ⇒ 本模块立即读到新值，并自动落到 `HideAndSeek.cfg` |
@@ -70,7 +72,8 @@
 
 1. **镜像必须在全部 Bind 之后做。** 早一步就会镜像进一批残缺的条目（缺 `Enabled`、缺后面的子项）。
 2. **段名不能与上游撞车。** 撞上时镜像会跳过该键（`DtBridge.TryMirror` 里显式跳过并计数）——
-   覆盖上游的条目比"少显示几项"严重得多。目前 33 个段与上游 35 个段零重叠，`verify.ps1` 也在盯。
+   覆盖上游的条目比"少显示几项"严重得多。**2026-10-07 实测：本模块 47 个段 vs 上游 v1.0.9.0 的
+   71 个段，零重叠。** `verify.ps1` 只盯本模块**内部**的段名唯一性，跨上游的撞车核对要自己跑一次提取。
 3. **上游 `Save()` 会把镜像条目一起写进 `DT_Tools.cfg`。** 这是镜像的固有代价：那个副本是上游页面
    自己维护的镜像，**不是**权威。改配置请改 `HideAndSeek.cfg`（或经 DT 页面改——那也会落回自有文件）。
 4. **`SaveOnConfigSet` 的用法**：`Plugin.Start` 先置 `false`（避免 270 个配置项各写一次文件），
@@ -84,21 +87,29 @@
 
 | 项 | 内容 |
 |---|---|
+> ⚠️ **上游 v1.0.9.0 把命令域整个重写了**，下表是**新结构**。旧版（≤ v1.0.6.1）的
+> `Console.WebConsole.ExecuteCommand(PendingRequest)` / `BuildCommandsJson` / `_cachedCommandsJson`
+> 三个标识符**一个都不存在了** —— 照旧写法对接会**静默失效**，而且日志还会误报"未检测到上游 DT_Tools"
+> （因为类型名 `DT_Tools.Console.WebConsole` 根本查不到）。
+
+| 项 | 内容 |
+|---|---|
 | 实现位置 | `Console/ConsoleBridge.cs`（本身也是一个 `[PatchFeature]` 段：`ConsoleBridge`） |
-| 执行拦截 | `[HarmonyTargetMethod]` → `AccessTools.Method(DT_Tools.Console.WebConsole, "ExecuteCommand")`（上游 `WebConsole.cs:318`，**private 实例方法**）；`[HarmonyPrepare]` 找不到就整类跳过 |
-| 拦截内容 | `Prefix(object __instance, object __0)`：`__0` 是上游私有类型 `PendingRequest`。`Traverse` 读字段 `Command`，命中 `hs` / `hs_` 前缀就交给 `HsCommandRouter.Execute`，把 JSON 写回 `ResultJson` 并 `Done.Set()`，`return false` 阻断原流程（否则上游会当成"未知命令"） |
-| 附带日志 | 额外反射调用上游 `WebConsole.Log(json, LogLevel.Info)`；**不写这一条，命令确实执行了、JSON 也拿得到，但终端文本区看起来"什么都不返回"** |
-| 列表补全 | `Postfix BuildCommandsJson`（上游 `WebConsole.cs:463`，private），把 13 条 `hs_*` 条目追加进它生成的 JSON 数组 |
-| 开关语义 | 段关闭 / 上游未装 ⇒ 整类跳过且只记 INFO；上游**装了**但方法缺失 ⇒ 才记 WARNING（`Prepare` 里按 `UpstreamPresent` 分流） |
+| 执行拦截 | `[HarmonyTargetMethod]` → `AccessTools.Method(DT_Tools.WebConsole.WebConsole, "ExecuteCommandText", new[]{ typeof(string) })`。它是 WebUI 命令泵与 MCP `run_command` 的**唯一**执行收口（上游 `WebConsole/WebConsole.cs:286`，`internal static CommandResult`）；`[HarmonyPrepare]` 找不到就整类跳过 |
+| 拦截内容 | `Prefix(string __0, ref object __result)`：命中 `hs` / `hs_` 前缀就交给 `HsCommandRouter.Execute`，把结果反射包成上游 `CommandResult`（`Success(object)`，data 优先用 `JToken.Parse` 解析成对象，避免整份信封被再转义一层）赋给 `__result`，`return false` 跳过原流程（否则上游按"未知命令"记警告） |
+| 为什么是 `ref object` | 上游 `CommandResult` 是本模块**无法编译期引用**的类型。Harmony 文档允许 `__result` "类型匹配**或可被其赋值**"，`object` 满足。⚠️ **该写法尚未实机验证** —— 首次部署后务必看日志的「失败 N」；真挂不上就改走 `CommandRegistry.TryGet` 注册"替身命令"（需 DispatchProxy / Emit，代价更高） |
+| 附带日志 | 反射调用上游 `Log.Info(tag, msg)`（`DT_Tools.Log`，tag 用 `hs`）；**不写这一条，命令确实执行了、JSON 也拿得到，但终端文本区看起来"什么都不返回"** |
+| 列表补全 | 直接写上游命令表缓存 `DT_Tools.WebConsole.Api.CommandsApi._cachedJson`（`private static string`）—— 上游 `HandleList` 只在**首次请求**时构建它。本模块用「上游全部命令（经 `ICommand` 接口属性逐条反射读）+ 15 条 `hs_*`」重建整份 JSON（形状与上游 `HandleList` 完全一致，含"佚名"兜底） |
+| 开关语义 | 段关闭 / 上游未装 ⇒ 整类跳过且只记 INFO；上游**装了**但方法缺失 ⇒ 才记 WARNING（`Prepare` 里按 `UpstreamPresent` 分流）；检测到的是**旧版**上游 ⇒ WARNING 明说"请更新上游" |
 
-**已知陷阱（最容易被咬的两条）**
+**已知陷阱**
 
-1. **命令列表缓存时序**：上游在 `WebConsole.Init`（由它自己的 `Awake` 触发，`WebConsole.cs:77`）
-   里就执行了 `_cachedCommandsJson = BuildCommandsJson()`；而本模块的补丁要到**本模块的 `Start`**
-   才挂上（BepInEx 顺序：所有 `Awake` → 所有 `Start`）。结果是 `hs_*` 处于
-   "**能执行、但不在列表/补全里**"的状态。因此 `Plugin.Start` 必须显式调用
-   `ConsoleBridge.RefreshCommandList()`（`Plugin.cs:52`），反射重算并写回 `_cachedCommandsJson`。
-2. **`hs_debug` 不在命令列表里**：`ConsoleBridge.HsCommands` 数组只有 13 条，缺 `hs_debug`；
+1. **必须自己重建命令表缓存**：上游 `CommandsApi.HandleList` **首次请求**时才生成 `_cachedJson`，
+   而本模块补丁要到 `Start` 才挂上（BepInEx 顺序：所有 Awake → 所有 Start）⇒ 不重建就会
+   "**能执行、但不在列表/补全里**"。因此 `Plugin.Start` 显式调用
+   `ConsoleBridge.RefreshCommandList()`（`Plugin.cs:80`）。本模块在 Start 里做，早于任何浏览器
+   请求，所以不会覆盖已有的有效内容。
+2. **`hs_debug` 不在命令列表里**：`ConsoleBridge.HsCommands` 数组只有 15 条，缺 `hs_debug`；
    而 `HsCommandRouter` 是支持 `hs_debug` 的。因此该命令**能执行、不出现在补全**。加命令时两处都要改。
 
 ### 1.4 加载时序（一张图记完）

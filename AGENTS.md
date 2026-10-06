@@ -9,6 +9,16 @@
 
 **核心约束：零改动上游。** 不修改 `D:\git\DT_Tools\DT_Tools\` 下任何文件。
 
+> ### 术语：本文档里的「上游」= DT_Tools（**可选依赖**，不是 git 上下游）
+>
+> 2026-10-07 约定：DT_Tools 对本模块是**可选依赖** —— 装了才有配置镜像与命令桥，
+> 不装则全部静默降级、玩法功能一个不少。它**不是** git 意义上的上游：没有 fork、
+> 没有 submodule、没有编译期引用，本仓库也不跟随它的版本节奏。
+>
+> **新写的文字请直接叫 `DT_Tools`**（要强调关系时写「可选依赖 DT_Tools」）。
+> 历史段落里的「上游」沿用旧叫法，**见到顺手改掉即可，不要求一次性全改**；
+> `CHANGELOG.md` 与 git 提交历史里的「上游」是历史记录，**不要改**。
+
 **本模块可单独安装、单独配置。** 配置固定写在自己的 `BepInEx/config/HideAndSeek.cfg`，
 与上游是否存在无关；装了上游时额外把**同一批配置条目**镜像进它的 ConfigFile，
 使设置照旧出现在 DT CONFIG 页（见下文第 6 条）。命令桥（`hs_*`）是**可选**集成，上游不在就静默跳过。
@@ -214,7 +224,8 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
 
 ### 6. 上游 DT_Tools 没有"插件注册表"
 
-它的 `[PatchFeature]` 与 `IConsoleCommand` 都只扫**自己**的程序集，外部无法注入。
+它的 `[PatchFeature]` 与命令注册表（旧版叫 `IConsoleCommand`，v1.0.9.0 起改名 `ICommand`）
+都只扫**自己**的程序集，外部无法注入。
 因此集成只有两条**可选**路径（见 `Core/DtBridge.cs`）：
 
 - **配置：自己的文件为准 + 镜像到上游页面**。权威来源永远是
@@ -227,16 +238,47 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
     立即生效，并自动落到 `HideAndSeek.cfg`。
   - ⚠️ **上游 `Save()` 会把镜像条目一起写进 `DT_Tools.cfg`** —— 那是副本，不是权威。
   - ⚠️ **段名绝不能与上游撞车**：撞上时 `TryMirror` 显式跳过该键（覆盖上游条目远比
-    "少显示几项"严重）。改段名/加段前先跟上游的 35 个段名对一遍。
+    "少显示几项"严重）。改段名/加段前先跟上游的全量段名对一遍 —— **2026-10-07 实测上游
+    v1.0.9.0 有 71 个段名（本模块 47 个），无撞车**；核对脚本见 `.tmps` 里的一次性提取命令。
+  - ⚠️ **上游配置入口随版本变化**：v1.0.9.0 起是 `DT_Tools.Core.Engine.Config`（`public static`），
+    更早挂在 `Plugin.Instance.Config` 上 —— `DtBridge.TryGetDtConfig` 两个都探、取到哪个用哪个。
+    上游 CONFIG 页的数据源是 `ConfigService.List(Engine.Config)`，它遍历 **ConfigFile 的全部条目**，
+    所以镜像进 ConfigFile 依旧会显示（这一点没变）。
   - `SaveOnConfigSet` 用法：`Plugin.Start` 先置 `false`（避免 270 项各写一次文件），
     Bind + 迁移完成后统一 `Save()`，再置回 `true` ⇒ 此后**任何来源**的改动都自动落盘。
-- **命令桥（可选）**：Prefix 拦截 `DT_Tools.Console.WebConsole.ExecuteCommand`
-  （上游不在时自动跳过、静默降级，只记 INFO；上游**装了**却找不到方法才记 WARNING）。
-  ⚠️ 它的命令列表缓存 `_cachedCommandsJson` 在**它的 Awake** 里就生成好了，
-  而我们的补丁在 `Start` 才挂上（BepInEx 顺序：所有 Awake → 所有 Start），
-  所以必须自己重建缓存，否则命令"能执行但不在列表/补全里"。
-  段被关掉时**整类**都要跳过（`Diagnostics.IsLoaded` 判据）—— 只跳一半会让
-  `hs_*` 出现在上游列表里、点了却没反应。
+- **命令桥（可选）** —— 上游 v1.0.9.0 把命令域整个重写了，桥接点必须跟着换
+  （旧写法已**彻底失效**：类型名从 `DT_Tools.Console.WebConsole` 变成
+  `DT_Tools.WebConsole.WebConsole`，而 `ExecuteCommand` / `BuildCommandsJson` /
+  `_cachedCommandsJson` 三个标识符一个都不存在了）：
+  - **执行**：Prefix `DT_Tools.WebConsole.WebConsole.ExecuteCommandText(string)` ——
+    它是 WebUI 命令泵与 MCP `run_command` 的**唯一**执行收口。命中 hs_* 时自行处理，
+    反射构造上游 `CommandResult` 作为返回值并 `return false`（否则原版按"未知命令"记警告）。
+    - ⚠️ `CommandResult` 是本模块无法编译期引用的类型，所以 `__result` 只能写成 `ref object`
+      （Harmony 文档允许"类型匹配**或可被其赋值**"，`object` 满足）。
+      **该写法尚未实机验证** —— 首次部署后务必看日志的「失败 N」与 `hs_check`；
+      万一挂不上，备选方案是改走 `CommandRegistry.TryGet` 注册"替身命令"
+      （需要 DispatchProxy / Emit 动态实现 `ICommand`，代价明显更高）。
+  - **列表**：上游 `CommandsApi.HandleList` 只在**首次请求**时构建 `_cachedJson`，
+    而我们的补丁要到 `Start` 才挂上（BepInEx 顺序：所有 Awake → 所有 Start）。
+    所以本模块在自己 Start 里（早于任何浏览器请求）反射重建该缓存 = 上游全部命令 + hs_*，
+    上游命令的元数据经 `ICommand` 接口属性逐条读取。
+  - ✅ 若日志出现"检测到的是**旧版** DT_Tools"，说明上游还没更新到 v1.0.9.0（不是本模块的问题）。
+  - 段被关掉时**整类**都要跳过（`Diagnostics.IsLoaded` 判据）—— 只跳一半会让
+    `hs_*` 出现在上游列表里、点了却没反应。
+- **DT CONFIG 页的分类登记**（`DtBridge.TryRegisterCategory`）：反射往 DT_Tools 的私有静态字典
+  `Engine.SectionCategories` 补登记本模块的段 ⇒ CONFIG 页出现一个 **【捉迷藏】** 文件夹，
+  不再散在「其他」里。上游前端对未知分类名直接拿 key 当显示名（`CATEGORY_LABELS[k] || k`），
+  所以**零改动 DT_Tools、也零改动前端**。段名不硬编码，取自本模块配置里实际出现的全部段。
+- **写盘隔离**（`Core/DtMirrorGuard.cs`，段 `[DtMirror]`）：镜像的副作用是 DT_Tools 的 `Save()`
+  会把我们的条目一并写进 `DT_Tools.cfg`（2026-10-07 实测：那个文件 89 段里有 41 段来自本模块）。
+  现在在 `ConfigFile.Save` 的 Prefix 把我们的键**临时摘出**、Finalizer 放回 ⇒ 落盘时物理上
+  没有我们的条目，而 CONFIG 页照旧能列能改。⚠️ 只对新版 DT_Tools（`Core.Engine`）生效。
+- **前端增强走本地 fork**（分支 `local/webui-list-mode`，工作树 `D:\git\DT_Tools\.tmps\wt-dt-webui`，
+  **不属于本仓库**）：① 配置页加「网格/列表」切换，列表行显示分类说明与段摘要
+  （摘要直接取该段 `Enabled` 项的 description ⇒ 不需要后端补字段）；
+  ② 顶栏加**平铺模式**：窗口铺满「顶栏之下、Dock 之上」、隐藏标题栏、禁用拖动缩放、
+  平铺时自动关粒子，切换靠顶栏标签与 Dock（标签页式）。
+  ⚠️ DT_Tools 一更新，这份 fork 要 rebase，否则前端会退回未改的版本。
 
 ### 8. 段开关会连带跳过该段的所有补丁（排查时先看这个）
 
@@ -270,7 +312,10 @@ PatchAll —— 该段里**所有**钩子都不会挂上，包括与"自动行�
 ⚠️ 注意 `Priority` 的数值方向：`First = 800`、`Last = 0`，**值大者先跑**。
 用常量名（`Priority.First` / `Priority.Last`）而不是字面量。
 
-当前 4 处重叠，全部已钉死（加新功能前先跟上游的补丁目标对一遍）：
+当前 5 处需要钉顺序的重叠，全部已钉死（加新功能前先跟上游的补丁目标对一遍）。
+
+⚠️ **换上游版本后必须重跑检查器，别只看本文档的行数**：2026-10-07 上游 v1.0.9.0 那次重构
+就新增了 `StartPick` 这一处（还是三方重叠），同时把两处**一直存在却被别名漏报**的重叠暴露出来。
 
 | 目标方法 | 上游功能 | 本模块 | 优先级 | 理由 |
 |---|---|---|---|---|
@@ -278,6 +323,7 @@ PatchAll —— 该段里**所有**钩子都不会挂上，包括与"自动行�
 | `GamePlayer.StartWeaponCooltime` | `BlackAttack.Cooltime` | `WeaponCooldown` | `First` | 上游只认入参 5/20；本模块先把 20 改掉，上游就认不出来、不再插手 |
 | `TimeManager.PushSurvivalJob` | `CorpseWait` | `CorpseReport` | **`Last`** | 本钩子是 void、只能改参数，必须**最后**赋值才能压过上游 |
 | `Define.get_LOBBY_MIN_PLAYER` | `LobbyMinPlayers` | `SoloPlay` | `First` | 同第一行 |
+| `GameRoom.StartPick` | `SpectatorJoin`（**bool Prefix 整替原方法**） | `Dummy`（选角前生成假人） | `First + 1` | 上游整替体自己重写了一份"清空存活池 → 分配颜色 → 随机黑方"；假人必须**赶在它那份列表快照之前**入场，否则落在 `AlivePlayers` 之外，本局等于没生成 |
 
 复核方法（仓库内自带检查器，跟着代码走、不进 `.tmps/`）：
 
@@ -288,19 +334,37 @@ pwsh -File check-upstream-overlap.ps1 -Upstream "D:\其它路径\DT_Tools"
 ```
 
 ```text
-# 上游 9e19234（v1.0.6.1）实测输出 —— 带 priority 的 4 条是需要钉的；后 3 条是这一版新增
-GameRoom::HandleEnterPlayer::method        HS[Postfix] DT[Prefix]           no-priority
-GameRoom::BlackKillLimit::getter           HS[Prefix]  DT[Prefix]           priority   ← 新增
+# 上游 4ff672f（v1.0.9.0）实测输出 —— 10 处重叠，0 FAIL
+GameRoom::HandleEnterPlayer::method        HS[Postfix] DT[?+Prefix]         no-priority
+GameRoom::BlackKillLimit::getter           HS[Prefix]  DT[?]                priority
+Player::OnDeadMurder::method               HS[Postfix] DT[?]                no-priority  ← 别名归一并入后可见
 GameRoom::StartDetective::method           HS[Postfix] DT[Transpiler]       no-priority
-GamePlayer::StartWeaponCooltime::method    HS[Prefix]  DT[Prefix]           priority   ← 新增
-Define::LOBBY_MIN_PLAYER::getter           HS[Prefix]  DT[Prefix]           priority
-GameRoom::PickCharacterTick::method        HS[Postfix] DT[Postfix+Prefix]   no-priority
-TimeManager::PushSurvivalJob::method       HS[Prefix]  DT[Prefix]           priority   ← 新增
+Player::StartWeaponCooltime::method        HS[Prefix]  DT[?]                priority     ← 别名归一并入后可见
+Define::LOBBY_MIN_PLAYER::getter           HS[Prefix]  DT[?]                priority
+GameRoom::StartPick::method                HS[Prefix]  DT[Prefix]           priority     ← v1.0.9.0 新增，三方重叠
+GameRoom::PickCharacterTick::method        HS[Postfix] DT[?]                no-priority
+Managers::Update::method                   HS[Postfix] DT[?]                no-priority
+TimeManager::PushSurvivalJob::method       HS[Prefix]  DT[?]                priority
 ```
 
-`HandleEnterPlayer` / `StartDetective` / `PickCharacterTick` 三条无需处理：
-上游那侧是"整段替换原方法"的 Prefix、Transpiler、与 `out __state` 配对的前后置补丁，
-与本模块的 **Postfix** 不冲突 —— **Prefix 返回 false 时 Harmony 仍会执行 Postfix**。
+检查器输出的 DT 侧显示 `?` 是**启发式的正常现象**：它在 `[HarmonyPatch]` 之后 40 行内找
+hook 属性，被 `[PatchFeature]` / 字段声明隔开就找不到。上表已人工核实为实际 hook 类型（见下）。
+
+`HandleEnterPlayer` / `StartDetective` / `PickCharacterTick` / `OnDeadMurder` / `Managers::Update`
+五条无需处理：上游那侧是"整段替换原方法"的 Prefix、Transpiler、`out __state` 配对的前后置补丁，
+或干脆也是 Postfix，与本模块的 **Postfix** 不冲突 —— **Prefix 返回 false 时 Harmony 仍会执行 Postfix**
+（Harmony ≥ 2.2 起，返回 false 的 Prefix 只跳过原方法体，**不再阻止其它 Prefix** 执行）。
+
+### ⚠️ 别名会让检查器漏报（已修，但要知道原理）
+
+本模块为避开同名类型大量使用 `using GamePlayer = Server.Game.Player;` 这类别名。
+旧版 `check-upstream-overlap.ps1` 只比较**类型名末段**，于是本模块的
+`GamePlayer::StartWeaponCooltime` 与上游的 `Player::StartWeaponCooltime` 被当成两个不同目标 ——
+**真实重叠静默漏报**，`StartWeaponCooltime` 与 `OnDeadMurder` 两处一直没被检查器看见
+（前者靠人工注释侥幸标了优先级，后者纯属运气）。
+
+现在 `Scan-Lines` 会先展开文件顶部的 `using X = A.B;` 别名再归一。
+**新增补丁若用了别名，务必确认检查器能看见它**（跑一次，看目标名是否为真实类型）。
 
 ---
 
