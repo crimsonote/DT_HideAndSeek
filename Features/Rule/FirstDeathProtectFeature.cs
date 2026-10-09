@@ -37,7 +37,7 @@ namespace HideAndSeek.Features.Rule
     /// </summary>
     [PatchFeature("FirstDeathProtect",
         "首刀保护：上一局第一个死亡的玩家，在本局有人死亡之前不会被杀（服务端权威；真停电与致命诡计照露娜规则可破防）。",
-        defaultEnabled: false, side: FeatureSide.Host)]
+        defaultEnabled: true, side: FeatureSide.Host)]
     internal static class FirstDeathProtectFeature
     {
         [ConfigField(true, "启用首刀保护。")]

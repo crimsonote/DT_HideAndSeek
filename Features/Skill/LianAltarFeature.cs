@@ -37,7 +37,7 @@ namespace HideAndSeek.Features.Skill
         "莲（灵魂感知）的全部能力：DT 点假光照（站进藏尸点范围内只给本人下发「这里没断电」）、"
         + "尸体方向预警（有人死亡时只通知莲，指向尸体，可配时长与音效、到期主动撤回）、"
         + "感知死亡后的移速加成。",
-        defaultEnabled: false, side: FeatureSide.Host)]
+        defaultEnabled: true, side: FeatureSide.Host)]
     internal static class LianAltarFeature
     {
         [ConfigField(3f, "站进 DT 点多少秒后开始生效。", Min = 0f, Max = 60f)]

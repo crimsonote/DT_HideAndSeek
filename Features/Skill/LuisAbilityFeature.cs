@@ -29,7 +29,7 @@ namespace HideAndSeek.Features.Skill
     /// </summary>
     [PatchFeature("LuisAbility",
         "路易斯（念力）重写：被标记目标死亡 ⇒ 杀手时停+清空体力（凶手是路易斯自己则豁免）；技能转入周转；每 15 秒获得 3 秒目标位置。",
-        defaultEnabled: false, side: FeatureSide.Host)]
+        defaultEnabled: true, side: FeatureSide.Host)]
     internal static class LuisAbilityFeature
     {
         [ConfigField(3f, "目标死亡后，杀手的时停秒数（0 = 关闭）。", Min = 0f, Max = 30f)]

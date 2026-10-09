@@ -60,7 +60,7 @@ namespace HideAndSeek.Features.Skill
         description: "澪：放小熊后按技能＝传送到小熊处（不再切视野），每只熊可传 N 次、每次带传送 CD；" +
                      "小熊消失后换成放置 CD。传送附带黑洞特效、1 秒操作锁，" +
                      "并在施法者自己屏幕上临时显示汽水进度条（降 1/3，只他本人可见）。",
-        defaultEnabled: false,
+        defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class MioTeleportFeature
     {
