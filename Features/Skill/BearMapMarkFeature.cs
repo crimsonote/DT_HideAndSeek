@@ -40,7 +40,7 @@ namespace HideAndSeek.Features.Skill
     /// </summary>
     [PatchFeature("BearMapMark",
         "小熊地图标记：凛放下的小熊，把范围内的人标到她自己的地图上（类似红毛的追踪；范围照原版靠近提醒的椭圆，可配置）。",
-        defaultEnabled: false, side: FeatureSide.Host)]
+        defaultEnabled: true, side: FeatureSide.Host)]
     internal static class BearMapMarkFeature
     {
         /// <summary>原版 <c>Summon.DetectNearbyPlayer</c> 用的遮挡层（4096 = Block）。</summary>
