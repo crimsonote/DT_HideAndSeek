@@ -447,6 +447,18 @@ t=1~3s   静止段：SendSnapshotPins 用**快照位置**继续重发 → 标记
 t=3s     发删除哨兵 → pin 消失
 ```
 
+> ⚠️ **2026-10-09 修复：实时段判定曾被"时钟混用"整个吃掉。**
+> `MoveResendHook` 里用 `Time.realtimeSinceStartup`（启动至今，>数千）去比 `LiveUntil`，
+> 而 `LiveUntil` / `MarkerUntil` / `UnlockUntil` / `NextScanAt` 都是 `TickHook` 用
+> `TimeManager.SurviveTime`（**每局 `ResetSurvival` 回 420** 的 int/秒）写进去的
+> ⇒ `now >= live` **恒真** ⇒ 重发被 `continue` 全部吃掉，地图上的点只剩 1 Hz 的
+> `SurvivalTick` 在动。**实机表现**：实时段也只有一秒一跳、移动包看起来没用
+> （`ShowSelfOnRadar` 把自己画进去自测，同样一秒一跳）。
+> 现在实时段判定改用同一个时钟（`surviveNow = TimeManager.Instance?.SurviveTime`），
+> **节流**仍用 `realtimeSinceStartup` —— 同一方法里这两个时钟**不能合并**
+> （节流必须单调且跨局不复位，见 `docs/事实索引.md` 里相邻两条）。
+> 修复后**尚未实机验证**。
+
 **为什么静止段还要重发**：客户端 pin 有存活时间，不重发就会提前消失
 （实测现象："1 秒刚过白点就没了"）。所以用快照位置重发 —— 既保活，又保持静止，
 这就是需求里的"停留两秒"。这也是 `PinSnapshot` 的全部用途。

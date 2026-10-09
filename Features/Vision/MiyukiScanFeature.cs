@@ -340,7 +340,14 @@ namespace HideAndSeek.Features.Vision
                     if (!MarkerUntil.ContainsKey(pid))
                         continue;                        // 当前没有标记，不需要重发
 
-                    if (!LiveUntil.TryGetValue(pid, out float live) || now >= live)
+                    // ⚠ `LiveUntil` / `MarkerUntil` / `UnlockUntil` / `NextScanAt` 都是 TickHook 用
+                    // `TimeManager.SurviveTime`（int/秒，1 Hz 的 SurvivalTick 驱动）写进去的 ⇒
+                    // 这里判断"还在不在实时段"**必须用同一个时钟**。
+                    // 本方法的 `now`（`Time.realtimeSinceStartup`）只负责节流：拿它比 `live` 恒为真
+                    //（启动至今的秒数远大于本局秒数）⇒ 重发被这个 continue 全部吃掉，
+                    // 现象是"地图上的点只剩 1 Hz 的 TickHook 在动"（实机反馈：ShowSelfOnRadar 自测也是一秒一跳）。
+                    float surviveNow = TimeManager.Instance?.SurviveTime ?? 0f;
+                    if (!LiveUntil.TryGetValue(pid, out float live) || surviveNow >= live)
                         continue;                        // 静止段：位置不变，交给 TickHook
 
                     if (Unlocking.Contains(pid))
