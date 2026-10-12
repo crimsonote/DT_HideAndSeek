@@ -207,6 +207,12 @@ namespace HideAndSeek.Features.Replay
             _ending = "结算前";
             HostRecorder.Clear();
             ReplayDirector.Reset();
+
+            // ★ 本局参与者名单：每局开局冻结一次（详见 MatchPlayers 的类文档）。
+            //   为什么挂在这里：`Reset()` 是每局唯一的重置点，由既有的 `RoundStartHook`
+            //   （`GameRoom.ChangeGameState(Survive)`）调用 —— **不需要新增钩子**。
+            //   此刻 `Players` 已是本局最终名单：选角之后才加入的人一律拿 `IsSpectator = true`。
+            MatchPlayers.Capture(GameRoom.Instance);
         }
 
         /// <summary>用**指定的 key** 登记一幕（key 已在事件发生时分配并告知客户端）。</summary>

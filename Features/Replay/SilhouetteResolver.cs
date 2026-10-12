@@ -127,8 +127,14 @@ namespace HideAndSeek.Features.Replay
                     int id = p?.PublicInfo?.PlayerId ?? 0;
                     if (id <= 0 || Banned(id))
                         continue;
-                    // 本机客户端缓存里还有他 ⇒ 其他客户端的 `_cache` 里也有
-                    //（"加入"包发过、没发过"离开"包）⇒ `ChangeMyPlayer` 的直接索引不会抛。
+                    // ★ 名单过滤：只认本局名单里的人。中途加入的旁观者不在名单上（服务端给他们
+                    //   `IsSpectator = true`），而这类人掉线时**连 10 秒宽限都没有**、立刻真离开
+                    //   ⇒ 各机 `_cache` 删掉他。详见 MatchPlayers 的类文档。
+                    if (MatchPlayers.Available && !MatchPlayers.Contains(id))
+                        continue;
+                    // ⚠ 下面这一条**不是**「别的机器也有他」的保证：本机缓存反映的是**此刻**，
+                    //   而磁带装配与真正播放之间有一个窗口（`ChangeMyPlayer` 每一幕开始时才调用）
+                    //   —— 2026-10-11 那次整场卡死就出在这个窗口里。
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
 
@@ -172,6 +178,8 @@ namespace HideAndSeek.Features.Replay
                         continue;
                     if (rosterIds != null && rosterIds.Contains(id))
                         continue;                       // 他在本幕画面里 ⇒ 剪影落上去会多一个黑块
+                    if (MatchPlayers.Available && !MatchPlayers.Contains(id))
+                        continue;                       // 非本局参与者（中途加入的旁观者等）
                     if (Managers.Player.GetPlayerCache(id) == null)
                         continue;
                     outside.Add(id);

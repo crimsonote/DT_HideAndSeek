@@ -166,6 +166,10 @@ namespace HideAndSeek.Features.Replay
                 // 这一行用来确认快照真的在攒、并且到点封存了。
                 Plugin.Log.LogInfo($"[HS-Replay/诊断] {HostRecorder.SnapStats()}");
 
+                // 剪影候选池的可观测性：房间里哪些人不在本局名单上（会被排除）。
+                // 没有这一行，就分不清「本来没有旁观者」和「过滤生效了」。
+                MatchPlayers.LogExcluded(room);
+
                 // ② 索要素材（每 key 单发 —— 一次塞多个 key 会让客户端按它自己的硬编码窗口裁，裁出空带）
                 FetchTapes(room);
 
