@@ -4,9 +4,19 @@
 
 > 版本号来源：`HideAndSeek.csproj` 与 `Plugin.cs`（`verify.ps1` 会校验两者一致）。
 
-## 未发布
+## v1.5.0
 
+- feat(combat): 柜子（Jeremy）角色两项能力，**默认开启**
+  - `[JeremyBurst]`：当且仅当「死者是 Jeremy」且「DT 处决建筑是柜子」时，在死亡点引发类矿山自爆 —— 爆炸音效 + `EBuffType.Stun` 晕眩半径 256 内所有人（不分阵营，默认 5000ms；参数对标原版矿山自爆的 3000ms/224）
+  - `[JeremyExitBoost]`：Jeremy **主动**离开柜子后 5 秒 ×1.6 移速。只认本人的出柜交互；别人开柜踢人、柜子间传送、柜内被打出柜三条路径均不触发
+  - 判据取原版 `Player.DeathCabinet`（柜子处决专属标记，池塘/神秘处决写的是另外两组字段），挂 `OnDeadMurder` 的 Prefix（原版方法体会读并当场清空该字段，Postfix 读不到）；上游新版也 hook 了同方法的 Prefix，已钉 `HarmonyPriority.First`
 - feat(combat): 新增 `[KillLagComp]` 延迟刀缓解（服务端回退判定）—— 只回退目标（Δ=clamp(50ms+杀手RTT, 60, 350)）、攻击者按 age 外推、回退位 LOS(12288)+贴脸豁免、force 样本断裂保护（DT/复活/摆位）；`Active` 运行期热开关（段开关只管挂载）；KillPosSync/HitSfxEarly/ApplyToDeadlyTrick 默认关；规格、推导与取舍见 `.tmps/延迟刀-回退判定-设计.md`
+- feat(config): 5 个玩法段默认开启（路易斯 / 莲·灵魂感知 / 小熊标记 / 澪传送 / 首刀保护）
+- fix(vision): 修美幸扫描实时段被时钟混用吃掉（地图标记只剩 1 Hz）
+- fix(replay): 剪影候选池只认本局参与者
+- docs: 新增「玩法or系统概要」+ 两张指令 help 实机截图，并挂进知识索引
+- docs: 回写 2026-10-11 回放首帧 id 故障结论，并登记客户端改动候选清单
+- docs(ghost-phase): 记录「HUD 补不回」—— 服务端无路触发 ShowUI，客户端补丁对本模块无效
 
 ## v1.4.6
 
