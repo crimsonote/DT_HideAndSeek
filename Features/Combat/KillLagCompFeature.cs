@@ -212,7 +212,7 @@ namespace HideAndSeek.Features.Combat
             float grace = LosGrace?.Value ?? 224f;
 
             // 攻击者：最新移动样本 + age 外推（无样本 → 当前 PublicInfo.Pos、不外推）
-            if (!History.Attacker(attacker.PublicInfo.PlayerId, now, out float kx, out float ky))
+            if (!History.Attacker(attacker.PublicInfo.PlayerId, now, out float kx, out float ky, out float kAge, out int kCount))
             {
                 kx = attacker.PublicInfo.Pos.X;
                 ky = attacker.PublicInfo.Pos.Y;
@@ -221,12 +221,19 @@ namespace HideAndSeek.Features.Combat
             string mode = (DeltaMode?.Value ?? "KillerRttFull").Trim();
             float deltaMs = ComputeDelta(attacker, target, mode);
 
-            // 目标：回退到 now − Δ；无样本 / 跨断裂 → 用当前位并记进日志
-            bool degraded = !History.Rewind(target.PublicInfo.PlayerId, now, deltaMs, out float tx, out float ty);
-            if (degraded)
+            // 目标：回退到 now − Δ。**失败开放**：拿不到"杀手所见"的可靠样本（无历史 / 跨断裂点）
+            // 就整体交还原版（672 + 无视线）判定 —— 绝不用"当前位 + MaxRange"去吞刀，
+            // 那比原版还严，正是"黑方刀不到人"的回归（2026-10-15 实机日志：9/9 全 degraded，
+            // 吃掉了一堆 353~504 的合法刀）。详见设计文档 §3.1/§8.1 的修订。
+            bool verbose = LogDetails == null || LogDetails.Value;
+            if (!History.Rewind(target.PublicInfo.PlayerId, now, deltaMs,
+                    out float tx, out float ty, out string rwWhy, out int vCount, out float vAge))
             {
-                tx = target.PublicInfo.Pos.X;
-                ty = target.PublicInfo.Pos.Y;
+                if (verbose)
+                    Plugin.Log.LogInfo(
+                        $"[HS] KillLagComp：放弃回退（{rwWhy}，目标样本 {vCount} 个，Δ={deltaMs:F0}ms）⇒ 交原版判定 " +
+                        $"#{attacker.PublicInfo.PlayerId} → #{targetId}。");
+                return true;
             }
 
             float dx = kx - tx;
@@ -250,12 +257,17 @@ namespace HideAndSeek.Features.Combat
 
             if (why == null)
             {
+                if (verbose)
+                    Plugin.Log.LogInfo(
+                        $"[HS] KillLagComp：放行 #{attacker.PublicInfo.PlayerId} → #{targetId} " +
+                        $"d={Mathf.Sqrt(d2):F0}（Δ={deltaMs:F0}ms，目标样本 {vCount} 个/最新 {vAge:F0}ms，" +
+                        $"攻击者样本 {kCount} 个/外推 {kAge:F0}ms）");
                 if (posSync) OnAccept(attacker);
                 return true;
             }
 
-            if (LogDetails == null || LogDetails.Value)
-                why += $"（Δ={deltaMs:F0}ms，目标样本{(degraded ? "缺失→用当前位" : "ok")}）";
+            if (verbose)
+                why += $"（Δ={deltaMs:F0}ms，目标样本 {vCount} 个/最新 {vAge:F0}ms，攻击者 {kCount} 个/外推 {kAge:F0}ms）";
 
             KillBlocker.Reject(attacker, target, tag, RejectFeedback == null || RejectFeedback.Value, why);
             return false;
@@ -404,60 +416,84 @@ namespace HideAndSeek.Features.Combat
             /// <summary>记一个样本。id ≤ 0 的丢弃（未绑定会话，与 HostRecorder.NoteMove 同判据）。</summary>
             public static void Note(GamePlayer p, PosInfo pos, bool force)
             {
-                if (p?.PublicInfo == null || pos == null) return;
-                int id = p.PublicInfo.PlayerId;
-                if (id <= 0) return;
-
-                float now = Time.realtimeSinceStartup;
-                if (!Tracks.TryGetValue(id, out var t))
+                // ⚠ 整段 try/catch 是**探针**：2026-10-15 实机日志出现「9/9 次拦截全部目标样本缺失」，
+                // 怀疑本 Postfix 每次静默抛异常（Harmony 的补丁异常走 Unity Debug.Log，
+                // 而 BepInEx 的 WriteUnityLog=false ⇒ LogOutput.log 里看不见）。
+                // 一旦真抛异常，这里会留一条一次性告警；确认无异常后可撤。
+                try
                 {
-                    t = new Track();
-                    Tracks[id] = t;
-                }
+                    if (p?.PublicInfo == null || pos == null) return;
+                    int id = p.PublicInfo.PlayerId;
+                    if (id <= 0) return;
 
-                var s = new Sample { T = now, X = pos.X, Y = pos.Y, Force = force };
-                if (!force)
-                {
-                    s.Speed = p.Velocity;
-                    if (t.HasPrev)
+                    float now = Time.realtimeSinceStartup;
+                    if (!Tracks.TryGetValue(id, out var t))
                     {
-                        float dx = s.X - t.PrevX;
-                        float dy = s.Y - t.PrevY;
-                        float m = Mathf.Sqrt(dx * dx + dy * dy);
-                        if (m > 0.01f) { s.DirX = dx / m; s.DirY = dy / m; }
+                        t = new Track();
+                        Tracks[id] = t;
                     }
-                    t.PrevX = s.X;
-                    t.PrevY = s.Y;
-                    t.HasPrev = true;
-                }
-                else
-                {
-                    // force 样本：Dir/Speed 保持 0（传送后不外推）；HasPrev 复位，
-                    // 否则下一个样本会跨断裂点算出错误方向
-                    t.HasPrev = false;
-                }
 
-                t.Samples.Add(s);
-                while (t.Samples.Count > MaxSamples) t.Samples.RemoveAt(0);
-                float cutoff = now - KeepMs;
-                while (t.Samples.Count > 1 && t.Samples[0].T < cutoff) t.Samples.RemoveAt(0);
+                    var s = new Sample { T = now, X = pos.X, Y = pos.Y, Force = force };
+                    if (!force)
+                    {
+                        s.Speed = p.Velocity;
+                        if (t.HasPrev)
+                        {
+                            float dx = s.X - t.PrevX;
+                            float dy = s.Y - t.PrevY;
+                            float m = Mathf.Sqrt(dx * dx + dy * dy);
+                            if (m > 0.01f) { s.DirX = dx / m; s.DirY = dy / m; }
+                        }
+                        t.PrevX = s.X;
+                        t.PrevY = s.Y;
+                        t.HasPrev = true;
+                    }
+                    else
+                    {
+                        // force 样本：Dir/Speed 保持 0（传送后不外推）；HasPrev 复位，
+                        // 否则下一个样本会跨断裂点算出错误方向
+                        t.HasPrev = false;
+                    }
+
+                    t.Samples.Add(s);
+                    while (t.Samples.Count > MaxSamples) t.Samples.RemoveAt(0);
+                    float cutoff = now - KeepMs;
+                    while (t.Samples.Count > 1 && t.Samples[0].T < cutoff) t.Samples.RemoveAt(0);
+                }
+                catch (global::System.Exception ex)
+                {
+                    if (!_warned)
+                    {
+                        _warned = true;
+                        Plugin.Log.LogWarning(
+                            $"[HS] KillLagComp：位置采样异常（此后只告警一次，回退判定将全部失效）— {ex}");
+                    }
+                }
             }
+
+            /// <summary>采样异常只告警一次（探针，见 <see cref="Note"/>）。</summary>
+            private static bool _warned;
 
             /// <summary>
             /// 攻击者新鲜位：最新样本 + 按 age 外推（跨度 = T − 最后样本到达时刻，设计文档 §3.2(2)）。
             /// age &gt; 150ms 视为输入陈旧（掉包 / MoveLock 封锁窗口），不再外推。
+            /// <para>ageMs / count 仅作日志诊断（验证采样钩子是否在录）。</para>
             /// </summary>
-            public static bool Attacker(int id, float now, out float x, out float y)
+            public static bool Attacker(int id, float now, out float x, out float y, out float ageMs, out int count)
             {
                 x = 0f;
                 y = 0f;
+                ageMs = -1f;
+                count = 0;
                 if (!Tracks.TryGetValue(id, out var t) || t.Samples.Count == 0) return false;
 
+                count = t.Samples.Count;
                 var s = t.Samples[t.Samples.Count - 1];
                 x = s.X;
                 y = s.Y;
 
                 float age = now - s.T;
+                ageMs = age;
                 if (age <= 0f || age > MaxExtrapolateMs) return true;   // 不补（含时钟倒退的防御）
                 if (s.Speed > 0.01f && (s.DirX != 0f || s.DirY != 0f))
                 {
@@ -471,13 +507,24 @@ namespace HideAndSeek.Features.Combat
             /// <summary>
             /// 目标回退位：t ≤ now − deltaMs 的最新样本，且**不跨断裂点**
             /// （候选与 now 之间若有 force 样本 ⇒ 传送后杀手看到的是新位置，旧样本作废）。
+            /// <para>失败时 <paramref name="why"/> 给出原因（日志自证：无历史 / 跨断裂 / 历史太短），
+            /// count/ageMs 用于判断采样钩子是否在工作。</para>
             /// </summary>
-            public static bool Rewind(int id, float now, float deltaMs, out float x, out float y)
+            public static bool Rewind(int id, float now, float deltaMs,
+                out float x, out float y, out string why, out int count, out float ageMs)
             {
                 x = 0f;
                 y = 0f;
-                if (!Tracks.TryGetValue(id, out var t) || t.Samples.Count == 0) return false;
+                why = "ok";
+                count = 0;
+                ageMs = -1f;
+                if (!Tracks.TryGetValue(id, out var t) || t.Samples.Count == 0)
+                {
+                    why = "无历史（目标从未 Move 或钩子未录）";
+                    return false;
+                }
 
+                count = t.Samples.Count;
                 float cutoff = now - deltaMs;
                 var list = t.Samples;
                 bool seenBreak = false;
@@ -489,12 +536,18 @@ namespace HideAndSeek.Features.Combat
                         if (s.Force) seenBreak = true;    // 截止时刻之后的断裂：旧样本作废
                         continue;
                     }
-                    if (seenBreak) return false;          // 候选与 now 之间有断裂 → 放弃回退
+                    ageMs = now - s.T;
+                    if (seenBreak)                          // 候选与 now 之间有断裂 → 放弃回退
+                    {
+                        why = "跨断裂点（传送/DT 摆位/强制位移）";
+                        return false;
+                    }
                     x = s.X;
                     y = s.Y;
                     return true;
                 }
-                return false;                             // 全部样本都比截止时刻新（Δ 比历史长）
+                why = $"历史共 {count} 个样本、全部新于 Δ({deltaMs:F0}ms)";
+                return false;
             }
         }
     }
