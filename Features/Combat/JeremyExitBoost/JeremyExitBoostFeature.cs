@@ -29,7 +29,7 @@ namespace HideAndSeek.Features.Combat
     /// </summary>
     [PatchFeature("JeremyExitBoost",
         "柜子出柜冲刺：Jeremy 主动离开柜子后短时间移速提升。",
-        defaultEnabled: false, side: FeatureSide.Host)]
+        defaultEnabled: true, side: FeatureSide.Host)]
     internal static class JeremyExitBoostFeature
     {
         [ConfigField(104, "触发角色 ID。104 = Jeremy（柜子）。", Min = 0f, Max = 999f)]
