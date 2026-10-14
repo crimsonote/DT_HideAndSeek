@@ -4,6 +4,10 @@
 
 > 版本号来源：`HideAndSeek.csproj` 与 `Plugin.cs`（`verify.ps1` 会校验两者一致）。
 
+## 未发布
+
+- feat(combat): 新增 `[KillLagComp]` 延迟刀缓解（服务端回退判定）—— 只回退目标（Δ=clamp(50ms+杀手RTT, 60, 350)）、攻击者按 age 外推、回退位 LOS(12288)+贴脸豁免、force 样本断裂保护（DT/复活/摆位）；`Active` 运行期热开关（段开关只管挂载）；KillPosSync/HitSfxEarly/ApplyToDeadlyTrick 默认关；规格、推导与取舍见 `.tmps/延迟刀-回退判定-设计.md`
+
 ## v1.4.6
 
 - chore: 插件 GUID 由 `YumeHatsuyuki.DeadlyTrick.HideAndSeek` 改为 `HideAndSeek`
