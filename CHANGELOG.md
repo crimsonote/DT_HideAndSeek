@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- fix(system): 新增 `[AreaGuard]` —— 原版 `AreaManager.GetArea` 的网格查找**没有边界检查**（姊妹方法 `ValidPosition` 有、`ClampToMapBounds` 就在楼下，唯独它裸奔）。贴边（最左/最右一列）刀杀时，尸体构造函数自带的 ±100 朝向偏移会把探针位送到网格外 ⇒ `ArgumentOutOfRangeException: index` ⇒ 死亡回调被拦腰截断（半死）。Finalizer 只在异常路径上把坐标夹取到合法区域并吞掉异常，正常入参路径零改动
+- fix(combat): 新增 `[DeathGuard]` —— 原版 `Player.OnDead` 是一条**无 try/catch 的直线**，任何一步抛异常都会被外层 `JobTimer.Flush` 静静吞掉、只留下半应用的状态（S_DEAD 已发、尸体没建、`ExitPlayer` 没跑 ⇒ 人还在 `AlivePlayers`、系统按活人结算、不给学分）。Finalizer 确认「死到一半」后补完 `ExitPlayer` 尾部并吞掉异常，健康死亡零改动
 - fix(combat): KillLagComp 失败开放 + 自证日志 —— 实机日志见 9/9 次拦截全部「目标样本缺失」，旧兜底（当前位+MaxRange336）吞掉了 d=353~504 的合法刀（黑方体感=刀不到人）；改为拿不到可靠回退样本时 `return true` 交原版判定（**绝不比原版严**），并加 `History.Note` 一次性异常探针 + 放行/放弃/拒绝三向日志（样本数/时刻/断裂原因），下局即可自证根因
 
 ## v1.5.0
