@@ -39,7 +39,7 @@ namespace HideAndSeek.Features.Combat
     /// </summary>
     [PatchFeature("JeremyBurst",
         "柜子自爆：Jeremy 被 DT 柜子处决时引发类矿山自爆，晕眩附近所有人（不分阵营）。",
-        defaultEnabled: false, side: FeatureSide.Host)]
+        defaultEnabled: true, side: FeatureSide.Host)]
     internal static class JeremyBurstFeature
     {
         [ConfigField(104, "触发角色 ID。104 = Jeremy（柜子）。", Min = 0f, Max = 999f)]
