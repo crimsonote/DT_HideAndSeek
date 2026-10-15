@@ -91,6 +91,22 @@ namespace HideAndSeek.Features.Skill
             Min = 0f, Max = 10000f)]
         public static ConfigEntry<int> LockMs;
 
+        /// <summary>
+        /// 【实验性】传送**前摇**：按技能后延迟多少毫秒才真正传送。0 = 关闭（原版手感）。
+        ///
+        /// 实现方式：第一次进 Prefix 只做「锁操作 + PushAfter(PreCastMs) 重投一次」，
+        /// 并不搬人；延迟到点后重投的那次走完整逻辑。所以：
+        ///   · 前摇期间人是被 Stop 锁住的（客户端动不了），表现等同读条；
+        ///   · 前摇期间玩家**被打 / 死亡 / 出柜**会让自校验失败，那次重投静默作废
+        ///     —— 即"被打断"，这是前摇应有的性质，也是它实验性的原因。
+        /// ⚠ 与 <see cref="LockMs"/>（后摇）叠加：总锁定时长 ≈ PreCastMs + LockMs。
+        /// </summary>
+        [ConfigField(0,
+            "【实验性】传送前摇毫秒数。0 = 关闭。按技能后先锁住操作等这么久才真的传送；" +
+            "期间被打/出柜会打断（重投的那次自校验失败即作废）。",
+            Min = 0f, Max = 10000f)]
+        public static ConfigEntry<int> PreCastMs;
+
         [ConfigField(false,
             "锁操作改用 EBuffType.Stun（带眩晕动画）。" +
             "⚠ Stun 会让客户端 CancelAllInteract → DropHand，把刚换上的汽水（以及原本手上的东西）丢到地上，" +
@@ -142,6 +158,11 @@ namespace HideAndSeek.Features.Skill
         private static int MaxTeleportsValue => MaxTeleports != null ? MaxTeleports.Value : 3;
         private static int RecallCdValue => RecallCdSec != null ? RecallCdSec.Value : 60;
         private static int LockMsValue => LockMs != null ? LockMs.Value : 1000;
+
+        private static int PreCastMsValue => PreCastMs != null ? PreCastMs.Value : 0;
+
+        /// <summary>正处于前摇中的玩家（读条期间忽略重复按键）。</summary>
+        private static readonly HashSet<int> PreCasting = new HashSet<int>();
         private static bool UseStunValue => UseStunInsteadOfStop != null && UseStunInsteadOfStop.Value;
         private static float VfxRangeValue => VfxRange != null ? VfxRange.Value : 896f;
 
@@ -393,12 +414,70 @@ namespace HideAndSeek.Features.Skill
                 if (owner.SkillState != 2)
                     return true;
 
+                // ── 前摇（实验性）────────────────────────────────────────────
+                // 系统修法：前摇只是把「执行体」推迟，不拦下来再放回去。
+                // 这里只做守卫 + 排期，真正搬人那段 DoTeleport 到点才跑；
+                // 读条期间被 Stop 锁着，重复按键直接忽略。
+                int preCast = PreCastMsValue;
+                if (preCast > 0)
+                {
+                    int pidPre = owner.PublicInfo.PlayerId;
+                    if (PreCasting.Contains(pidPre))
+                        return false;                       // 已在读条中，忽略重复按键
+
+                    PreCasting.Add(pidPre);
+                    try { owner.BuffComponent?.AddBuff(EBuffType.Stop, preCast); }
+                    catch (Exception ex) { Plugin.Log.LogWarning($"[HS] MioTeleport：前摇锁操作失败（{ex.Message}）。"); }
+
+                    var roomPre = GameRoom.Instance;
+                    if (roomPre != null)
+                    {
+                        roomPre.PushAfter(preCast, delegate
+                        {
+                            PreCasting.Remove(pidPre);
+
+                            // 自校验：阶段/存活/仍处于「已放熊」态，任一不满足即视为被打断
+                            if (owner == null || owner.PublicInfo == null)
+                                return;
+                            if (GameRoom.Instance == null || GameRoom.Instance.State != EGameState.Survive)
+                                return;
+                            if (!owner.IsAlive)
+                                return;
+                            if (owner.SkillState != 2)
+                                return;
+
+                            // 前摇没被打断 ⇒ 走完整传送
+                            DoTeleport(__instance, owner);
+                        });
+
+                        Plugin.Log.LogInfo($"[HS] MioTeleport：#{pidPre} 按技能 → 前摇 {preCast}ms（实验性）。");
+                    }
+                    else
+                    {
+                        PreCasting.Remove(pidPre);
+                    }
+                    return false;
+                }
+
+                DoTeleport(__instance, owner);
+
+                // 不再走原版：相机不切、SkillState 停在 2（下次按技能 = 再传一次）
+                return false;
+            }
+
+            /// <summary>
+            /// 传送执行体：搬人 + 特效 + 后摇锁 + 计数 + 进度条 + 次数用尽回收。
+            /// 前摇（PreCastMs）只是把这段整体推迟，因此它内部**不再**需要任何
+            /// 「第一次 / 重投」的分支 —— 也没有反射、没有重入本 hook。
+            /// </summary>
+            private static void DoTeleport(GameSkill __instance, GamePlayer owner)
+            {
                 var bear = FindBear(__instance);
                 var bearPos = bear != null && bear.DeviceInfo != null ? bear.DeviceInfo.Pos : null;
                 if (bearPos == null)
                 {
-                    Plugin.Log.LogWarning($"[HS] MioTeleport：#{owner.PublicInfo.PlayerId} 按了技能但找不到小熊，交还原版（会切成切视野）。");
-                    return true;
+                    Plugin.Log.LogWarning($"[HS] MioTeleport：#{owner.PublicInfo.PlayerId} 前摇结束但找不到小熊，本次作废。");
+                    return;
                 }
 
                 int pid = owner.PublicInfo.PlayerId;
@@ -491,9 +570,6 @@ namespace HideAndSeek.Features.Skill
                     Plugin.Log.LogInfo($"[HS] MioTeleport：#{pid} 第 {used}/{MaxTeleportsValue} 次传送 → ({dest.X:F0},{dest.Y:F0})。");
                     CoolSkill(__instance, TeleportCdValue);
                 }
-
-                // 不再走原版：相机不切、SkillState 停在 2（下次按技能 = 再传一次）
-                return false;
             }
         }
 
@@ -820,6 +896,8 @@ namespace HideAndSeek.Features.Skill
         private static void ClearAll()
         {
             Teleports.Clear();
+            // 前摇中的玩家同理：不收尾会让残留 pid 在新局按不了技能
+            PreCasting.Clear();
 
             if (SodaSwaps.Count > 0)
             {
