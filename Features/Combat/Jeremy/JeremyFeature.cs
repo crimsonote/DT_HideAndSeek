@@ -67,7 +67,10 @@ namespace HideAndSeek.Features.Combat
     {
         // ══════════════════ 通用 ══════════════════
 
-        [ConfigField(104, "触发角色 ID。104 = Jeremy（柜子）。", Min = 0f, Max = 999f)]
+        [ConfigField(0,
+            "额外限定角色 ID（0 = 不限制）。能力判据只看 EBuffType.QuantumLeap —— " +
+            "任何拿到柜子能力的角色都生效（含被小偷角色窃取），需要限定回原角色时填 104。",
+            Min = 0f, Max = 999f)]
         public static ConfigEntry<int> CharacterId;
 
         // ══════════════════ ① 处决自爆 ══════════════════
@@ -130,11 +133,22 @@ namespace HideAndSeek.Features.Combat
 
         private static float Now => TimeManager.Instance?.SurviveTime ?? 0f;
 
-        private static bool IsJeremy(GamePlayer p)
+        /// <summary>
+        /// 是否"拥有柜子能力"。
+        ///
+        /// 判据是**能力**而非角色：柜子的传送是被动技能 <c>ESkillType.MindControl</c>，
+        /// 服务端 :179471 给持有者挂 <c>EBuffType.QuantumLeap</c>（3600 秒常驻）——
+        /// 这个 buff 才是"谁有柜子能力"的唯一标识，小偷角色窃取到能力时同样带着它，
+        /// 三项改动（自爆 / 出柜冲刺 / 传送前摇）都应跟着能力走。
+        /// <c>CharacterId</c> 只作额外的白名单限制（0 = 不限制）。
+        /// </summary>
+        private static bool HasCabinetPower(GamePlayer p)
         {
             if (p?.PublicInfo == null)
                 return false;
-            int want = CharacterId?.Value ?? 104;
+            if (p.BuffComponent == null || !p.BuffComponent.HasBuff(EBuffType.QuantumLeap))
+                return false;
+            int want = CharacterId?.Value ?? 0;
             return want <= 0 || p.PublicInfo.CharacterId == want;
         }
 
@@ -167,7 +181,7 @@ namespace HideAndSeek.Features.Combat
                     return;
 
                 // 判据二：死者是 Jeremy
-                if (!IsJeremy(__instance))
+                if (!HasCabinetPower(__instance))
                     return;
 
                 var room = GameRoom.Instance;
@@ -217,7 +231,7 @@ namespace HideAndSeek.Features.Combat
                 if (req == null || req.Type != ECabinetInteractType.ExitCabinet)
                     return;
 
-                if (!IsJeremy(player))
+                if (!HasCabinetPower(player))
                     return;
                 if (!player.IsAlive)
                     return;
@@ -301,10 +315,8 @@ namespace HideAndSeek.Features.Combat
                 if (player?.PublicInfo == null || !player.IsAlive)
                     return;
 
-                // 只有带柜子转移被动（QuantumLeap = Jeremy 的 MindControl）的才管
-                if (!IsJeremy(player))
-                    return;
-                if (player.BuffComponent == null || !player.BuffComponent.HasBuff(EBuffType.QuantumLeap))
+                // 只有带柜子转移被动（QuantumLeap）的才管；判据统一走能力而非角色
+                if (!HasCabinetPower(player))
                     return;
 
                 var room = GameRoom.Instance;

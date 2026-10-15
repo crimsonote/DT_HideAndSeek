@@ -26,7 +26,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 17;
+        private const int CurrentVersion = 18;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -111,6 +111,17 @@ namespace HideAndSeek.Core
                 MoveKey(config, log, "JeremyExitBoost", "CharacterId", JeremyFeature.CharacterId);
                 MoveKey(config, log, "JeremyExitBoost", "Seconds", JeremyFeature.Seconds);
                 MoveKey(config, log, "JeremyExitBoost", "SpeedMul", JeremyFeature.SpeedMul);
+            }
+
+            // v17 → v18
+            if (from < 18)
+            {
+                // [Jeremy] 的判断口径从「角色」改成「能力」：柜子的传送是被动技能
+                // MindControl，服务端给持有者挂 QuantumLeap（3600 秒常驻）——
+                // 那才是"谁有柜子能力"的唯一标识，被小偷角色窃取到能力时同样带着它。
+                // CharacterId 因此从"必填的角色"降级为"额外白名单"，默认 104 → 0。
+                // 仍是旧默认值 104 的用户才会被推进 0（故意限定角色的不动）。
+                MigrateInt(config, log, "Jeremy", "CharacterId", 104, 0);
             }
 
             // v14 → v15
