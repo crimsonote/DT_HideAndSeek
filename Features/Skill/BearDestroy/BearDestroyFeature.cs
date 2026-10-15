@@ -287,19 +287,22 @@ namespace HideAndSeek.Features.Skill
                 if (dm == null)
                     return;
 
-                // 人必须还踩在「这只」小熊上（出柜/换熊都算离熊）
-                var from = dm.GetCabinet(pid);
-                if (from?.DeviceInfo == null || from.DeviceInfo.DeviceId != summonId)
-                    return;
+                // 人必须还踩在「这只」小熊上。判据与 tick 里找"谁在踩"用的
+                // 必须是同一套（IsStepping）—— 曾错用 DeviceManager.GetCabinet(pid)，
+                // 那是"躲柜子"的判据（柜子角色 MindControl 专用），破坏者根本没躲柜子
+                // ⇒ 恒 null ⇒ 链第一次回调就 return ⇒ 进度条永远停在满值。
+                var summon = dm.GetSummon(summonId);
+                if (summon == null)
+                    return;                         // 小熊已消失
+                if (!IsStepping(p, summon, OwnerOf(summon)))
+                    return;                         // 离熊 / 死了 / 换人 ⇒ 链自然断
 
                 float dur = CurrentDurability(summonId);
                 float remain = dur - (Now - ses.DueAt) / DestroySeconds * MaxDurability;
 
                 if (remain <= 0f)
                 {
-                    var summon = dm.GetSummon(summonId);
-                    if (summon != null)
-                        Complete(summon, p, OwnerOf(summon), pid);
+                    Complete(summon, p, OwnerOf(summon), pid);
                     return;
                 }
 
@@ -466,9 +469,42 @@ namespace HideAndSeek.Features.Skill
         }
 
         /// <summary>
-        /// 找此刻"踩在这只小熊上"的玩家。
+        /// 某个玩家此刻是否"踩在这只小熊上"。
+        ///
         /// 判据：直线距离平方 &lt; <see cref="RangeSq"/>，且非主人、存活、非幽灵、
-        /// 非观战、不在柜子里。多个同时踩上时取遍历到的第一个（谁先谁算）。
+        /// 非观战、不在柜子里。
+        ///
+        /// ⚠ 这里就是"踩熊"的**唯一**判据 —— <see cref="FindStepper"/>（tick 里找谁在踩）
+        ///    与节拍链里校验"人还没离开"都用它。二者必须是同一套，否则会出现
+        ///    "tick 认他、链条不认"的分裂。
+        ///    曾在这里错用过 <c>DeviceManager.GetCabinet(pid)</c>（那是"躲柜子"的判据，
+        ///    柜子角色的 MindControl 用的），破坏者根本没躲柜子 ⇒ 恒 null
+        ///    ⇒ 节拍链第一次回调就 return ⇒ 进度条永远停在满值。
+        /// </summary>
+        private static bool IsStepping(GamePlayer p, GameSummon summon, int ownerPid)
+        {
+            if (p?.PublicInfo == null || summon?.DeviceData?.Pos == null)
+                return false;
+            if (!p.IsAlive || p.IsSpectator || p.PublicInfo.IsGhost)
+                return false;
+            if (p.State == EPlayerState.Hide || p.State == EPlayerState.Sit)
+                return false;
+            if (ownerPid > 0 && p.PublicInfo.PlayerId == ownerPid)
+                return false;
+
+            var pp = p.PublicInfo.Pos;
+            if (pp == null)
+                return false;
+
+            var sp = summon.DeviceData.Pos;
+            float dx = pp.X - sp.X;
+            float dy = pp.Y - sp.Y;
+            return dx * dx + dy * dy < RangeSq;
+        }
+
+        /// <summary>
+        /// 找此刻"踩在这只小熊上"的玩家。
+        /// 多个同时踩上时取遍历到的第一个（谁先谁算）。
         /// </summary>
         private static GamePlayer FindStepper(GameSummon summon, int ownerPid)
         {
@@ -476,32 +512,9 @@ namespace HideAndSeek.Features.Skill
             if (players == null)
                 return null;
 
-            var sp = summon?.DeviceData?.Pos;
-            if (sp == null)
-                return null;
-
-            float rangeSq = RangeSq;
             for (int i = 0; i < players.Count; i++)
-            {
-                var p = players[i];
-                if (p?.PublicInfo == null)
-                    continue;
-                if (!p.IsAlive || p.IsSpectator || p.PublicInfo.IsGhost)
-                    continue;
-                if (p.State == EPlayerState.Hide || p.State == EPlayerState.Sit)
-                    continue;
-                if (ownerPid > 0 && p.PublicInfo.PlayerId == ownerPid)
-                    continue;
-
-                var pp = p.PublicInfo.Pos;
-                if (pp == null)
-                    continue;
-
-                float dx = pp.X - sp.X;
-                float dy = pp.Y - sp.Y;
-                if (dx * dx + dy * dy < rangeSq)
-                    return p;
-            }
+                if (IsStepping(players[i], summon, ownerPid))
+                    return players[i];
             return null;
         }
 
