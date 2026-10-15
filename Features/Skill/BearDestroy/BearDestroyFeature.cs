@@ -116,6 +116,9 @@ namespace HideAndSeek.Features.Skill
         private static float ApproachSeconds => global::System.Math.Max(0f, (ApproachMs?.Value ?? 2000f) / 1000f);
         private static float DestroySeconds => global::System.Math.Max(0.1f, (DestroyMs?.Value ?? 5000f) / 1000f);
         private static float StepSeconds => global::System.Math.Max(0.02f, (StepMs?.Value ?? 100f) / 1000f);
+
+        /// <summary>节拍的毫秒数（PushAfter 用整数毫秒；最小 20ms）。</summary>
+        private static int StepMsValue => (int)global::System.Math.Max(20f, StepMs?.Value ?? 100f);
         private static float MaxDurability => global::System.Math.Max(1f, DurabilityMax?.Value ?? 24f);
         private static float RangeSq => (Range?.Value ?? 32f) * (Range?.Value ?? 32f);
 
@@ -233,45 +236,85 @@ namespace HideAndSeek.Features.Skill
                 return;
             }
 
-            // ── 开始削耐久（实时折算）────────────────────────────────
-            float dur = CurrentDurability(id);
-            float elapsed = Now - ses.DueAt;
-            float remain = dur - elapsed / DestroySeconds * MaxDurability;
-
+            // ── 开始削耐久 ────────────────────────────────────────────────
+            // 只负责「挂条 + 启动节拍链」；耐久的实时折算与刻度下发都在链里做
+            // （tick 只有 1Hz，放在这里进度条会一跳一跳的）。
             if (!ses.BarOn)
             {
+                float dur = CurrentDurability(id);
                 if (ShakerBar.Begin(FindPlayer(pid), BarItemIdValue, ToBar(dur)))
                 {
                     ses.BarOn = true;
                     ses.LastValue = ToBar(dur);
                     ses.LastPush = Now;
+
+                    var roomBar = GameRoom.Instance;
+                    int stepMs = StepMsValue;
+                    if (roomBar != null && stepMs > 0)
+                        ScheduleBar(roomBar, stepMs, id, pid);
                 }
-                else
+                // 发包失败（人没了）：下秒再试，会话仍有效
+            }
+        }
+
+        /// <summary>
+        /// 按节拍推进某只小熊的进度条 —— 「方案 A：内联自续链」。
+        ///
+        /// 不引入 Ticker 抽象（那是方案 B，等 MioTeleport 也要改时再说），
+        /// 这里就是一个 PushAfter 链：到点 → 干活 → 再排下一个。
+        ///
+        /// **链的终止完全靠自校验**，不需要任何取消句柄：
+        /// 会话被移除（Break）/ 换人 / 破坏者走了或死了 / 阶段变了 / 人已离熊
+        /// ⇒ 任一不成立就不再排下一次，链自然断。延迟最多一个节拍（100ms）。
+        /// </summary>
+        private static void ScheduleBar(GameRoom room, int stepMs, int summonId, int pid)
+        {
+            room.PushAfter(stepMs, delegate
+            {
+                Session ses;
+                if (!Sessions.TryGetValue(summonId, out ses) || ses.ByPid != pid || !ses.BarOn)
+                    return;                                     // 会话结束或换人 ⇒ 链断
+
+                var p = FindPlayer(pid);
+                if (p == null || !p.IsAlive)
+                    return;
+
+                var r = GameRoom.Instance;
+                if (r == null || r.State != EGameState.Survive)
+                    return;
+
+                var dm = GameDeviceManager.Instance;
+                if (dm == null)
+                    return;
+
+                // 人必须还踩在「这只」小熊上（出柜/换熊都算离熊）
+                var from = dm.GetCabinet(pid);
+                if (from?.DeviceInfo == null || from.DeviceInfo.DeviceId != summonId)
+                    return;
+
+                float dur = CurrentDurability(summonId);
+                float remain = dur - (Now - ses.DueAt) / DestroySeconds * MaxDurability;
+
+                if (remain <= 0f)
                 {
-                    return;                        // 人没了 / 发包失败：下秒再试
+                    var summon = dm.GetSummon(summonId);
+                    if (summon != null)
+                        Complete(summon, p, OwnerOf(summon), pid);
+                    return;
                 }
-            }
 
-            if (remain <= 0f)
-            {
-                Complete(summon, stepper, ownerPid, pid);
-                return;
-            }
+                // 账本与刻度都在这里更新 —— 所以中途被打断时记下的耐久是实时的
+                Durability[summonId] = remain;
 
-            Durability[id] = remain;
+                int bar = ToBar(remain);
+                if (bar != ses.LastValue)
+                {
+                    ShakerBar.Set(pid, bar);
+                    ses.LastValue = bar;
+                }
 
-            // 刻度下发：**刻度变了**且距上次下发 >= StepSeconds 才发包。
-            // 注意本 tick 只有 1Hz（SurvivalTick），所以实际下发频率至多每秒一次；
-            // StepSeconds（默认 100ms）远小于 1 秒，正常情况下不会成为瓶颈，
-            // 它只是防止同一秒内重复下发的兜底。
-            float now = Now;
-            int bar = ToBar(remain);
-            if (bar != ses.LastValue && now - ses.LastPush >= StepSeconds)
-            {
-                ShakerBar.Set(pid, bar);
-                ses.LastValue = bar;
-                ses.LastPush = now;
-            }
+                ScheduleBar(r, stepMs, summonId, pid);           // 排下一个
+            });
         }
 
         /// <summary>耐久归零：收尾进度条 + 回收小熊。原版回收没有音效，故不发通知（房主 2026-10-15 口径）。</summary>
