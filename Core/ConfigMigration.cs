@@ -4,6 +4,7 @@ using BepInEx.Logging;
 // 取舍：这确实是 Core 层引用了 Features 层的类型，但迁移表本来就"知道"具体的段名与键名
 // （见下面各条硬编码的 "Section", "Key"），多一个类型引用换来的是默认值只有一份定义 ——
 // 比为了分层好看而在迁移表里再抄一遍默认值可靠。
+using HideAndSeek.Features.Combat;
 using HideAndSeek.Features.Rule;
 
 namespace HideAndSeek.Core
@@ -25,7 +26,7 @@ namespace HideAndSeek.Core
     internal static class ConfigMigration
     {
         /// <summary>当前配置版本。新增迁移时 +1。</summary>
-        private const int CurrentVersion = 16;
+        private const int CurrentVersion = 17;
 
         public static void Run(ConfigFile config, ManualLogSource log)
         {
@@ -89,6 +90,27 @@ namespace HideAndSeek.Core
                 // WhiteCommand.AnnounceOnUse 是 v0.1.x 里的死配置（声明了但代码从不读），
                 // 字段已在 v0.2.0 删除 —— 因此**故意不搬**：它会作为孤儿键留在 .cfg 文本里，
                 // 但不会出现在 DT CONFIG 页面（那里只遍历 Entries）。
+            }
+
+            // v16 → v17
+            if (from < 17)
+            {
+                // 柜子的三项能力合并为单一的 [Jeremy] 段（房主要求"对柜子的修改都在同一段"）。
+                //
+                // 段开关搬成段内**子开关**，保留"关掉其中一项"的用户意图 ——
+                // [Jeremy].Enabled（总开关）由 PatchLoader 按 defaultEnabled 创建，不搬。
+                MoveKey(config, log, "JeremyBurst", "Enabled", JeremyFeature.BurstEnabled);
+                MoveKey(config, log, "JeremyExitBoost", "Enabled", JeremyFeature.ExitBoostEnabled);
+
+                // 各自参数原值搬家。CharacterId 两段都有，先到先得
+                // （MoveKey 幂等：目标已非默认值就跳过）。
+                MoveKey(config, log, "JeremyBurst", "CharacterId", JeremyFeature.CharacterId);
+                MoveKey(config, log, "JeremyBurst", "StunMs", JeremyFeature.StunMs);
+                MoveKey(config, log, "JeremyBurst", "Radius", JeremyFeature.Radius);
+                MoveKey(config, log, "JeremyBurst", "PlaySfx", JeremyFeature.PlaySfx);
+                MoveKey(config, log, "JeremyExitBoost", "CharacterId", JeremyFeature.CharacterId);
+                MoveKey(config, log, "JeremyExitBoost", "Seconds", JeremyFeature.Seconds);
+                MoveKey(config, log, "JeremyExitBoost", "SpeedMul", JeremyFeature.SpeedMul);
             }
 
             // v14 → v15
