@@ -215,7 +215,7 @@ namespace HideAndSeek.Features.Skill
         /// 也正因为服务端没动过，这份记录里**不需要**存档原物品：
         /// 还原时直接读 <c>Player.Hand</c>（它仍然是权威真值）即可。
         /// </summary>
-        private static readonly Dictionary<int, ItemInfo> SodaSwaps = new Dictionary<int, ItemInfo>();
+        // 进度条（汽水）状态已移至 Core/ShakerBar —— 本类不再自己持有 ItemInfo 字典。
 
         // SkillComponent._summonId 是私有字段，反射读取（照 Features/Vision/AoiCullingFeature.cs:129-147）
         private static AccessTools.FieldRef<GameSkill, int> _summonIdRef;
@@ -644,44 +644,32 @@ namespace HideAndSeek.Features.Skill
         ///   所以包的收件人必须**只有他本人**（S_ADD_ITEM 本来就是单发给他）。
         ///   反过来说：光改 `PublicInfo.HandItemId` 只会让所有人看到角色手上拿着汽水、而他自己的屏幕上**没有条**。
         /// </summary>
+        /// <summary>
+        /// 挂出「剩余次数」进度条，并按节拍让它平滑降到本次的终点。
+        ///
+        /// 发包与还原全部走 <see cref="ShakerBar"/>（本类不再自己碰 S_ADD_ITEM /
+        /// S_MODIFY_MY_PLAYER / S_REMOVE_ITEM）—— 小熊破坏用的是同一套。
+        /// </summary>
         private static void StartSodaSwap(GamePlayer player, GameRoom room, int used)
         {
-            if (player == null || player.PublicInfo == null || player.Session == null)
+            if (player == null || player.PublicInfo == null)
                 return;
 
             int pid = player.PublicInfo.PlayerId;
-            if (SodaSwaps.ContainsKey(pid))
+            if (ShakerBar.IsActive(pid))
                 return;   // 上一次还没还原（25 秒 CD 下不该发生），不叠加
-
-            ItemInfo soda;
-            try
-            {
-                soda = new ItemInfo
-                {
-                    DataId = SodaItemIdValue,
-                    ObjectId = ObjectUtils.GenerateNewId(),   // 全局唯一，避免与真实物品撞 id
-                    Value = SodaValueFor(MaxTeleportsValue - used + 1, MaxTeleportsValue)
-                };
-
-                SodaSwaps[pid] = soda;
-
-                // 让**他本人的客户端**真的持有这件汽水 —— 进度条出现的唯一前提。
-                player.Session.Send(new S_ADD_ITEM { Item = soda });
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] MioTeleport：换汽水失败（{ex.Message}），跳过本机进度条。");
-                SodaSwaps.Remove(pid);
-                return;
-            }
 
             // 条 = 「剩余次数 ÷ 总次数」× 满值。房主口径（2026-10-06）：它反映**还剩几次**，
             // 而不是每次固定掉一段 —— 3 次上限时：第 1 次 24→16、第 2 次 16→8、第 3 次 8→0。
             int total = MaxTeleportsValue;
             int from = SodaValueFor(total - used + 1, total);
             int to = SodaValueFor(total - used, total);
+
+            if (!ShakerBar.Begin(player, SodaItemIdValue, from))
+                return;
+
             int step = SodaStepMsValue;
-            int steps = Math.Abs(to - from);
+            int steps = global::System.Math.Abs(to - from);
 
             if (step > 0 && steps > 0 && room != null)
             {
@@ -693,36 +681,14 @@ namespace HideAndSeek.Features.Skill
                     room.PushAfter(step * i, delegate
                     {
                         var p = FindPlayer(pid);
-                        ItemInfo cur;
-                        if (p == null || !SodaSwaps.TryGetValue(pid, out cur))
+                        if (p == null || !ShakerBar.IsActive(pid))
                             return;
                         if (!p.IsAlive || room.State != EGameState.Survive)
                         {
-                            FinishSodaSwap(pid);   // 中途失效 ⇒ 立刻收尾，别把他的本地手部留成汽水
+                            ShakerBar.End(pid);   // 中途失效 ⇒ 立刻收尾，别把他的本地手部留成汽水
                             return;
                         }
-
-                        try
-                        {
-                            // 记住当前刻度：客户端若被打断，ResendSoda 用这个值重建，
-                            // 条才不会跳回起点。
-                            cur.Value = value;
-
-                            // ⚠ 不能走 `Item.Value` 的 setter：它内部读的是**服务端 Hand**
-                            //   （`SendChangeItemValue` :176956），而我们的汽水只是本机幻觉、
-                            //   服务端 Hand 根本没变 ⇒ 那样会发出**原物品**的值。
-                            //   直接构造 ChangeItemValue 单发给本人：客户端 :13881 → Inventory.ChangeValue
-                            //   → Hand.ChangeValue + `if (Hand.DataId == 1039)` ⇒ _shaker.SetInfo。
-                            p.Session.Send(new S_MODIFY_MY_PLAYER
-                            {
-                                Type = EModifyMyPlayerEvent.ChangeItemValue,
-                                Value = value
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            Plugin.Log.LogWarning($"[HS] MioTeleport：进度条下发失败（{ex.Message}）。");
-                        }
+                        ShakerBar.Set(pid, value);
                     });
                 }
             }
@@ -732,13 +698,9 @@ namespace HideAndSeek.Features.Skill
                 finishAt = 0;
 
             if (room != null)
-            {
-                room.PushAfter(finishAt, delegate { FinishSodaSwap(pid); });
-            }
+                room.PushAfter(finishAt, delegate { ShakerBar.End(pid); });
             else
-            {
-                FinishSodaSwap(pid);
-            }
+                ShakerBar.End(pid);
 
             Plugin.Log.LogInfo($"[HS] MioTeleport：#{pid} 本机临时换成汽水 {SodaItemIdValue}（{from} → {to}，{finishAt}ms 后还原）。");
         }
@@ -756,77 +718,23 @@ namespace HideAndSeek.Features.Skill
             return (int)global::System.Math.Round(SodaMax * (double)remaining / total);
         }
 
-        /// <summary>
-        /// 还原**他本人的本地手部**：撤掉汽水 → 把服务端权威的当前手部重新发给他。
-        ///
-        /// 服务端权威（`Player.Hand` / `HandItemObjectId` / `PublicInfo.HandItemId`）全程没动过，
-        /// 所以这里**直接读 `player.Hand`** 作为真值 —— 不需要存档，也就不会出现
-        /// "存档与窗口内发生的其它改动打架"的问题（例如他在这 1 秒里捡了别的东西）。
-        /// 幂等，且任何异常都不向外抛 —— 它是收尾路径。
-        /// </summary>
-        private static void FinishSodaSwap(int pid)
-        {
-            ItemInfo soda;
-            if (!SodaSwaps.TryGetValue(pid, out soda))
-                return;
-            SodaSwaps.Remove(pid);
-
-            var player = FindPlayer(pid);
-            if (player == null || player.Session == null)
-                return;   // 人已经不在（离开/迁移中）⇒ 客户端随之销毁，无需还原
-
-            try
-            {
-                // ① 撤掉汽水：客户端 Handle_S_REMOVE_ITEM(:42746) 按 ObjectId 匹配 ⇒ InsertHand(null)
-                //    → EndHand 关掉进度条 UI
-                if (soda != null)
-                    player.Session.Send(new S_REMOVE_ITEM { ObjectId = soda.ObjectId });
-
-                // ② 把他的本地手部对齐回服务端真值（原本空手就不发）
-                var hand = player.Hand;
-                if (hand != null && hand.Info != null)
-                    player.Session.Send(new S_ADD_ITEM { Item = hand.Info });
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] MioTeleport：还原本机手部失败（{ex.Message}）。");
-            }
-        }
+        /// <summary>还原进度条（撤汽水 + 把手部对齐回服务端真值）。见 <see cref="ShakerBar.End"/>。</summary>
+        private static void FinishSodaSwap(int pid) => ShakerBar.End(pid);
 
         // ══════════════════ ⑤ 进度条期间：不许被换掉、不许被丢 ══════════════════
 
-        /// <summary>
-        /// 再把「你手上正拿着这瓶汽水」告诉客户端一次 —— **进度条被打断后的恢复**。
-        ///
-        /// 什么时候需要：客户端可能在本地先清过手部再发包（最典型的是 `DropHand`(:4754)：
-        /// 它先 `InsertHand(null)` 才把 `C_DROP_ITEM` 发出来 —— 哪怕那个包被我们拦下，
-        /// 它自己屏幕上的进度条已经没了）。补发时用的 `ItemInfo.Value` 是**当前刻度**
-        /// （每步节拍都会更新它），所以条不会跳回起点，进度看起来是连续的。
-        /// </summary>
+        /// <summary>重申持有进度条（被打断后恢复，用当前刻度重建）。见 <see cref="ShakerBar.Resend"/>。</summary>
         private static void ResendSoda(GamePlayer player, ItemInfo soda)
         {
-            if (player == null || player.Session == null || soda == null)
+            if (player?.PublicInfo == null)
                 return;
-
-            try
-            {
-                player.Session.Send(new S_ADD_ITEM { Item = soda });
-                player.Session.Send(new S_MODIFY_MY_PLAYER
-                {
-                    Type = EModifyMyPlayerEvent.ChangeItemValue,
-                    Value = soda.Value
-                });
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[HS] MioTeleport：重申持有汽水失败（{ex.Message}）。");
-            }
+            ShakerBar.Resend(player.PublicInfo.PlayerId);
         }
 
         /// <summary>发这个包的玩家是否正处在"进度条窗口"里；不是就返回 null（调用方直接放行）。</summary>
         private static GamePlayer InSodaWindow(IPacketSink session)
         {
-            if (SodaSwaps.Count == 0 || ModeRuntime.Bypass)
+            if (ModeRuntime.Bypass)
                 return null;
 
             var peer = session as HostPeerSession;
@@ -834,7 +742,7 @@ namespace HideAndSeek.Features.Skill
             if (player == null || player.PublicInfo == null)
                 return null;
 
-            return SodaSwaps.ContainsKey(player.PublicInfo.PlayerId) ? player : null;
+            return ShakerBar.IsActive(player.PublicInfo.PlayerId) ? player : null;
         }
 
         /// <summary>
@@ -859,11 +767,8 @@ namespace HideAndSeek.Features.Skill
                 if (player == null)
                     return true;
 
-                ItemInfo soda;
-                SodaSwaps.TryGetValue(player.PublicInfo.PlayerId, out soda);
-
                 Plugin.Log.LogInfo($"[HS] MioTeleport：#{player.PublicInfo.PlayerId} 在进度条期间尝试丢弃物品，已忽略并重申持有。");
-                ResendSoda(player, soda);
+                ResendSoda(player, null);
                 return false;
             }
         }
@@ -899,12 +804,8 @@ namespace HideAndSeek.Features.Skill
             // 前摇中的玩家同理：不收尾会让残留 pid 在新局按不了技能
             PreCasting.Clear();
 
-            if (SodaSwaps.Count > 0)
-            {
-                var pids = new List<int>(SodaSwaps.Keys);
-                for (int i = 0; i < pids.Count; i++)
-                    FinishSodaSwap(pids[i]);
-            }
+            // 阶段一切换客户端手部本就会重置，直接全清即可（此时可能有人已离开房间）
+            ShakerBar.ClearAll();
         }
 
         [HarmonyPatch(typeof(GameRoom), "StartSurvive")]
