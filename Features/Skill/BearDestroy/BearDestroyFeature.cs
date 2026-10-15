@@ -74,8 +74,21 @@ namespace HideAndSeek.Features.Skill
             Min = 1f, Max = 100000f)]
         public static ConfigEntry<float> DurabilityMax;
 
-        [ConfigField(32f,
-            "「踩在小熊上」的距离阈值（游戏单位，约一个身位）。小熊位置与玩家位置的直接距离。",
+        /// <summary>
+        /// 「踩在小熊上」的距离阈值（游戏单位）。
+        ///
+        /// 原版回收的判定范围是小熊 prefab 上的 Interact BoxCollider2D —— 实测
+        /// offset(0,0)、size 150×150（0.1.17a <c>Summon.Init</c> :3939-3954 绑定的 collider），
+        /// 即**以熊为中心 ±75 的方框**。但那个尺寸只在客户端 prefab 里：服务端
+        /// <c>Summon</c> 构造只写 <c>new DeviceData{DataId,DeviceType,Pos}</c>(:165388)，
+        /// summonId 还是运行时生成的、不在 DeviceDic ⇒ 服务端拿不到，只能硬编码近似。
+        ///
+        /// 这里取 **75**（方框半宽）作为圆半径：比起精确复刻方框，
+        /// 用圆能少一份矩形判据的代码，四角多出来的一小块是刻意的近似。
+        /// </summary>
+        [ConfigField(75f,
+            "「踩在小熊上」的距离阈值（游戏单位）。75 = 与原版回收范围（±75 方框）的半宽对齐；" +
+            "用圆近似方框，四角多出的一小块是刻意的取舍（省掉矩形判据）。",
             Min = 4f, Max = 512f)]
         public static ConfigEntry<float> Range;
 
