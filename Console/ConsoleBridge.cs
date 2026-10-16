@@ -285,12 +285,14 @@ namespace HideAndSeek.Console
                         ReadMember(iface, command, "Aliases") as IEnumerable,
                         ReadMember(iface, command, "Usage") as string,
                         ReadMember(iface, command, "Description") as string,
+                        TagsToKeys(ReadMember(iface, command, "Tags")),
                         ReadMember(iface, command, "Author") as string);
                 }
             }
 
             foreach (var hs in HsCommands)
-                AppendCommand(sb, ref first, hs.Name, null, hs.Usage, hs.Description, "HideAndSeek");
+                AppendCommand(sb, ref first, hs.Name, null, hs.Usage, hs.Description,
+                    TagsSupported ? new[] { HsTagKey } : null, "HideAndSeek");
 
             sb.Append(']');
             return sb.ToString();
@@ -311,7 +313,7 @@ namespace HideAndSeek.Console
 
         private static void AppendCommand(
             StringBuilder sb, ref bool first,
-            string name, IEnumerable aliases, string usage, string description, string author)
+            string name, IEnumerable aliases, string usage, string description, string[] tags, string author)
         {
             if (string.IsNullOrEmpty(name))
                 return;
@@ -337,10 +339,62 @@ namespace HideAndSeek.Console
 
             sb.Append(']')
               .Append(",\"usage\":").Append(Quote(usage))
-              .Append(",\"description\":").Append(Quote(description))
-              // 与 DT_Tools 一致：未署名显示「佚名」
-              .Append(",\"author\":").Append(Quote(string.IsNullOrEmpty(author) ? "佚名" : author))
+              .Append(",\"description\":").Append(Quote(description));
+
+            // DT_Tools 2.0.0.0 起命令表带 tags。字段序与上游 CommandsApi.HandleList 一致（排在 author 之前）
+            if (tags != null)
+            {
+                sb.Append(",\"tags\":[");
+                bool firstTag = true;
+                foreach (string tag in tags)
+                {
+                    if (string.IsNullOrEmpty(tag))
+                        continue;
+                    if (!firstTag)
+                        sb.Append(',');
+                    firstTag = false;
+                    sb.Append(Quote(tag));
+                }
+                sb.Append(']');
+            }
+
+            // 与 DT_Tools 一致：未署名显示「佚名」
+            sb.Append(",\"author\":").Append(Quote(string.IsNullOrEmpty(author) ? "佚名" : author))
               .Append('}');
+        }
+
+        /// <summary>hs_* 命令在命令表里挂的标签键（与 <see cref="DtBridge"/> 注入 DT_Tools 的那条同名）。</summary>
+        private const string HsTagKey = "HideAndSeek";
+
+        /// <summary>DT_Tools 是否已到带 tags 的命令表（2.0.0.0 起）。</summary>
+        private static bool TagsSupported => AccessTools.TypeByName(DtBridge.DtFeatureTagCatalogTypeName) != null;
+
+        /// <summary>
+        /// 把 ICommand.Tags（FeatureTag 位标志）转成标签键数组。
+        /// </summary>
+        /// <remarks>
+        /// 上游 2.0 的 HandleList 用的就是 <c>FeatureTagCatalog.Names</c>，这里反射调同一个方法，
+        /// 保证两边输出的键名一致。旧版没有 tags 概念 ⇒ 返回 null，调用方据此不输出该字段。
+        /// </remarks>
+        /// <param name="tagValue">ICommand.Tags 的反射值，可能为 null（旧版接口没有该属性）。</param>
+        /// <returns>标签键数组；旧版返回 null，取不到时返回空数组。</returns>
+        private static string[] TagsToKeys(object tagValue)
+        {
+            if (!TagsSupported)
+                return null;
+            if (tagValue == null || !tagValue.GetType().IsEnum)
+                return new string[0];
+
+            try
+            {
+                var catalog = AccessTools.TypeByName(DtBridge.DtFeatureTagCatalogTypeName);
+                var names = AccessTools.Method(catalog, "Names", new[] { tagValue.GetType() });
+                return names?.Invoke(null, new[] { tagValue }) as string[] ?? new string[0];
+            }
+            catch
+            {
+                return new string[0];   // 取不到就当作"无标签"，不影响其它字段
+            }
         }
 
         private static string Quote(string value)
