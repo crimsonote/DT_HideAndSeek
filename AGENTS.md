@@ -274,6 +274,7 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
   `DT_Tools.WebConsole.WebConsole`，而 `ExecuteCommand` / `BuildCommandsJson` /
   `_cachedCommandsJson` 三个标识符一个都不存在了）：
   - **执行**：Prefix `DT_Tools.WebConsole.WebConsole.ExecuteCommandText(string)` ——
+    ⚠ DT_Tools 2.0.0.0 起该方法由 `public` 降为 `internal`；`AccessTools.Method` 默认含 NonPublic ⇒ 不受影响。
     它是 WebUI 命令泵与 MCP `run_command` 的**唯一**执行收口。命中 hs_* 时自行处理，
     反射构造上游 `CommandResult` 作为返回值并 `return false`（否则原版按"未知命令"记警告）。
     - ⚠️ `CommandResult` 是本模块无法编译期引用的类型，所以 `__result` 只能写成 `ref object`
@@ -288,10 +289,20 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
   - ✅ 若日志出现"检测到的是**旧版** DT_Tools"，说明上游还没更新到 v1.0.9.0（不是本模块的问题）。
   - 段被关掉时**整类**都要跳过（`Diagnostics.IsLoaded` 判据）—— 只跳一半会让
     `hs_*` 出现在上游列表里、点了却没反应。
-- **DT CONFIG 页的分类登记**（`DtBridge.TryRegisterCategory`）：反射往 DT_Tools 的私有静态字典
-  `Engine.SectionCategories` 补登记本模块的段 ⇒ CONFIG 页出现一个 **【捉迷藏】** 文件夹，
-  不再散在「其他」里。上游前端对未知分类名直接拿 key 当显示名（`CATEGORY_LABELS[k] || k`），
-  所以**零改动 DT_Tools、也零改动前端**。段名不硬编码，取自本模块配置里实际出现的全部段。
+- **DT CONFIG 页的标签登记**（`DtBridge.TryRegisterCategory` → `TryRegisterTag`）：
+  **DT_Tools 2.0.0.0 起分类体系从目录 / `Engine.SectionCategories` 改成了标签位**
+  （`Core.Attributes.FeatureTag` + `FeatureTagCatalog`，旧字典已删除）。现在反射做两件事：
+  ① 把 `FeatureTagCatalog.Entries`（`public static readonly IReadOnlyList<Entry>`，底层是定长数组）
+  整体替换成「上游原条目 + 本模块一条 `Key=HideAndSeek / Group=捉迷藏`」；
+  ② 给每个段写 `Engine.SectionTags`（段 → 标签位）与 `Engine.SectionSides`（`Both`）。
+  为什么换个字段就够：上游 `FeatureTagCatalog.Names()` 与 `/api/config/tags` 都是**每次遍历
+  `Entries` 字段**（无缓存），而 2.0 的前端**不写死任何标签文字** ⇒ 注入后前端自动显示
+  「捉迷藏」分组，依旧零改动 DT_Tools、零改动前端。
+  - **标签位取 bit 63**（`1UL << 63`）：上游已用 0–37，且约定「新增只追加到末尾」⇒ 最高的 63 最晚被占用。
+  - ⚠ 63 仍属上游预留区；真撞位时上游 `Validate` **不报错**（它只拒绝"未定义的位"），表现是两个功能串标签
+    ⇒ **每次跟进 DT_Tools 版本时核对 `FeatureTagCatalog` 的词表条目数**。
+  - ≤1.x 仍走旧的 `SectionCategories` 路径（两条路各自探测目标，取存在的那条），行为不变。
+  - `SectionGroups` 不写：上游对功能段默认按 "feature" 归类。段名不硬编码，取自本模块实际出现的全部段。
 - **写盘隔离**（`Core/DtMirrorGuard.cs`，段 `[DtMirror]`）：镜像的副作用是 DT_Tools 的 `Save()`
   会把我们的条目一并写进 `DT_Tools.cfg`（2026-10-07 实测：那个文件 89 段里有 41 段来自本模块）。
   现在在 `ConfigFile.Save` 的 Prefix 把我们的键**临时摘出**、Finalizer 放回 ⇒ 落盘时物理上
@@ -383,7 +394,7 @@ PatchAll —— 该段里**所有**钩子都不会挂上，包括与"自动行�
 ⚠️ 注意 `Priority` 的数值方向：`First = 800`、`Last = 0`，**值大者先跑**。
 用常量名（`Priority.First` / `Priority.Last`）而不是字面量。
 
-当前 5 处需要钉顺序的重叠，全部已钉死（加新功能前先跟上游的补丁目标对一遍）。
+当前 7 处需要钉顺序的重叠，全部已钉死（加新功能前先跟上游的补丁目标对一遍）。DT_Tools 2.0.0.4 实测 **15 处重叠、0 FAIL**（复核命令：`pwsh -File check-upstream-overlap.ps1 -Upstream <2.0 检出>/DT_Tools`）。
 
 ⚠️ **换上游版本后必须重跑检查器，别只看本文档的行数**：2026-10-07 上游 v1.0.9.0 那次重构
 就新增了 `StartPick` 这一处（还是三方重叠），同时把两处**一直存在却被别名漏报**的重叠暴露出来。
@@ -395,6 +406,8 @@ PatchAll —— 该段里**所有**钩子都不会挂上，包括与"自动行�
 | `TimeManager.PushSurvivalJob` | `CorpseWait` | `CorpseReport` | **`Last`** | 本钩子是 void、只能改参数，必须**最后**赋值才能压过上游 |
 | `Define.get_LOBBY_MIN_PLAYER` | `LobbyMinPlayers` | `SoloPlay` | `First` | 同第一行 |
 | `GameRoom.StartPick` | `SpectatorJoin`（**bool Prefix 整替原方法**） | `Dummy`（选角前生成假人） | `First + 1` | 上游整替体自己重写了一份"清空存活池 → 分配颜色 → 随机黑方"；假人必须**赶在它那份列表快照之前**入场，否则落在 `AlivePlayers` 之外，本局等于没生成 |
+| `HostPacketHandler.Handle_C_CHAT_MESSAGE` | `ForceRinPick.Patch.Chat`（2.0 新增） | `Command` | `First` | 上游按聊天口令选角；本模块要先认 hs_* 命令。模式关时钩子第一句 `Bypass` 让路 |
+| `GameSkill.UseSkill` | 2.0 新增的同点 Prefix | `Jeremy` | `First` | 同上：模式开启时先判本模块的压制窗口，模式关闭时 `Bypass` 让路 |
 
 复核方法（仓库内自带检查器，跟着代码走、不进 `.tmps/`）：
 

@@ -140,6 +140,12 @@ namespace HideAndSeek.Console
         [HarmonyPatch]
         internal static class ExecuteHook
         {
+            /// <summary>上游命令执行的唯一收口。</summary>
+            /// <remarks>
+            /// DT_Tools 2.0.0.0 起该方法由 <c>public</c> 降为 <c>internal</c>：<c>AccessTools.Method</c>
+            /// 默认含 <c>BindingFlags.NonPublic</c>，Harmony 也能挂非公开方法 ⇒ 桥不受影响。
+            /// 这条注释是给后人看的（避免误判成"方法没了"）。
+            /// </remarks>
             private static MethodBase Target()
                 => AccessTools.Method(DtConsoleType(), "ExecuteCommandText", new[] { typeof(string) });
 
