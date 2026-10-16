@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using BepInEx;
@@ -40,6 +41,15 @@ namespace HideAndSeek.Core
         /// 那一版起 <c>Plugin</c> 不再持有 Instance / Config 属性，配置统一挂在 Engine 上。
         /// </summary>
         public const string DtEngineTypeName = "DT_Tools.Core.Engine";
+
+        /// <summary>功能标签位（DT_Tools 2.0.0.0 起取代目录分类）。</summary>
+        public const string DtFeatureTagTypeName = "DT_Tools.Core.Attributes.FeatureTag";
+
+        /// <summary>标签字典：给出分组、中文名与说明。</summary>
+        public const string DtFeatureTagCatalogTypeName = "DT_Tools.Core.Attributes.FeatureTagCatalog";
+
+        /// <summary>功能作用面枚举（配置页据此过滤 Client / Host / Both）。</summary>
+        public const string DtFeatureSideTypeName = "DT_Tools.Core.Attributes.FeatureSide";
 
         /// <summary>
         /// 镜像目标：DT_Tools 的 ConfigFile。镜像成功后赋值 —— 写盘隔离（<see cref="DtMirrorGuard"/>）
@@ -115,6 +125,109 @@ namespace HideAndSeek.Core
         }
 
         /// <summary>
+        /// 把本模块的「捉迷藏」标签注入 DT_Tools 2.0 的标签体系。
+        /// </summary>
+        /// <remarks>
+        /// 三步，全部反射（本模块对 DT_Tools 无编译期依赖）：
+        ///   1. 替换 <c>FeatureTagCatalog.Entries</c>（<c>public static readonly IReadOnlyList&lt;Entry&gt;</c>，
+        ///      底层是定长数组）为「上游原条目 + 本模块一条」。<c>Names()</c> 与 <c>/api/config/tags</c>
+        ///      每次都遍历该字段 ⇒ 替换后前端自动认识新标签，零改动 DT_Tools、也零改动前端。
+        ///   2. 给每个段写 <c>Engine.SectionTags</c>（段 → 标签位）。
+        ///   3. 写 <c>Engine.SectionSides</c>（Both）：不写时 <c>SideOfSection</c> 返回 null，
+        ///      配置页的「作用面」过滤拿不到值。SectionGroups 不写 —— 上游对功能段默认按 "feature" 归类。
+        ///
+        /// 位选择 <b>bit 63</b>（<c>1UL &lt;&lt; 63</c>）：上游已用 0–37，且约定「新增标签只追加到末尾」，
+        /// 即从 38 起顺序增长 ⇒ 最高的 63 最晚被占用（要上游再新增 26 个标签才碰到）。
+        /// ⚠ 63 仍属上游预留区；真撞位时上游的 <c>Validate</c> **不报错**（它只拒绝"未定义的位"），
+        /// 表现是两个功能串标签 ⇒ 每次跟进 DT_Tools 版本时核对 FeatureTagCatalog 的条目数。
+        /// </remarks>
+        /// <param name="log">插件日志。</param>
+        /// <param name="mine">已镜像进 DT_Tools 的配置条目，用来取出本模块的全部段名。</param>
+        /// <returns>认出是 DT_Tools 2.0 并已处理返回 true；不是 2.0 返回 false（交给旧的分类路径）。</returns>
+        private static bool TryRegisterTag(
+            ManualLogSource log, Dictionary<ConfigDefinition, ConfigEntryBase> mine)
+        {
+            const string TagKey = "HideAndSeek";
+            const string TagGroup = "捉迷藏";
+            const string TagLabel = "捉迷藏";
+            const string TagDescription = "捉迷藏玩法的全部设置（本模块自带，与 DT_Tools 无关）";
+            const ulong TagBit = 1UL << 63;
+
+            try
+            {
+                var catalog = AccessTools.TypeByName(DtFeatureTagCatalogTypeName);
+                var tagEnum = AccessTools.TypeByName(DtFeatureTagTypeName);
+                var engine = AccessTools.TypeByName(DtEngineTypeName);
+                if (catalog == null || tagEnum == null || engine == null)
+                    return false;   // 不是 2.0（≤1.x 没有标签体系）⇒ 交回旧路径
+
+                var entryType = AccessTools.TypeByName(DtFeatureTagCatalogTypeName + "+Entry");
+                var entriesField = AccessTools.Field(catalog, "Entries");
+                var entries = entriesField?.GetValue(null) as Array;
+                if (entryType == null || entries == null)
+                    return false;
+
+                object tagValue = Enum.ToObject(tagEnum, TagBit);
+
+                // 幂等：热重载时 Entries 里可能已有我们那条，只补段登记、不重复追加
+                bool injected = false;
+                var keyField = AccessTools.Field(entryType, "Key");
+                foreach (var existing in entries)
+                {
+                    if (existing != null && (string)keyField.GetValue(existing) == TagKey)
+                    {
+                        injected = true;
+                        break;
+                    }
+                }
+                if (!injected)
+                {
+                    var grown = Array.CreateInstance(entryType, entries.Length + 1);
+                    Array.Copy(entries, grown, entries.Length);
+                    object entry = Activator.CreateInstance(entryType);
+                    AccessTools.Field(entryType, "Tag").SetValue(entry, tagValue);
+                    keyField.SetValue(entry, TagKey);
+                    AccessTools.Field(entryType, "Group").SetValue(entry, TagGroup);
+                    AccessTools.Field(entryType, "Label").SetValue(entry, TagLabel);
+                    AccessTools.Field(entryType, "Description").SetValue(entry, TagDescription);
+                    grown.SetValue(entry, entries.Length);
+                    entriesField.SetValue(null, grown);
+                }
+
+                var tags = AccessTools.Field(engine, "SectionTags")?.GetValue(null) as IDictionary;
+                var sides = AccessTools.Field(engine, "SectionSides")?.GetValue(null) as IDictionary;
+                if (tags == null)
+                    return false;
+
+                object sideBoth = null;
+                var sideEnum = AccessTools.TypeByName(DtFeatureSideTypeName);
+                if (sideEnum != null && sides != null)
+                    sideBoth = Enum.Parse(sideEnum, "Both");
+
+                int added = 0;
+                foreach (var key in mine.Keys)
+                {
+                    string section = key.Section;
+                    if (tags.Contains(section))
+                        continue;   // 上游自己的段名不抢（防御性判断）
+                    tags[section] = tagValue;
+                    if (sides != null && sideBoth != null)
+                        sides[section] = sideBoth;
+                    added++;
+                }
+
+                string tail = injected ? "标签条目已存在，只补了段登记" : $"新增标签位 0x{TagBit:X}";
+                log.LogInfo($"[HS] 已把 {added} 个配置段登记进 DT_Tools 的「{TagLabel}」标签（{tail}）。");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // 已确认是 2.0（上面取到了 Entries / SectionTags）⇒ 失败只降级，不回落旧路径再刷一条过时告警
+                log.LogWarning($"[HS] 注入「{TagLabel}」标签失败：{ex.Message}（配置仍可用，只是不带标签）。");
+                return true;
+            }
+        }
+        /// <summary>
         /// 把本模块的配置段登记进 DT_Tools 的分类表，让 DT CONFIG 页把它们收进一个
         /// **【捉迷藏】** 文件夹，而不是散落在「其他」里。
         ///
@@ -130,6 +243,10 @@ namespace HideAndSeek.Core
         private static void TryRegisterCategory(
             ManualLogSource log, Dictionary<ConfigDefinition, ConfigEntryBase> mine)
         {
+            // DT_Tools 2.0.0.0 起分类体系改为标签，SectionCategories 字典已删除
+            if (TryRegisterTag(log, mine))
+                return;
+
             const string CategoryName = "捉迷藏";
 
             try
