@@ -357,6 +357,9 @@ namespace HideAndSeek.Features.Combat
         [HarmonyPatch(typeof(GameSkill), "UseSkill")]
         internal static class UseSkillHook
         {
+            // 与 DT_Tools 2.0 的同点 Prefix 共存（见 AGENTS §9）：模式开启时本模块先判自己的压制窗口，
+            // 模式关闭时第一句 Bypass 直接让路。
+            [HarmonyPriority(Priority.First)]
             [HarmonyPrefix]
             private static bool Prefix(GameSkill __instance)
             {
