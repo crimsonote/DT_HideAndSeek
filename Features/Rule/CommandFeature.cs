@@ -464,6 +464,9 @@ namespace HideAndSeek.Features.Rule
         [HarmonyPatch(typeof(HostPacketHandler), "Handle_C_CHAT_MESSAGE")]
         internal static class ChatMessageHook
         {
+            // 与 DT_Tools 2.0 的 ForceRinPick.Patch.Chat（聊天口令选角）同点，两边都是 Prefix。
+            // 取向同 AGENTS §9：模式开启时本模块先跑（先认 hs_* 命令），模式关闭时第一句 Bypass 让路。
+            [HarmonyPriority(Priority.First)]
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session, Packet packet)
             {
