@@ -303,6 +303,46 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
   平铺时自动关粒子，切换靠顶栏标签与 Dock（标签页式）。
   ⚠️ DT_Tools 一更新，这份 fork 要 rebase，否则前端会退回未改的版本。
 
+#### ⚠️ DT_Tools 2.0.0.4 实测：桥接点的现状（2026-10-18）
+
+> 上文写于上游 v1.0.9.0 时期。游戏内的 DT_Tools 已经到 **2.0.0.4**，逐条核对结果如下。
+> 核对方式：用 BepInEx 自带的 Mono.Cecil 读 `BepInEx\plugins\DT_Tools\DT_Tools.dll`
+> 的类型与成员（脚本见本节末），**不是**照抄上游文档。
+
+| 桥接点 | v1.0.9.0（上文口径） | 2.0.0.4 实测 | 影响 |
+| --- | --- | --- | --- |
+| 配置镜像出口 | `DT_Tools.Core.Engine.Config` | ✅ **不变** | 无需改 |
+| CONFIG 页数据源 | `ConfigService.List(Engine.Config)` | ✅ **不变**（仍遍历 ConfigFile 全部条目） | 无需改 |
+| 命令执行口 | `public WebConsole.WebConsole.ExecuteCommandText(string)` | ⚠️ **类名与签名都没变，但已降为 `private static`** | **命令桥仍然可行**，只是挂载必须用字符串名（`[HarmonyPatch(typeof(WebConsole), "ExecuteCommandText")]`），不能再用 `nameof` |
+| 命令列表缓存 | `CommandsApi.HandleList` + `_cachedJson` | ❌ **`DT_Tools.WebConsole.CommandsApi` 类已不存在** | `hs_*` 要出现在上游的命令列表/补全里，做法需重查（**未做**） |
+| 分类登记 | `Engine.SectionCategories` | ❌ **该字段已删除**。新增：`SectionGroups`（`Dictionary<string,string>`，段名→组）、`SectionTags`（→`FeatureTag`）、`SectionSides`（→`FeatureSide`） | 分类被「组 + 标签 + 作用面」三元组取代，`TryRegisterCategory` 要改写才有意义（**未做**） |
+| 写盘隔离 | `ConfigFile.Save` Prefix | 未复核 | —— |
+
+**由此得出的三条结论**：
+
+1. **配置镜像**是 2.0 下唯一**零改动**仍然成立的集成点 —— 本模块与 ClueDetail 都在用。
+2. **命令桥**：挂点还在（只降了可见性），所以"旧写法彻底失效"这句**只对旧版成立**；
+   但**列表侧**的做法要重查 —— 在查清之前，`hs_*` 最多只能"执行得了"，
+   不会出现在 DT 的命令列表与补全里。
+3. **分类登记**：旧字段没了，替代品是三个私有静态字典；是否跟进取决于上游前端现在的
+   归组口径（**未复核**）。在那之前，本模块的段会落在上游的默认归组里。
+
+核对脚本（一次性，读 DLL 的类型与成员；注意 Cecil 的字段是 `.Fields`、方法参数是 `.Parameters`）：
+
+```powershell
+$dll = 'C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick\BepInEx\plugins\DT_Tools\DT_Tools.dll'
+[void][System.Reflection.Assembly]::LoadFrom('C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick\BepInEx\core\Mono.Cecil.dll')
+$asm = [Mono.Cecil.AssemblyDefinition]::ReadAssembly($dll)
+$stack = New-Object System.Collections.Stack
+$asm.MainModule.Types | ForEach-Object { $stack.Push($_) }
+$all = @{}
+while ($stack.Count -gt 0) { $t = $stack.Pop(); $all[$t.FullName] = $t; $t.NestedTypes | ForEach-Object { $stack.Push($_) } }
+# Engine 的字段与属性（看 SectionCategories 有没有、替代品叫什么）
+$e = $all['DT_Tools.Core.Engine']; $e.Fields | ForEach-Object { $_.Name }; $e.Properties | ForEach-Object { $_.Name }
+# WebConsole 的**全部**方法（含非 public —— 只筛 public 会漏掉降级后的 ExecuteCommandText）
+$all['DT_Tools.WebConsole.WebConsole'].Methods | Where-Object { -not $_.IsSpecialName } |
+  ForEach-Object { "{0}{1}({2})" -f ($_.IsPublic ? '+' : '-'), $_.Name, (($_.Parameters | ForEach-Object { $_.ParameterType.Name }) -join ',') }
+```
 ### 8. 段开关会连带跳过该段的所有补丁（排查时先看这个）
 
 `[PatchFeature]` 的 `defaultEnabled: false` 意味着 PatchLoader 对**整个类**跳过
