@@ -303,31 +303,37 @@ Player 对象已 despawn，走到跟前也看不见。所以 AOI 必须：
   平铺时自动关粒子，切换靠顶栏标签与 Dock（标签页式）。
   ⚠️ DT_Tools 一更新，这份 fork 要 rebase，否则前端会退回未改的版本。
 
-#### ⚠️ DT_Tools 2.0.0.4 实测：桥接点的现状（2026-10-18）
+#### ⚠️ DT_Tools 2.0.0.4 实测：只有一处真的失效（2026-10-18）
 
-> 上文写于上游 v1.0.9.0 时期。游戏内的 DT_Tools 已经到 **2.0.0.4**，逐条核对结果如下。
-> 核对方式：用 BepInEx 自带的 Mono.Cecil 读 `BepInEx\plugins\DT_Tools\DT_Tools.dll`
-> 的类型与成员（脚本见本节末），**不是**照抄上游文档。
+> 上文写于 DT_Tools v1.0.9.0 时期；游戏内已到 **2.0.0.4**。核对方式：
+> ① Mono.Cecil 读 `BepInEx\plugins\DT_Tools\DT_Tools.dll` 的类型与成员；
+> ② **与 `Console\ConsoleBridge.cs` / `Core\DtBridge.cs` 里实际引用的类型名常量逐条对照**。
+> 第 ② 步不能省 —— 本模块的桥接全靠**字符串**找类型，DLL 扫描出"类不在"往往只是**名字变了**。
 
-| 桥接点 | v1.0.9.0（上文口径） | 2.0.0.4 实测 | 影响 |
-| --- | --- | --- | --- |
-| 配置镜像出口 | `DT_Tools.Core.Engine.Config` | ✅ **不变** | 无需改 |
-| CONFIG 页数据源 | `ConfigService.List(Engine.Config)` | ✅ **不变**（仍遍历 ConfigFile 全部条目） | 无需改 |
-| 命令执行口 | `public WebConsole.WebConsole.ExecuteCommandText(string)` | ⚠️ **类名与签名都没变，但已降为 `private static`** | **命令桥仍然可行**，只是挂载必须用字符串名（`[HarmonyPatch(typeof(WebConsole), "ExecuteCommandText")]`），不能再用 `nameof` |
-| 命令列表缓存 | `CommandsApi.HandleList` + `_cachedJson` | ❌ **`DT_Tools.WebConsole.CommandsApi` 类已不存在** | `hs_*` 要出现在上游的命令列表/补全里，做法需重查（**未做**） |
-| 分类登记 | `Engine.SectionCategories` | ❌ **该字段已删除**。新增：`SectionGroups`（`Dictionary<string,string>`，段名→组）、`SectionTags`（→`FeatureTag`）、`SectionSides`（→`FeatureSide`） | 分类被「组 + 标签 + 作用面」三元组取代，`TryRegisterCategory` 要改写才有意义（**未做**） |
-| 写盘隔离 | `ConfigFile.Save` Prefix | 未复核 | —— |
+| 桥接点 | 2.0.0.4 实测 | 结论 |
+| --- | --- | --- |
+| 配置镜像 `Engine.Config` / `ConfigService.List` | 均在，语义未变 | ✅ 正常 |
+| 命令执行 `WebConsole.ExecuteCommandText(string)` | 类名与签名都没变，但**降为 `private static`** | ✅ 正常 —— 本模块用 `AccessTools.Method(type, "ExecuteCommandText", …)` 按字符串名挂，不看可见性 |
+| 命令列表 `CommandsApi._cachedJson` | 类**移到了 `DT_Tools.WebConsole.Api.CommandsApi`**（不再是 `DT_Tools.WebConsole.CommandsApi`），`_cachedJson` 字段仍在 | ✅ 正常 —— 常量 `DtCommandsApiTypeName` 写的**已经**是新全名 |
+| 分类登记 `Engine.SectionCategories` | ❌ **字段已删除**（Engine 现存 `Sections` / `SectionGroups` / `SectionTags` / `SectionSides` / `EnabledEntries` / `ModuleInfos`） | ❌ **失效**：`TryRegisterCategory` 取不到字段，只记一行 Warning，本模块的段落回「其他」 |
 
-**由此得出的三条结论**：
+**要修的只有分类登记一处**：旧字段被「组 + 标签 + 作用面」三元组取代，
+`SectionGroups`（`Dictionary<string,string>`，段名→组名）是最接近的替代品，
+但**上游前端的归组口径尚未复核** —— 改成填 `SectionGroups` 能否恢复【捉迷藏】文件夹，需要实测。
+其余三处**不要动**：命令桥（含列表与补全）在 2.0 下工作正常。
 
-1. **配置镜像**是 2.0 下唯一**零改动**仍然成立的集成点 —— 本模块与 ClueDetail 都在用。
-2. **命令桥**：挂点还在（只降了可见性），所以"旧写法彻底失效"这句**只对旧版成立**；
-   但**列表侧**的做法要重查 —— 在查清之前，`hs_*` 最多只能"执行得了"，
-   不会出现在 DT 的命令列表与补全里。
-3. **分类登记**：旧字段没了，替代品是三个私有静态字典；是否跟进取决于上游前端现在的
-   归组口径（**未复核**）。在那之前，本模块的段会落在上游的默认归组里。
+**三个查错教训（本次实际踩了，写下来免得后人重踩）**：
 
-核对脚本（一次性，读 DLL 的类型与成员；注意 Cecil 的字段是 `.Fields`、方法参数是 `.Parameters`）：
+1. **查类型不要用全名精确匹配**。2.0 把整个 API 层挪进了 `DT_Tools.WebConsole.Api.*`，
+   用 `$all['DT_Tools.WebConsole.CommandsApi']` 这种精确查会得到**假阴性**。
+   正确做法是**后缀匹配**（`$_.EndsWith('CommandsApi')`），或按关键词列出全部候选再看。
+2. **判断成员变没变，不要过滤可见性**。`Where-Object { $_.IsPublic }` 会把**降级成 `private`**
+   的成员藏起来 —— 我因此误判 `ExecuteCommandText` "已不存在"（实际只是 public → private）。
+   要么不过滤，要么显式打印 `+`/`-` 前缀。
+3. **终极依据是调用方代码里的字符串常量**，不是 DLL 扫描结论。`ConsoleBridge.cs` 顶部那 7 个
+   `Dt*TypeName` 常量就是**实际的契约**：扫描出"类型不在"时，先核对常量写的是什么，再下结论。
+
+核对脚本（一次性；注意 Cecil 的字段是 `.Fields`、方法参数是 `.Parameters`）：
 
 ```powershell
 $dll = 'C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick\BepInEx\plugins\DT_Tools\DT_Tools.dll'
@@ -337,9 +343,11 @@ $stack = New-Object System.Collections.Stack
 $asm.MainModule.Types | ForEach-Object { $stack.Push($_) }
 $all = @{}
 while ($stack.Count -gt 0) { $t = $stack.Pop(); $all[$t.FullName] = $t; $t.NestedTypes | ForEach-Object { $stack.Push($_) } }
-# Engine 的字段与属性（看 SectionCategories 有没有、替代品叫什么）
-$e = $all['DT_Tools.Core.Engine']; $e.Fields | ForEach-Object { $_.Name }; $e.Properties | ForEach-Object { $_.Name }
-# WebConsole 的**全部**方法（含非 public —— 只筛 public 会漏掉降级后的 ExecuteCommandText）
+# ① 后缀匹配找类型（别用全名精确查）
+$all.Keys | Where-Object { $_.EndsWith('CommandsApi') -or $_.EndsWith('WebConsole') } | Sort-Object
+# ② Engine 的字段全列（不筛可见性，看 SectionCategories 有没有、替代品叫什么）
+$all['DT_Tools.Core.Engine'].Fields | ForEach-Object { $_.Name }
+# ③ 方法带可见性前缀（private 的也要看得见）
 $all['DT_Tools.WebConsole.WebConsole'].Methods | Where-Object { -not $_.IsSpecialName } |
   ForEach-Object { "{0}{1}({2})" -f ($_.IsPublic ? '+' : '-'), $_.Name, (($_.Parameters | ForEach-Object { $_.ParameterType.Name }) -join ',') }
 ```
