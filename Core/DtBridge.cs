@@ -195,6 +195,24 @@ namespace HideAndSeek.Core
                     return true;
                 }
 
+                // 目录完整性诊断：AllBits 声明了 N 个标签，Entries 就该有 N 条。少于 N 说明
+                // 有模块在启动早期读到 null、把整个目录覆盖成了它自己那一条（见 PrimeTagCatalog）。
+                int catalogCount = 0;
+                foreach (var entryItem in entries)
+                    catalogCount++;
+
+                ulong bitsDeclared = allBitsField?.GetValue(null) is ulong knownBits ? knownBits : 0UL;
+                int declaredTags = 0;
+                for (ulong v = bitsDeclared; v != 0; v &= v - 1)
+                    declaredTags++;
+
+                if (declaredTags > 0 && catalogCount < declaredTags)
+                {
+                    log.LogWarning(
+                        $"[HS] DT_Tools 的标签目录只有 {catalogCount} 条，但 AllBits 声明了 {declaredTags} 个标签 —— " +
+                        "可能有模块在启动早期把它覆盖过（Mono 反射读静态字段不触发静态构造）。" +
+                        "本模块仍会追加自己的标签，但上游标签的显示名会缺失。");
+                }
                 var keyField = entryType.GetField("Key");
                 var tagField = entryType.GetField("Tag");
 
@@ -360,6 +378,34 @@ namespace HideAndSeek.Core
             }
         }
 
+        /// <summary>
+        /// 预初始化 DT_Tools 的标签目录（<c>FeatureTagCatalog</c> 的静态构造）。
+        /// </summary>
+        /// <remarks>
+        /// 必须在本插件的 <c>Awake</c> 里调用 —— 那早于所有插件的 <c>Start</c>。
+        /// <para>
+        /// 为什么需要：Unity Mono 的 <see cref="System.Reflection.FieldInfo.GetValue(object)"/>
+        /// 不会触发 beforefieldinit 类型的静态构造，所以"谁先读谁拿到 null"。
+        /// 拿到 null 的模块如果照抄"旧条目 + 自己一条"再写回，就会把上游的整个目录覆盖掉
+        /// （实测：CONFIG 页的标签栏只剩一两个标签，其余全部失去显示名）。
+        /// 这里提前跑一次构造，之后任何模块读到的都是完整目录。
+        /// </para>
+        /// </remarks>
+        public static void PrimeTagCatalog()
+        {
+            try
+            {
+                var catalog = AccessTools.TypeByName(DtFeatureTagCatalogTypeName);
+                if (catalog == null)
+                    return;   // 没装 DT_Tools，或不是 2.0（没有标签目录）
+
+                System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(catalog.TypeHandle);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[HS] 预初始化 DT_Tools 标签目录失败：{ex.Message}");
+            }
+        }
         /// <summary>
         /// 把本模块镜像进 <paramref name="file"/> 的条目**临时摘出**（写盘隔离用，见 <see cref="DtMirrorGuard"/>）。
         /// 只对镜像目标本身生效；返回 null 表示"这次 Save 与本模块无关，不用管"。

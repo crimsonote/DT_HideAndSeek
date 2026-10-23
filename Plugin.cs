@@ -30,6 +30,12 @@ namespace HideAndSeek
         {
             Instance = this;
             Log = Logger;
+
+            // 抢在其它模块的 Start 之前，把 DT_Tools 的标签目录静态构造跑起来。
+            // Unity Mono 的 FieldInfo.GetValue 不触发 beforefieldinit 类型的静态构造：先读到 null
+            // 的模块会把整个 Entries（上游 39 条）覆盖成它自己那一条，于是 CONFIG 页的标签栏
+            // 只剩一两个标签。这里提前建好，别人读到的就是完整目录。
+            DtBridge.PrimeTagCatalog();
         }
 
         private void Start()
