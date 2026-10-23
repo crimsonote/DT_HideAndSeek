@@ -151,54 +151,115 @@ namespace HideAndSeek.Core
             const string TagGroup = "捉迷藏";
             const string TagLabel = "捉迷藏";
             const string TagDescription = "捉迷藏玩法的全部设置（本模块自带，与 DT_Tools 无关）";
-            const ulong TagBit = 1UL << 63;
+
+            var catalog = AccessTools.TypeByName(DtFeatureTagCatalogTypeName);
+            var tagEnum = AccessTools.TypeByName(DtFeatureTagTypeName);
+            var engine = AccessTools.TypeByName(DtEngineTypeName);
+            if (catalog == null || tagEnum == null || engine == null)
+                return false;   // 不是 2.0（≤1.x 没有标签体系）⇒ 交回旧路径
 
             try
             {
-                var catalog = AccessTools.TypeByName(DtFeatureTagCatalogTypeName);
-                var tagEnum = AccessTools.TypeByName(DtFeatureTagTypeName);
-                var engine = AccessTools.TypeByName(DtEngineTypeName);
-                if (catalog == null || tagEnum == null || engine == null)
-                    return false;   // 不是 2.0（≤1.x 没有标签体系）⇒ 交回旧路径
+                // ⚠ 2026-10-23：这些目标**一律用 Type.GetNestedType / GetField 取**，不要走
+                // AccessTools.TypeByName("…+Entry") / AccessTools.Field —— 实测 DT_Tools 2.0.0.6
+                // 上那条路会让本方法静默返回 false（不抛异常、也不打 Harmony 警告），于是旧分类
+                // 路径接管并刷出"取不到 SectionCategories"，表现是 CONFIG 页没有【捉迷藏】标签。
+                var entryType = catalog.GetNestedType("Entry", BindingFlags.Public);
+                var entriesField = catalog.GetField("Entries", BindingFlags.Public | BindingFlags.Static);
+                var allBitsField = catalog.GetField("AllBits", BindingFlags.Public | BindingFlags.Static);
+                var tagsField = engine.GetField(
+                    "SectionTags", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
+                var sidesField = engine.GetField(
+                    "SectionSides", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
 
-                var entryType = AccessTools.TypeByName(DtFeatureTagCatalogTypeName + "+Entry");
-                var entriesField = AccessTools.Field(catalog, "Entries");
-                var entries = entriesField?.GetValue(null) as Array;
-                if (entryType == null || entries == null)
-                    return false;
+                if (entryType == null || entriesField == null || tagsField == null)
+                {
+                    log.LogWarning(
+                        $"[HS] 未能登记「{TagLabel}」标签：DT_Tools 的标签结构与预期不符" +
+                        $"（Entry={entryType != null}，Entries={entriesField != null}，SectionTags={tagsField != null}）。" +
+                        "配置仍可在 CONFIG 页修改，只是不带标签。");
+                    return true;
+                }
 
-                object tagValue = Enum.ToObject(tagEnum, TagBit);
+                if (!(entriesField.GetValue(null) is Array entries))
+                {
+                    log.LogWarning(
+                        $"[HS] 未能登记「{TagLabel}」标签：FeatureTagCatalog.Entries 不是数组" +
+                        $"（实际 {entriesField.FieldType.Name}）。");
+                    return true;
+                }
 
-                // 幂等：热重载时 Entries 里可能已有我们那条，只补段登记、不重复追加
+                var keyField = entryType.GetField("Key");
+                var tagField = entryType.GetField("Tag");
+
+                // 幂等：热重载时 Entries 里可能已有本模块那一条 ⇒ 沿用它的位，只补段登记
                 bool injected = false;
-                var keyField = AccessTools.Field(entryType, "Key");
+                object tagValue = null;
                 foreach (var existing in entries)
                 {
-                    if (existing != null && (string)keyField.GetValue(existing) == TagKey)
-                    {
-                        injected = true;
-                        break;
-                    }
+                    if (existing == null || keyField == null)
+                        continue;
+                    if ((string)keyField.GetValue(existing) != TagKey)
+                        continue;
+
+                    injected = true;
+                    tagValue = tagField?.GetValue(existing);
+                    break;
                 }
+
+                if (injected && tagValue == null)
+                {
+                    log.LogWarning($"[HS] 未能登记「{TagLabel}」标签：已有同名条目但取不到 Tag 位。");
+                    return true;
+                }
+
+                ulong tagBit = 0;
                 if (!injected)
                 {
+                    // 位选择：上游约定「新增标签只追加到末尾」（2.0.0.6 已用到 1<<38），
+                    // 从最高位往下找第一个空闲位。已知 bit 39 被 ClueDetail 硬编码占用，
+                    // 所以只在 63..40 段里找，不会与它撞位。
+                    ulong used = allBitsField?.GetValue(null) is ulong bits ? bits : 0UL;
+                    tagBit = 1UL << 63;
+                    while (tagBit != 0 && (used & tagBit) != 0)
+                        tagBit >>= 1;
+                    if (tagBit == 0)
+                    {
+                        log.LogWarning(
+                            $"[HS] 未能登记「{TagLabel}」标签：DT_Tools 的标签位已用满（AllBits=0x{used:X}）。");
+                        return true;
+                    }
+
+                    tagValue = Enum.ToObject(tagEnum, tagBit);
+
                     var grown = Array.CreateInstance(entryType, entries.Length + 1);
                     Array.Copy(entries, grown, entries.Length);
                     object entry = Activator.CreateInstance(entryType);
-                    AccessTools.Field(entryType, "Tag").SetValue(entry, tagValue);
-                    keyField.SetValue(entry, TagKey);
-                    AccessTools.Field(entryType, "Group").SetValue(entry, TagGroup);
-                    AccessTools.Field(entryType, "Label").SetValue(entry, TagLabel);
-                    AccessTools.Field(entryType, "Description").SetValue(entry, TagDescription);
+                    tagField?.SetValue(entry, tagValue);
+                    keyField?.SetValue(entry, TagKey);
+                    entryType.GetField("Group")?.SetValue(entry, TagGroup);
+                    entryType.GetField("Label")?.SetValue(entry, TagLabel);
+                    entryType.GetField("Description")?.SetValue(entry, TagDescription);
                     grown.SetValue(entry, entries.Length);
                     entriesField.SetValue(null, grown);
+
+                    // AllBits 是上游 Validate 的"已定义标签"判据：不并进去，
+                    // 将来上游若对全部段做校验，本模块的位会被当成非法位
+                    if (allBitsField != null)
+                        allBitsField.SetValue(null, used | tagBit);
                 }
 
-                var tags = AccessTools.Field(engine, "SectionTags")?.GetValue(null) as IDictionary;
-                var sides = AccessTools.Field(engine, "SectionSides")?.GetValue(null) as IDictionary;
-                if (tags == null)
-                    return false;
+                if (!(tagsField.GetValue(null) is IDictionary tags))
+                {
+                    log.LogWarning(
+                        $"[HS] 未能登记「{TagLabel}」标签：Engine.SectionTags 不是字典" +
+                        $"（实际 {tagsField.FieldType.Name}）。");
+                    return true;
+                }
 
+                // 作用面写 Both：本模块的段大多只在一侧生效，但 Both 不会把段从任何筛选里藏掉；
+                // 逐段精确值需要读 [PatchFeature].Side，等确实要用"作用面"筛选再补。
+                var sides = sidesField?.GetValue(null) as IDictionary;
                 object sideBoth = null;
                 var sideEnum = AccessTools.TypeByName(DtFeatureSideTypeName);
                 if (sideEnum != null && sides != null)
@@ -210,13 +271,14 @@ namespace HideAndSeek.Core
                     string section = key.Section;
                     if (tags.Contains(section))
                         continue;   // 上游自己的段名不抢（防御性判断）
+
                     tags[section] = tagValue;
-                    if (sides != null && sideBoth != null)
+                    if (sideBoth != null)
                         sides[section] = sideBoth;
                     added++;
                 }
 
-                string tail = injected ? "标签条目已存在，只补了段登记" : $"新增标签位 0x{TagBit:X}";
+                string tail = injected ? "标签条目已存在，只补了段登记" : $"新增标签位 0x{tagBit:X}";
                 log.LogInfo($"[HS] 已把 {added} 个配置段登记进 DT_Tools 的「{TagLabel}」标签（{tail}）。");
                 return true;
             }
