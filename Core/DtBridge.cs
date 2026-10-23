@@ -160,10 +160,12 @@ namespace HideAndSeek.Core
 
             try
             {
-                // ⚠ 2026-10-23：这些目标**一律用 Type.GetNestedType / GetField 取**，不要走
-                // AccessTools.TypeByName("…+Entry") / AccessTools.Field —— 实测 DT_Tools 2.0.0.6
-                // 上那条路会让本方法静默返回 false（不抛异常、也不打 Harmony 警告），于是旧分类
-                // 路径接管并刷出"取不到 SectionCategories"，表现是 CONFIG 页没有【捉迷藏】标签。
+                // ⚠ 2026-10-23：反射目标一律用 Type.GetNestedType / GetField 取，不要走
+                // AccessTools.TypeByName("…+Entry") / AccessTools.Field。
+                // 更要命的一条：**Mono 的 FieldInfo.GetValue 不会触发 beforefieldinit 类型的静态构造**。
+                // 实测（0.1.18 + Unity Mono）首次读 FeatureTagCatalog.Entries 得到 null ⇒ 旧代码
+                // `as Array` 得到 null 后静默 return false ⇒ 旧分类路径接管并刷出"取不到 SectionCategories"。
+                // 必须显式 RunClassConstructor 之后再读。
                 var entryType = catalog.GetNestedType("Entry", BindingFlags.Public);
                 var entriesField = catalog.GetField("Entries", BindingFlags.Public | BindingFlags.Static);
                 var allBitsField = catalog.GetField("AllBits", BindingFlags.Public | BindingFlags.Static);
@@ -181,30 +183,40 @@ namespace HideAndSeek.Core
                     return true;
                 }
 
-                if (!(entriesField.GetValue(null) is Array entries))
+                System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(catalog.TypeHandle);
+                System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(engine.TypeHandle);
+
+                object rawEntries = entriesField.GetValue(null);
+                if (!(rawEntries is IEnumerable entries))
                 {
                     log.LogWarning(
-                        $"[HS] 未能登记「{TagLabel}」标签：FeatureTagCatalog.Entries 不是数组" +
-                        $"（实际 {entriesField.FieldType.Name}）。");
+                        $"[HS] 未能登记「{TagLabel}」标签：FeatureTagCatalog.Entries 不可枚举" +
+                        $"（实际 {(rawEntries == null ? "null" : rawEntries.GetType().FullName)}）。");
                     return true;
                 }
 
                 var keyField = entryType.GetField("Key");
                 var tagField = entryType.GetField("Tag");
 
-                // 幂等：热重载时 Entries 里可能已有本模块那一条 ⇒ 沿用它的位，只补段登记
+                // 幂等：热重载时 Entries 里可能已有本模块那一条 ⇒ 沿用它的位，只补段登记。
+                // 上游字段声明是 IReadOnlyList<Entry>，运行期才是 Entry[]，所以先收进 List 再用。
+                var existingEntries = new List<object>();
                 bool injected = false;
                 object tagValue = null;
                 foreach (var existing in entries)
                 {
-                    if (existing == null || keyField == null)
+                    if (existing == null)
+                        continue;
+
+                    existingEntries.Add(existing);
+
+                    if (injected || keyField == null)
                         continue;
                     if ((string)keyField.GetValue(existing) != TagKey)
                         continue;
 
                     injected = true;
                     tagValue = tagField?.GetValue(existing);
-                    break;
                 }
 
                 if (injected && tagValue == null)
@@ -232,15 +244,19 @@ namespace HideAndSeek.Core
 
                     tagValue = Enum.ToObject(tagEnum, tagBit);
 
-                    var grown = Array.CreateInstance(entryType, entries.Length + 1);
-                    Array.Copy(entries, grown, entries.Length);
+                    var grown = Array.CreateInstance(entryType, existingEntries.Count + 1);
+                    for (int i = 0; i < existingEntries.Count; i++)
+                        grown.SetValue(existingEntries[i], i);
+
                     object entry = Activator.CreateInstance(entryType);
                     tagField?.SetValue(entry, tagValue);
                     keyField?.SetValue(entry, TagKey);
                     entryType.GetField("Group")?.SetValue(entry, TagGroup);
                     entryType.GetField("Label")?.SetValue(entry, TagLabel);
                     entryType.GetField("Description")?.SetValue(entry, TagDescription);
-                    grown.SetValue(entry, entries.Length);
+                    grown.SetValue(entry, existingEntries.Count);
+
+                    // Mono 允许反射改写 static readonly 字段（ClueDetail 在同一环境下已跑通）
                     entriesField.SetValue(null, grown);
 
                     // AllBits 是上游 Validate 的"已定义标签"判据：不并进去，
