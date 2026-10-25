@@ -8,6 +8,7 @@ using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
 using HideAndSeek.Features.Vision;
+using HideAndSeek.Game;
 using GameFusebox = Server.Game.Fusebox;
 using GameDeviceManager = Server.Game.DeviceManager;
 using GamePlayer = Server.Game.Player;
@@ -469,6 +470,10 @@ namespace HideAndSeek.Features.Rule
             {
                 Diagnostics.Hit("Command");
                 if (ModeRuntime.Bypass)
+                    return true;
+
+                // 传统模式：游戏内指令系统关闭。放行原版聊天处理，`/` 开头也不再解析。
+                if (TraditionalModeFeature.BanCommands)
                     return true;
 
                 try
@@ -2029,19 +2034,7 @@ namespace HideAndSeek.Features.Rule
         }
 
         /// <summary>房间显示名 —— 与客户端 :47082 同源（`GetText(ERoomType 名)`）。</summary>
-        private static string AreaNameOf(GamePlayer player)
-        {
-            try
-            {
-                var data = player?.CurrentArea?.Data;
-                if (data == null)
-                    return "未知区域";
-                string key = global::System.Enum.GetName(typeof(ERoomType), data.Type);
-                string t = Managers.GetText(key);
-                return string.IsNullOrEmpty(t) ? key : t;
-            }
-            catch { return "未知区域"; }
-        }
+        private static string AreaNameOf(GamePlayer player) => RoomDisplay.AreaNameOf(player);
 
         /// <summary>
         /// 随机出一道算式，并给出答案。

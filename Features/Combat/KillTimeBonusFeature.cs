@@ -3,6 +3,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Combat
@@ -39,6 +40,10 @@ namespace HideAndSeek.Features.Combat
         {
             Diagnostics.Hit("KillTimeBonus");
             if (ModeRuntime.Bypass)
+                return;
+
+            // 传统模式：任务与击杀都不再改变倒计时（房主口径）。
+            if (TraditionalModeFeature.SuppressTimeChanges)
                 return;
 
             int bonus = BonusSeconds?.Value ?? 30;

@@ -6,6 +6,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Weapon;
 using GamePlayer = Server.Game.Player;
 
@@ -632,9 +633,19 @@ namespace HideAndSeek.Features.Broadcast
             if (!Ready)
                 return;
 
-            // 自动指定黑方时刀是系统发的，不该说"捉迷藏开始了"（那意味着有人主动拿刀）
+            // 自动指定黑方时刀是系统发的，不该说"捉迷藏开始了"（那意味着有人主动拿刀）。
+            // 但传统模式需要通告「黑方在哪个房间计数」，所以这种模式单发一条。
             if (AutoAssignBlack)
+            {
+                var autoRoom = GameRoom.Instance;
+                if (autoRoom != null && player != null)
+                {
+                    string autoNotice = TraditionalModeFeature.AutoGrantNotice(player);
+                    if (!string.IsNullOrEmpty(autoNotice))
+                        Notice(autoRoom, autoNotice);
+                }
                 return;
+            }
 
             if (player == null || player.Color != EPlayerColor.Black)
                 return;
@@ -651,6 +662,11 @@ namespace HideAndSeek.Features.Broadcast
                 if (!string.IsNullOrEmpty(reveal))
                     text = string.IsNullOrEmpty(text) ? reveal : text + "\n" + reveal;
             }
+
+            // 传统模式：同一条消息内再追加一行「黑方在哪个房间」。
+            string roomLine = TraditionalModeFeature.KnifeRoomLine(player);
+            if (!string.IsNullOrEmpty(roomLine))
+                text = string.IsNullOrEmpty(text) ? roomLine : text + "\n" + roomLine;
 
             Notice(room, text);
         }

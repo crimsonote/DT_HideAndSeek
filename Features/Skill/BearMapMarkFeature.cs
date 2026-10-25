@@ -2,6 +2,7 @@
 using BepInEx.Configuration;
 using HarmonyLib;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using Protocol;
 using Server.Game;
 using UnityEngine;
@@ -78,7 +79,9 @@ namespace HideAndSeek.Features.Skill
 
 
         private static bool Enabled()
-            => !ModeRuntime.Bypass && RangeX != null && RangeY != null;
+            => !ModeRuntime.Bypass
+               && !TraditionalModeFeature.BanSkillExtras   // 传统模式：凛的小熊标记关闭
+               && RangeX != null && RangeY != null;
 
         private static float RangeXValue() => RangeX != null ? RangeX.Value : 448f;
         private static float RangeYValue() => RangeY != null ? RangeY.Value : 410.6667f;

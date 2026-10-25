@@ -38,6 +38,16 @@ namespace HideAndSeek.Features.UI
                 // 改后即时生效 —— 各补丁入口首行读 ModeRuntime.Bypass 短路，无需重启。
                 LobbySettingItem.Toggle("hs_mode", "启用捉迷藏", () => ModeRuntime.Enabled),
 
+                // 传统模式：段 [TraditionalMode].EnabledMode。
+                // 开局锁存（大厅里改，下一局生效）；关 HS_Mode 仍即时回滚。
+                LobbySettingItem.Toggle("traditional_mode", "启用传统模式",
+                    () => TraditionalModeFeature.EnabledMode),
+
+                // 黑方拿刀后的计数/眩晕秒数 —— 独立设置，不受传统模式开关影响。
+                // 传统模式关闭时只是一个未使用的参数；打开后默认 30 秒。
+                LobbySettingItem.Slider("traditional_count", "黑方拿刀后计数（秒）",
+                    () => TraditionalModeFeature.CountSeconds, 5, 60),
+
                 // 首刀保护：段 [FirstDeathProtect].ProtectEnabled。
                 // 上一局第一个死亡者，在本局有人死亡之前不会被杀（服务端吞刀 + 失败音效 + 提示攻击者）。
                 // 它属于"基本"级设置 —— 决定这一局怎么玩，且改动了不会破坏机制。

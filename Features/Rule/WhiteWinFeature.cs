@@ -126,7 +126,7 @@ namespace HideAndSeek.Features.Rule
             return true;
         }
 
-        private static bool IsAllClear()
+        internal static bool IsAllClear()
         {
             try
             {

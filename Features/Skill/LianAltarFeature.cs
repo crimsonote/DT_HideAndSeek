@@ -4,6 +4,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Vision;
 using GamePlayer = Server.Game.Player;
 using GameDtStage = Server.Game.DeadlyTrickStage;      // AGENTS 坑 #1：同名类，必须显式限定
@@ -168,7 +169,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(GamePlayer __instance)
             {
-                if (ModeRuntime.Bypass || __instance?.PublicInfo == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras || __instance?.PublicInfo == null)
                     return;
                 if (EnableTrace == null || !EnableTrace.Value)
                     return;                              // 段内开关：尸体预警可以单独关掉
@@ -250,7 +251,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
-                if (ModeRuntime.Bypass || __instance?.Players == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras || __instance?.Players == null)
                     return;
                 if (__instance.State != EGameState.Survive)
                     return;                          // 只在生存阶段干预；其它阶段交还原版
@@ -418,7 +419,7 @@ namespace HideAndSeek.Features.Skill
             private static void Postfix()
             {
                 Diagnostics.Hit("LianAltar");
-                if (ModeRuntime.Bypass)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
                     return;
 
                 var room = GameRoom.Instance;
@@ -448,7 +449,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(BuffComponent __instance)
             {
-                if (ModeRuntime.Bypass)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
                     return;
 
                 float mul = SoulBoostMul?.Value ?? 1.5f;
@@ -477,7 +478,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix()
             {
-                if (ModeRuntime.Bypass || SoulUntil.Count == 0)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras || SoulUntil.Count == 0)
                     return;
 
                 var room = GameRoom.Instance;
