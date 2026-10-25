@@ -82,8 +82,19 @@ namespace HideAndSeek.Features.Disguise
         public static ConfigEntry<bool> AllowBlackDisguise;
 
         [ConfigField(false,
-            "移动后解除伪装。默认关闭：移动时假物品跟随、不解除；打开后只要位置变化就现形。")]
+            "移动后解除伪装。默认关闭：移动时假物品跟随、不解除；打开后位置变化超过阈值才现形。")]
         public static ConfigEntry<bool> RevealOnMove;
+
+        [ConfigField(64f,
+            "大位移兜底阈值（像素）：即使 IsMove=false，位置突变超过这个值也解除（防传送/外力）；"
+            + "静止 C_MOVE 的小抖动远小于它。",
+            Min = 8f, Max = 256f)]
+        public static ConfigEntry<float> MoveRevealDistance;
+
+        [ConfigField(0.3f,
+            "伪装完成后忽略移动包的宽限（秒）：防止客户端位置校正/首包立即解除伪装。",
+            Min = 0f, Max = 2f)]
+        public static ConfigEntry<float> MoveRevealGrace;
 
         // ══ 状态 ══════════════════════════════════════════════════════
 
@@ -102,6 +113,7 @@ namespace HideAndSeek.Features.Disguise
             public float StableSince;
             public float NextFollow;
             public float NextGhost;
+            public float MoveCheckAfter;
             public bool PrevKeepItemOnHide;
         }
 
@@ -206,6 +218,7 @@ namespace HideAndSeek.Features.Disguise
             ByFakeId[st.FakeId] = st;
             st.NextFollow = UnityEngine.Time.time + 0.1f;
             st.NextGhost = UnityEngine.Time.time;
+            st.MoveCheckAfter = UnityEngine.Time.time + MoveRevealGrace.Value;
 
             Plugin.Log.LogInfo(
                 $"[HS] ItemDisguise：#{st.PlayerId} 伪装成物品 data={st.ItemDataId}，假 DeviceId={st.FakeId}。");
@@ -513,9 +526,23 @@ namespace HideAndSeek.Features.Disguise
                 if (!AreaManager.Instance.ValidPosition(pkt.Pos))
                     return false;
 
-                bool moved = player.PublicInfo.Pos != pkt.Pos;
-                if (RevealOnMove.Value && moved)
+                float dx = player.PublicInfo.Pos.X - pkt.Pos.X;
+                float dy = player.PublicInfo.Pos.Y - pkt.Pos.Y;
+                float dist2 = dx * dx + dy * dy;
+
+                // 不能用 PosInfo 的精确 !=：静止客户端每 0.1s 也会发 C_MOVE，
+                // 浮点位置/插值小抖动会被误判成“移动”，导致刚伪装就立即解除。
+                // 只有“确实在移动”（IsMove=true 且位置有变化）或位移超过阈值才解除。
+                bool moving = pkt.IsMove && dist2 > PositionEpsilon * PositionEpsilon;
+                bool displaced = dist2 >= MoveRevealDistance.Value * MoveRevealDistance.Value;
+                bool shouldReveal = UnityEngine.Time.time >= st.MoveCheckAfter
+                    && (moving || displaced);
+
+                if (RevealOnMove.Value && shouldReveal)
                 {
+                    Plugin.Log.LogInfo(
+                        $"[HS] ItemDisguise：#{player.PublicInfo.PlayerId} 移动解除判定 "
+                        + $"isMove={pkt.IsMove} dist2={dist2:F2}");
                     Reveal(st, "move");
                     // 让原版 HandleMove 继续用 Idle 状态处理这一包移动。
                     return true;
@@ -524,7 +551,7 @@ namespace HideAndSeek.Features.Disguise
                 if (player.MoveLock)
                     return false;
 
-                if (moved)
+                if (dist2 > PositionEpsilon * PositionEpsilon)
                 {
                     player.DirectionAngle = Util.GetZRotation(
                         pkt.Pos.X - player.PublicInfo.Pos.X,
