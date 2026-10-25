@@ -5,6 +5,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using GamePlayer = Server.Game.Player;
 using GameItem = Server.Game.Item;
 using GameDeviceManager = Server.Game.DeviceManager;
@@ -130,6 +131,12 @@ namespace HideAndSeek.Features.Disguise
             if (!AllowBlackDisguise.Value
                 && (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark))
                 return;
+
+            // 传统模式的第二段会 Stop 冻结全体白方。冻结后不允许白方“新进入”伪装；
+            // 但已经完成的伪装由 Tick 的 HasFake 分支保留，不在冻结时撤销。
+            if (TraditionalModeFeature.IsFrozenPhase && !IsBlack(player))
+                return;
+
             if (player.State == EPlayerState.Hide || player.State == EPlayerState.Sit)
                 return;
             if (player.Hand == null)
@@ -171,6 +178,11 @@ namespace HideAndSeek.Features.Disguise
                 return;
             }
             if (player.State != EPlayerState.Idle && player.State != EPlayerState.Run)
+            {
+                RemoveState(st);
+                return;
+            }
+            if (TraditionalModeFeature.IsFrozenPhase && !IsBlack(player))
             {
                 RemoveState(st);
                 return;
@@ -575,6 +587,14 @@ namespace HideAndSeek.Features.Disguise
                         SyncFake(st, false);
                         if (GhostInterval.Value > 0f && UnityEngine.Time.time >= st.NextGhost)
                             PulseGhost(st);
+                        continue;
+                    }
+
+                    // 传统模式第二段：白方已被 Stop 冻结。冻结期间取消尚未完成的 Arming，
+                    // 但上面的 HasFake 分支不受影响 —— 已经完成的伪装必须保留。
+                    if (TraditionalModeFeature.IsFrozenPhase && !IsBlack(player))
+                    {
+                        RemoveState(st);
                         continue;
                     }
 

@@ -111,6 +111,12 @@ namespace HideAndSeek.Features.Rule
         /// <summary>本局传统模式是否生效（总开关关掉时立即失效）。</summary>
         internal static bool ActiveThisRound => !ModeRuntime.Bypass && _latched;
 
+        /// <summary>
+        /// 第二段「黑方寻找」是否已经开始。白方已被 Stop 冻结。
+        /// 物品伪装用它做兼容：冻结期间不新进入伪装，但已经完成的伪装必须保留。
+        /// </summary>
+        internal static bool IsFrozenPhase => ActiveThisRound && _phase == Phase.Search;
+
         /// <summary>指令系统是否关闭。</summary>
         internal static bool BanCommands => ActiveThisRound;
 
