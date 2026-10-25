@@ -383,7 +383,8 @@ namespace HideAndSeek.Features.Disguise
 
                 if (ByFakeId.TryGetValue(itemId, out DisguiseState st))
                 {
-                    if (st.HasFake && DistanceSquared(player, st.FakeInfo.Pos)
+                    if (st.HasFake && st.FakeInfo != null
+                        && DistanceSquared(player, st.FakeInfo.Pos)
                         <= RevealDistance.Value * RevealDistance.Value)
                     {
                         bool allowed = IsBlack(player)
@@ -552,11 +553,21 @@ namespace HideAndSeek.Features.Disguise
                         continue;
                     }
 
-                    if (player.State != EPlayerState.Idle && player.State != EPlayerState.Run)
+                    if (player.State == EPlayerState.Hide || player.State == EPlayerState.Sit)
                     {
                         RemoveState(st);
                         continue;
                     }
+
+                    // 捡起物品时可能短暂处于 Interact/Attack 等状态；先等回到
+                    // Idle/Run 再开始/继续 3 秒计时，别因为拾取动作直接丢掉 Arming。
+                    if (player.State != EPlayerState.Idle && player.State != EPlayerState.Run)
+                    {
+                        st.LastPos = player.PublicInfo.Pos.Clone();
+                        st.StableSince = UnityEngine.Time.time;
+                        continue;
+                    }
+
                     if (player.Hand == null || player.Hand.Info.DataId != st.ItemDataId)
                     {
                         RemoveState(st);
