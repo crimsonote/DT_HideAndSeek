@@ -132,8 +132,8 @@ namespace HideAndSeek.Features.Disguise
                 && (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark))
                 return;
 
-            // 传统模式的第二段会 Stop 冻结全体白方。冻结后不允许白方“新进入”伪装；
-            // 但已经完成的伪装由 Tick 的 HasFake 分支保留，不在冻结时撤销。
+            // 传统模式第二段会 Stop 冻结全体白方。冻结开始后不再“新开”Arming；
+            // 但冻结前已经在 Arming 的白方会继续计时并完成伪装（Tick/StartDisguise 不拦）。
             if (TraditionalModeFeature.IsFrozenPhase && !IsBlack(player))
                 return;
 
@@ -182,11 +182,8 @@ namespace HideAndSeek.Features.Disguise
                 RemoveState(st);
                 return;
             }
-            if (TraditionalModeFeature.IsFrozenPhase && !IsBlack(player))
-            {
-                RemoveState(st);
-                return;
-            }
+            // 冻结开始时仍在 Arming 的白方允许完成伪装（房主 2026-10-26 口径）。
+            // 只有“冻结后新开 Arming”由 BeginArming 拦。
             if (Managers.Data?.ItemDic == null || !Managers.Data.ItemDic.ContainsKey(st.ItemDataId))
             {
                 RemoveState(st);
@@ -590,14 +587,8 @@ namespace HideAndSeek.Features.Disguise
                         continue;
                     }
 
-                    // 传统模式第二段：白方已被 Stop 冻结。冻结期间取消尚未完成的 Arming，
-                    // 但上面的 HasFake 分支不受影响 —— 已经完成的伪装必须保留。
-                    if (TraditionalModeFeature.IsFrozenPhase && !IsBlack(player))
-                    {
-                        RemoveState(st);
-                        continue;
-                    }
-
+                    // 冻结期间不取消已经开始的 Arming：让它继续计时并完成伪装。
+                    // 暂停/取消只由下面的状态/手持物检查决定。
                     if (player.State == EPlayerState.Hide || player.State == EPlayerState.Sit)
                     {
                         RemoveState(st);
