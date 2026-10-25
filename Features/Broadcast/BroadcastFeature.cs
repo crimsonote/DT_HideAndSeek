@@ -518,6 +518,11 @@ namespace HideAndSeek.Features.Broadcast
             //   于是下面那发 NoticeToWhiteChannel 被 `whiteTip != null` 挡掉，
             //   白方在公共发信机里**一条开局记录都没有**（房主 2026-10-06 报的正是这个）。
             //   （核对过：昨天的 d83e247 里条件一模一样 ⇒ 这不是回归，是这块留档一直只覆盖了自动发刀模式。）
+            // 传统模式的位置行：两种发刀模式都要拼进**同一条开局提示的最开头**。
+            // 自动发刀时黑方拿刀早于本提示，通常能拿到；自行拿刀时若黑方还没拿刀，
+            // 这里为 null，稍后拿刀通告里仍会带这一行。
+            string traditional = TraditionalModeFeature.AutoStartNotice(room);
+
             string whiteTip;
             if (auto)
             {
@@ -528,16 +533,14 @@ namespace HideAndSeek.Features.Broadcast
                 string head = TextService.Format(WeaponTaken?.Value) + "\n"
                             + Titled(TextService.Format(StartBodyWhite?.Value));
                 string body = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
-
-                // 传统模式：拼在开局提示的**最开头**（同一条消息），不另发。
-                string traditional = TraditionalModeFeature.AutoStartNotice(room);
                 whiteTip = string.IsNullOrEmpty(traditional) ? body : traditional + "\n" + body;
             }
             else
             {
                 // 自行拿刀模式：白方气泡拿到的就是 StartBodySelfServe（见下面循环里的 `!auto` 分支），
                 // 留档用同一条，保证"气泡内容"与"发信机记录"一致。
-                whiteTip = Titled(TextService.Format(StartBodySelfServe?.Value));
+                string body = Titled(TextService.Format(StartBodySelfServe?.Value));
+                whiteTip = string.IsNullOrEmpty(traditional) ? body : traditional + "\n" + body;
             }
 
             foreach (var player in room.Players)
@@ -550,10 +553,11 @@ namespace HideAndSeek.Features.Broadcast
                 // 黑方身份追加在**同一条消息内**（白方开局消息末尾），不另发一条气泡 ——
                 // UI_SecretChatOverlay 同一时刻只留一条，另发只会把这条顶掉。
                 string tip;
-                if (!auto)
-                    tip = Titled(TextService.Format(StartBodySelfServe?.Value));
-                else if (isBlack)
-                    tip = Titled(TextService.Format(StartBodyBlack?.Value));
+                if (auto && isBlack)
+                {
+                    string body = Titled(TextService.Format(StartBodyBlack?.Value));
+                    tip = string.IsNullOrEmpty(traditional) ? body : traditional + "\n" + body;
+                }
                 else
                     tip = whiteTip ?? Titled(TextService.Format(StartBodyWhite?.Value));
 

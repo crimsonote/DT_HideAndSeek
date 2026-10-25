@@ -43,9 +43,9 @@ namespace HideAndSeek.Features.UI
                 LobbySettingItem.Toggle("traditional_mode", "启用传统模式",
                     () => TraditionalModeFeature.EnabledMode),
 
-                // 黑方拿刀后的计数/眩晕秒数 —— 独立设置，不受传统模式开关影响。
+                // 黑方拿刀后的等待/冻结秒数 —— 独立设置，不受传统模式开关影响。
                 // 传统模式关闭时只是一个未使用的参数；打开后默认 30 秒。
-                LobbySettingItem.Slider("traditional_count", "黑方拿刀后计数（秒）",
+                LobbySettingItem.Slider("traditional_count", "黑方拿刀后等待（秒）",
                     () => TraditionalModeFeature.CountSeconds, 5, 60),
 
                 // 可选项：剩余 30 秒提前结束，避开客户端最后 30 秒的项圈警报闪烁。

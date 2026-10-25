@@ -39,7 +39,7 @@ namespace HideAndSeek.Features.Rule
     /// </summary>
     [PatchFeature(
         section: "TraditionalMode",
-        description: "传统模式：黑方拿刀后计数 N 秒（冻结黑方、倒计时设为 N），随后把倒计时重置为初始限制并冻结白方至本轮结束；只重置一次，任务与击杀不再改变倒计时。",
+        description: "传统模式：黑方拿刀后等待 N 秒（冻结黑方、倒计时设为 N），随后把倒计时重置为初始限制并冻结白方至本轮结束；只重置一次，任务与击杀不再改变倒计时。",
         defaultEnabled: true,
         side: FeatureSide.Host)]
     internal static class TraditionalModeFeature
@@ -47,13 +47,13 @@ namespace HideAndSeek.Features.Rule
         // ══ 配置 ══════════════════════════════════════════════════════
 
         [ConfigField(false,
-            "启用传统模式：黑方拿刀后计数 N 秒（冻结黑方、倒计时设为 N），" +
+            "启用传统模式：黑方拿刀后等待 N 秒（冻结黑方、倒计时设为 N），" +
             "随后把倒计时重置为初始限制并冻结白方至本轮结束。只重置一次；任务与击杀不再改变倒计时。\n" +
             "默认关闭。只在大厅设置页改动，开局锁存（下一局生效）；关总开关 HS_Mode 仍即时生效。")]
         public static ConfigEntry<bool> EnabledMode;
 
         [ConfigField(30,
-            "黑方拿刀后计数/眩晕秒数（独立设置，不受传统模式开关影响；传统模式关闭时不生效）。",
+            "黑方拿刀后等待/冻结秒数（独立设置，不受传统模式开关影响；传统模式关闭时不生效）。",
             Min = 5f, Max = 60f)]
         public static ConfigEntry<int> CountSeconds;
 
@@ -84,6 +84,12 @@ namespace HideAndSeek.Features.Rule
 
         /// <summary>正在计数的黑方。到期要撤 TheWorld，所以留对象引用。</summary>
         private static GamePlayer _black;
+
+        /// <summary>等待期间发给白方的“指向黑方”箭头目标位置；结束时要按同位置撤销。</summary>
+        private static PosInfo _arrowPos;
+
+        /// <summary>是否已经给白方发过指向黑方的箭头。</summary>
+        private static bool _arrowSent;
 
         /// <summary>本模式施加了 Stop 的白方；归零/换阶段时逐个撤销。</summary>
         private static readonly List<GamePlayer> FrozenWhites = new List<GamePlayer>();
@@ -255,6 +261,7 @@ namespace HideAndSeek.Features.Rule
             _triggered = true;
             _phase = Phase.Countdown;
             _black = black;
+            NotifyBlackArrow(room);
 
             // 倒计时直接设为 N 秒（UpdateRemainTime 会 clamp 到 [0, TotalTime] 并广播）。
             tm.UpdateRemainTime(target - tm.RemainTime);
@@ -275,6 +282,65 @@ namespace HideAndSeek.Features.Rule
             Plugin.Log.LogInfo(
                 $"[HS] TraditionalMode：黑方 #{black.PublicInfo.PlayerId}（{black.Name}）拿到刀 ⇒ "
                 + $"冻结 {secs} 秒、倒计时设为 {target:F0} 秒（白方躲藏准备）。");
+        }
+
+        /// <summary>
+        /// 等待期间给所有白方发一个指向黑方的世界箭头。
+        /// 黑方被 TheWorld 冻结，位置不会变，所以只需发一次；结束时按同一坐标撤销。
+        /// `CharacterArrow` 在客户端是通用角色箭头，UI_Arrow 会围绕目标点旋转。
+        /// </summary>
+        private static void NotifyBlackArrow(GameRoom room)
+        {
+            if (room?.Players == null || _black?.PublicInfo == null)
+                return;
+
+            ClearBlackArrow();
+            _arrowPos = _black.PublicInfo.Pos.Clone();
+            _arrowSent = true;
+
+            foreach (var player in room.Players)
+            {
+                if (player?.Session == null || player.PublicInfo == null)
+                    continue;
+                if (!player.IsAlive || player.IsSpectator)
+                    continue;
+                if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
+                    continue;
+
+                player.Session.Send(new S_NOTIFY_ARROW
+                {
+                    Type = EArrowType.CharacterArrow,
+                    Pos = _arrowPos.Clone()
+                });
+            }
+        }
+
+        private static void ClearBlackArrow()
+        {
+            if (!_arrowSent || _arrowPos == null)
+                return;
+
+            _arrowSent = false;
+            var room = GameRoom.Instance;
+            PosInfo pos = _arrowPos;
+            _arrowPos = null;
+
+            if (room?.Players == null)
+                return;
+
+            foreach (var player in room.Players)
+            {
+                if (player?.Session == null || player.PublicInfo == null)
+                    continue;
+                if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
+                    continue;
+
+                player.Session.Send(new S_REMOVE_ARROW
+                {
+                    Type = EArrowType.CharacterArrow,
+                    Pos = pos
+                });
+            }
         }
 
         // ══ 冻结期：白方的主动技能一律不生效（黑洞由黑方保留）═════════
@@ -407,6 +473,7 @@ namespace HideAndSeek.Features.Rule
 
         private static void EnterSearch(GameRoom room, TimeManager tm)
         {
+            ClearBlackArrow();
             _phase = Phase.Search;
 
             float target = _initialRemain > 1f
@@ -469,6 +536,8 @@ namespace HideAndSeek.Features.Rule
 
         private static void CleanupBuffs()
         {
+            ClearBlackArrow();
+
             for (int i = 0; i < FrozenWhites.Count; i++)
             {
                 try { FrozenWhites[i]?.BuffComponent?.RemoveBuffForce(EBuffType.Stop); }

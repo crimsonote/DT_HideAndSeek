@@ -43,7 +43,7 @@ namespace HideAndSeek.Features.Disguise
         // ══ 配置 ══════════════════════════════════════════════════════
 
         [ConfigField(3,
-            "捡起物品后需要原地静止多少秒才会伪装。",
+            "持有物品并原地静止多少秒才会伪装（不是“捡起后”才开始计时，而是任意时刻持有物品并静止都算）。",
             Min = 1f, Max = 10f)]
         public static ConfigEntry<int> StandSeconds;
 
@@ -75,6 +75,14 @@ namespace HideAndSeek.Features.Disguise
         [ConfigField(true,
             "是否允许黑方以外的人（包括伪装者自己）按 E 翻出。")]
         public static ConfigEntry<bool> AllowOthersReveal;
+
+        [ConfigField(false,
+            "不检查躲藏阵营：允许黑方/暗方也进入物品伪装（默认只允许白方）。")]
+        public static ConfigEntry<bool> AllowBlackDisguise;
+
+        [ConfigField(false,
+            "移动后解除伪装。默认关闭：移动时假物品跟随、不解除；打开后只要位置变化就现形。")]
+        public static ConfigEntry<bool> RevealOnMove;
 
         // ══ 状态 ══════════════════════════════════════════════════════
 
@@ -119,7 +127,8 @@ namespace HideAndSeek.Features.Disguise
                 return;
             if (!player.IsAlive || player.IsSpectator || player.IsDummy)
                 return;
-            if (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark)
+            if (!AllowBlackDisguise.Value
+                && (player.Color == EPlayerColor.Black || player.Color == EPlayerColor.Dark))
                 return;
             if (player.State == EPlayerState.Hide || player.State == EPlayerState.Sit)
                 return;
@@ -149,7 +158,7 @@ namespace HideAndSeek.Features.Disguise
             st.LastPos = player.PublicInfo.Pos.Clone();
             st.StableSince = UnityEngine.Time.time;
             Plugin.Log.LogInfo(
-                $"[HS] ItemDisguise：#{pid} 捡到物品 data={dataId}，开始 {StandSeconds.Value} 秒静止计时。");
+                $"[HS] ItemDisguise：#{pid} 持有物品 data={dataId}，开始 {StandSeconds.Value} 秒静止计时。");
         }
 
         /// <summary>静止足够久 ⇒ 进入伪装。</summary>
@@ -404,12 +413,6 @@ namespace HideAndSeek.Features.Disguise
 
                 return true;
             }
-
-            [HarmonyPostfix]
-            private static void Postfix(GamePlayer player)
-            {
-                BeginArming(player);
-            }
         }
 
         /// <summary>伪装者不能使用/丢弃手持物，避免假物品图标和真实手部脱节。</summary>
@@ -498,12 +501,21 @@ namespace HideAndSeek.Features.Disguise
                     return true;
                 if (!st.HasFake || !player.IsAlive || player.State != EPlayerState.Hide)
                     return true;
-                if (player.MoveLock)
-                    return false;
                 if (!AreaManager.Instance.ValidPosition(pkt.Pos))
                     return false;
 
-                if (player.PublicInfo.Pos != pkt.Pos)
+                bool moved = player.PublicInfo.Pos != pkt.Pos;
+                if (RevealOnMove.Value && moved)
+                {
+                    Reveal(st, "move");
+                    // 让原版 HandleMove 继续用 Idle 状态处理这一包移动。
+                    return true;
+                }
+
+                if (player.MoveLock)
+                    return false;
+
+                if (moved)
                 {
                     player.DirectionAngle = Util.GetZRotation(
                         pkt.Pos.X - player.PublicInfo.Pos.X,
@@ -529,6 +541,19 @@ namespace HideAndSeek.Features.Disguise
                 {
                     ClearAll();
                     return;
+                }
+
+                // 获得条件不是“刚捡起”，而是“持有物品并静止”。所以每 tick 扫一遍
+                // 场上还没有进入状态机的玩家；已在 Arming/Disguised 的不会重复初始化。
+                if (GameRoom.Instance?.Players != null)
+                {
+                    foreach (GamePlayer player in GameRoom.Instance.Players.ToList())
+                    {
+                        if (player?.PublicInfo == null)
+                            continue;
+                        if (!ByPlayer.ContainsKey(player.PublicInfo.PlayerId))
+                            BeginArming(player);
+                    }
                 }
 
                 foreach (DisguiseState st in ByPlayer.Values.ToList())
