@@ -527,7 +527,11 @@ namespace HideAndSeek.Features.Broadcast
                 //   标题只加在自动发刀模式自己的正文（StartBodyWhite）上。
                 string head = TextService.Format(WeaponTaken?.Value) + "\n"
                             + Titled(TextService.Format(StartBodyWhite?.Value));
-                whiteTip = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
+                string body = string.IsNullOrEmpty(reveal) ? head : reveal + "\n" + head;
+
+                // 传统模式：拼在开局提示的**最开头**（同一条消息），不另发。
+                string traditional = TraditionalModeFeature.AutoStartNotice(room);
+                whiteTip = string.IsNullOrEmpty(traditional) ? body : traditional + "\n" + body;
             }
             else
             {
@@ -634,18 +638,10 @@ namespace HideAndSeek.Features.Broadcast
                 return;
 
             // 自动指定黑方时刀是系统发的，不该说"捉迷藏开始了"（那意味着有人主动拿刀）。
-            // 但传统模式需要通告「黑方在哪个房间计数」，所以这种模式单发一条。
+            // 传统模式的那一行改由 SendStartTips 拼进开局提示的开头 —— 另发一条会被
+            // UI_SecretChatOverlay 的后一条顶掉。
             if (AutoAssignBlack)
-            {
-                var autoRoom = GameRoom.Instance;
-                if (autoRoom != null && player != null)
-                {
-                    string autoNotice = TraditionalModeFeature.AutoGrantNotice(player);
-                    if (!string.IsNullOrEmpty(autoNotice))
-                        Notice(autoRoom, autoNotice);
-                }
                 return;
-            }
 
             if (player == null || player.Color != EPlayerColor.Black)
                 return;
@@ -663,10 +659,10 @@ namespace HideAndSeek.Features.Broadcast
                     text = string.IsNullOrEmpty(text) ? reveal : text + "\n" + reveal;
             }
 
-            // 传统模式：同一条消息内再追加一行「黑方在哪个房间」。
-            string roomLine = TraditionalModeFeature.KnifeRoomLine(player);
-            if (!string.IsNullOrEmpty(roomLine))
-                text = string.IsNullOrEmpty(text) ? roomLine : text + "\n" + roomLine;
+            // 传统模式：拼在**同一条消息的开头**。分成两条的话第一条会被气泡顶掉。
+            string traditional = TraditionalModeFeature.KnifeNotice(player);
+            if (!string.IsNullOrEmpty(traditional))
+                text = string.IsNullOrEmpty(text) ? traditional : traditional + "\n" + text;
 
             Notice(room, text);
         }

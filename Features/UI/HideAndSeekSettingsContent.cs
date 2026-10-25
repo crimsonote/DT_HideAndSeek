@@ -48,6 +48,10 @@ namespace HideAndSeek.Features.UI
                 LobbySettingItem.Slider("traditional_count", "黑方拿刀后计数（秒）",
                     () => TraditionalModeFeature.CountSeconds, 5, 60),
 
+                // 可选项：剩余 30 秒提前结束，避开客户端最后 30 秒的项圈警报闪烁。
+                LobbySettingItem.Toggle("traditional_end_at_30", "倒计时 30 秒时提前结束",
+                    () => TraditionalModeFeature.EndAtThirty),
+
                 // 首刀保护：段 [FirstDeathProtect].ProtectEnabled。
                 // 上一局第一个死亡者，在本局有人死亡之前不会被杀（服务端吞刀 + 失败音效 + 提示攻击者）。
                 // 它属于"基本"级设置 —— 决定这一局怎么玩，且改动了不会破坏机制。

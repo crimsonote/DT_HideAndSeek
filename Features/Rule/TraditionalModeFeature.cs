@@ -57,6 +57,11 @@ namespace HideAndSeek.Features.Rule
             Min = 5f, Max = 60f)]
         public static ConfigEntry<int> CountSeconds;
 
+        [ConfigField(false,
+            "倒计时剩余 30 秒时提前结束本局（实际在剩余 31 秒归零，避开客户端最后 30 秒的项圈警报闪烁）。" +
+            "只在本模式生效；会少打约 30 秒。默认关闭。")]
+        public static ConfigEntry<bool> EndAtThirty;
+
         // ══ 状态 ══════════════════════════════════════════════════════
 
         private enum Phase
@@ -83,6 +88,9 @@ namespace HideAndSeek.Features.Rule
         /// <summary>本模式施加了 Stop 的白方；归零/换阶段时逐个撤销。</summary>
         private static readonly List<GamePlayer> FrozenWhites = new List<GamePlayer>();
 
+        /// <summary>冻结白方的 PlayerId。断线重连后 Player 对象会换，门闩按 ID 判才不失效。</summary>
+        private static readonly HashSet<int> FrozenWhiteIds = new HashSet<int>();
+
         /// <summary>ClearMission 的执行深度（>0 = 当前这次加时来自任务完成）。</summary>
         private static int _missionDepth;
 
@@ -106,19 +114,11 @@ namespace HideAndSeek.Features.Rule
         /// <summary>任务/击杀是否不再改变倒计时。</summary>
         internal static bool SuppressTimeChanges => ActiveThisRound;
 
-        /// <summary>拿刀通告要追加的房间行；非传统模式/非黑方返回 null。</summary>
-        internal static string KnifeRoomLine(GamePlayer black)
-        {
-            if (!ActiveThisRound || black?.PublicInfo == null)
-                return null;
-            if (black.Color != EPlayerColor.Black && black.Color != EPlayerColor.Dark)
-                return null;
-
-            return "黑方在「" + RoomDisplay.AreaNameOf(black) + "」";
-        }
-
-        /// <summary>开局发刀模式下的独立通告（那种模式原本不播「捉迷藏开始了」）。</summary>
-        internal static string AutoGrantNotice(GamePlayer black)
+        /// <summary>
+        /// 传统模式要拼进**原版消息开头**的那一行。
+        /// 不能单独发一条：客户端的 SecretChat 气泡同一时刻只留一条，后发的会把前一条顶掉。
+        /// </summary>
+        internal static string KnifeNotice(GamePlayer black)
         {
             if (!ActiveThisRound || black?.PublicInfo == null)
                 return null;
@@ -126,8 +126,25 @@ namespace HideAndSeek.Features.Rule
                 return null;
 
             int secs = CountSeconds?.Value ?? 30;
-            return "传统模式：黑方已取得凶器，在「" + RoomDisplay.AreaNameOf(black)
+            return "传统模式：黑方在「" + RoomDisplay.AreaNameOf(black)
                    + "」计数 " + secs + " 秒。";
+        }
+
+        /// <summary>开局发刀模式：在开局提示里找当前黑方，拼同一行。</summary>
+        internal static string AutoStartNotice(GameRoom room)
+        {
+            if (!ActiveThisRound || room?.Players == null)
+                return null;
+
+            foreach (var p in room.Players)
+            {
+                if (p?.PublicInfo == null)
+                    continue;
+                if (p.Color != EPlayerColor.Black && p.Color != EPlayerColor.Dark)
+                    continue;
+                return KnifeNotice(p);
+            }
+            return null;
         }
 
         // ══ 生命周期 ══════════════════════════════════════════════════
@@ -260,6 +277,36 @@ namespace HideAndSeek.Features.Rule
                 + $"冻结 {secs} 秒、倒计时设为 {target:F0} 秒（白方躲藏准备）。");
         }
 
+        // ══ 冻结期：白方的主动技能一律不生效（黑洞由黑方保留）═════════
+
+        /// <summary>
+        /// 白方被 Stop 冻结后，服务端仍可能收到已经在队列里的 C_USE_SKILL；
+        /// 原版 UseActiveSkill 不检查 _lockControlStack，只靠客户端锁 ⇒ 必须在这里补一道。
+        /// 黑方差分：黑方不受此门闩限制，黑洞（Noel）照旧可用。
+        /// </summary>
+        [HarmonyPatch(typeof(SkillComponent), "UseActiveSkill")]
+        internal static class FrozenSkillHook
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(SkillComponent __instance)
+            {
+                if (ModeRuntime.Bypass || !ActiveThisRound || _phase != Phase.Search)
+                    return true;
+
+                var owner = __instance?.Owner;
+                if (owner?.PublicInfo == null)
+                    return true;
+                if (owner.Color == EPlayerColor.Black || owner.Color == EPlayerColor.Dark)
+                    return true;                 // 黑洞保留：黑方技能不受限
+                if (!FrozenWhiteIds.Contains(owner.PublicInfo.PlayerId))
+                    return true;
+
+                Plugin.Log.LogInfo(
+                    $"[HS] TraditionalMode：白方 #{owner.PublicInfo.PlayerId} 在冻结期尝试使用技能，已拦截。");
+                return false;
+            }
+        }
+
         // ══ 第一段结束：切到第二段（重置倒计时 + 冻结白方）═══════════
 
         [HarmonyPatch(typeof(GameRoom), "SurvivalTick")]
@@ -273,7 +320,7 @@ namespace HideAndSeek.Features.Rule
             [HarmonyPriority(Priority.First)]
             private static void Prefix(GameRoom __instance)
             {
-                if (ModeRuntime.Bypass || !ActiveThisRound || _phase != Phase.Countdown)
+                if (ModeRuntime.Bypass || !ActiveThisRound)
                     return;
 
                 var tm = TimeManager.Instance;
@@ -283,6 +330,20 @@ namespace HideAndSeek.Features.Rule
                     return;
                 if (WhiteWinFeature.IsAllClear())
                     return;                      // 任务已全清，交给结局流程
+
+                // 可选项：第二段剩余 30 秒时提前结束。
+                // 在 31 秒归零，客户端根本不会收到 30 秒的 S_TIME ⇒ 不会进入最后 30 秒的
+                // 项圈警报闪烁；随后 WhiteWinFeature 按正常规则裁定（不自己结算）。
+                if (_phase == Phase.Search
+                    && EndAtThirty != null && EndAtThirty.Value
+                    && tm.RemainTime > 0f && tm.RemainTime <= 31f)
+                {
+                    tm.UpdateRemainTime(-tm.RemainTime);
+                    return;
+                }
+
+                if (_phase != Phase.Countdown)
+                    return;
                 if (tm.RemainTime > 1f)
                     return;                      // 第一段还没到切换点
 
@@ -370,6 +431,7 @@ namespace HideAndSeek.Features.Rule
         private static void FreezeWhites(GameRoom room, float targetRemain)
         {
             FrozenWhites.Clear();
+            FrozenWhiteIds.Clear();
             if (room?.Players == null)
                 return;
 
@@ -386,10 +448,16 @@ namespace HideAndSeek.Features.Rule
 
                 try
                 {
-                    // 先清同类型残留，保证我们这次的长时长真的生效。
+                    // ⚠ 必须先取消已经起手的黑洞传送：原版 UseTeleport 会先给自己挂 Stop、
+                    // 2 秒后 Job 里 RemoveBuffForce(Stop) + Move(dest)。不取消的话，白方在
+                    // 冻结前起手的传送会在冻结期间完成，并把我们的 Stop 一起删掉。
+                    player.SkillComponent?.CancelTeleport();
+
+                    // 再清同类型残留，保证我们这次的长时长真的生效。
                     player.BuffComponent?.RemoveBuffForce(EBuffType.Stop);
                     player.BuffComponent?.AddBuff(EBuffType.Stop, durationMs);
                     FrozenWhites.Add(player);
+                    FrozenWhiteIds.Add(player.PublicInfo.PlayerId);
                 }
                 catch (global::System.Exception ex)
                 {
@@ -407,6 +475,7 @@ namespace HideAndSeek.Features.Rule
                 catch { /* 撤销失败不能影响换局 */ }
             }
             FrozenWhites.Clear();
+            FrozenWhiteIds.Clear();
 
             try { _black?.BuffComponent?.RemoveBuffForce(EBuffType.TheWorld); }
             catch { /* 同上 */ }
