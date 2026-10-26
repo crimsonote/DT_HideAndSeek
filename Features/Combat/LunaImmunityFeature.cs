@@ -4,6 +4,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Combat
@@ -35,6 +36,10 @@ namespace HideAndSeek.Features.Combat
         {
             Diagnostics.Hit("LunaImmunity");
             if (ModeRuntime.Bypass)
+                return true;
+
+            // 传统模式：露娜也 ban（房主口径），服务端护盾不介入，露娜可被普通刀杀。
+            if (TraditionalModeFeature.BanSkillExtras)
                 return true;
 
             var room = GameRoom.Instance;

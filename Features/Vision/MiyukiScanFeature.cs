@@ -4,6 +4,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using GamePlayer = Server.Game.Player;
 
 namespace HideAndSeek.Features.Vision
@@ -158,6 +159,10 @@ namespace HideAndSeek.Features.Vision
         /// </summary>
         internal static bool HasMiyukiAbility(GamePlayer player)
         {
+            // 传统模式：美幸扫描关闭；同时让 AOI 的「美幸豁免」一起失效。
+            if (TraditionalModeFeature.BanSkillExtras)
+                return false;
+
             if (player?.PublicInfo == null)
                 return false;
 
@@ -200,6 +205,8 @@ namespace HideAndSeek.Features.Vision
         }
         internal static bool IsUnlocking(GamePlayer black)
         {
+            if (TraditionalModeFeature.BanSkillExtras)
+                return false;
             if (black?.PublicInfo == null)
                 return false;
             return Unlocking.Contains(black.PublicInfo.PlayerId);
@@ -211,7 +218,7 @@ namespace HideAndSeek.Features.Vision
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
-                if (ModeRuntime.Bypass || __instance == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras || __instance == null)
                     return;
                 if (__instance.State != EGameState.Survive)
                     return;
@@ -307,7 +314,7 @@ namespace HideAndSeek.Features.Vision
             [HarmonyPostfix]
             private static void Postfix(GamePlayer __instance)
             {
-                if (ModeRuntime.Bypass)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
                     return;
 
                 int interval = ResendIntervalMs?.Value ?? 200;

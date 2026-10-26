@@ -4,6 +4,7 @@ using HarmonyLib;
 using Protocol;
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using HideAndSeek.Features.Vision;
 using GamePlayer = Server.Game.Player;
 
@@ -113,7 +114,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(SkillComponent __instance, int targetId)
             {
-                if (ModeRuntime.Bypass)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
                     return;
 
                 var owner = __instance?.Owner;
@@ -150,6 +151,9 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPrefix]
             private static bool Prefix(SkillComponent __instance)
             {
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
+                    return true;
+
                 int pending = _pendingFreezePid;
                 if (pending < 0)
                     return true;                      // 不是我们接管的，走原版
@@ -196,7 +200,8 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(GameRoom __instance)
             {
-                if (ModeRuntime.Bypass || FrozenCd.Count == 0 || __instance?.Players == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras
+                    || FrozenCd.Count == 0 || __instance?.Players == null)
                     return;
                 if (__instance.State != EGameState.Survive)
                     return;
@@ -255,7 +260,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(GamePlayer __instance, GamePlayer __0)
             {
-                if (ModeRuntime.Bypass || __instance?.PublicInfo == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras || __instance?.PublicInfo == null)
                     return;
 
                 int deadPid = __instance.PublicInfo.PlayerId;
@@ -495,7 +500,8 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix(GamePlayer __instance)
             {
-                if (ModeRuntime.Bypass || TraceUntil.Count == 0 || __instance?.PublicInfo == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras
+                    || TraceUntil.Count == 0 || __instance?.PublicInfo == null)
                     return;
 
                 int targetPid = __instance.PublicInfo.PlayerId;
@@ -530,7 +536,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPostfix]
             private static void Postfix()
             {
-                if (ModeRuntime.Bypass || MarkedBy.Count == 0)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras || MarkedBy.Count == 0)
                     return;
 
                 var room = GameRoom.Instance;

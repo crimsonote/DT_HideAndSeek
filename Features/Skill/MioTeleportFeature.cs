@@ -7,6 +7,7 @@ using Protocol;
 using Server;          // ObjectUtils（CreateItem）在这里，不在 Server.Game
 using Server.Game;
 using HideAndSeek.Core;
+using HideAndSeek.Features.Rule;
 using GameDeviceManager = Server.Game.DeviceManager;   // AGENTS 坑 #1：同名类必须显式限定
 using GamePlayer = Server.Game.Player;
 using GameRoom = Server.Game.GameRoom;
@@ -364,7 +365,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPriority(Priority.Last)]
             private static void Prefix(ref int secondAfter, Action action)
             {
-                if (ModeRuntime.Bypass)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
                     return;
 
                 var sc = action != null ? action.Target as GameSkill : null;
@@ -400,7 +401,7 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPrefix]
             private static bool Prefix(GameSkill __instance)
             {
-                if (ModeRuntime.Bypass)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras)
                     return true;
                 if (!IsMarionette(__instance))
                     return true;
@@ -601,7 +602,8 @@ namespace HideAndSeek.Features.Skill
             private static void Prefix(GameSkill __instance, out bool __state)
             {
                 __state = false;
-                if (ModeRuntime.Bypass || __instance == null || __instance.Owner == null)
+                if (ModeRuntime.Bypass || TraditionalModeFeature.BanSkillExtras
+                    || __instance == null || __instance.Owner == null)
                     return;
                 if (!IsMarionette(__instance))
                     return;
@@ -763,6 +765,9 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session)
             {
+                if (TraditionalModeFeature.BanSkillExtras)
+                    return true;
+
                 var player = InSodaWindow(session);
                 if (player == null)
                     return true;
@@ -784,6 +789,9 @@ namespace HideAndSeek.Features.Skill
             [HarmonyPrefix]
             private static bool Prefix(IPacketSink session)
             {
+                if (TraditionalModeFeature.BanSkillExtras)
+                    return true;
+
                 var player = InSodaWindow(session);
                 if (player == null)
                     return true;
