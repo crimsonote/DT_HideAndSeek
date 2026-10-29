@@ -4,8 +4,14 @@
 
 > 版本号来源：`HideAndSeek.csproj` 与 `Plugin.cs`（`verify.ps1` 会校验两者一致）。
 
-## 未发布
+## v1.5.1
 
+- fix(vision): 恢复美幸扫描实时段同钟判定 —— 合并时 `25fbb44` 被误撤，导致 `now >= live` 恒真、地图标记退回 1 Hz；实时段判定改用 `TimeManager.SurviveTime`，节流仍用 `realtimeSinceStartup`
+- feat(rule): 并入传统模式（黑方拿刀计数、白方冻结、等待期箭头/文本、提前结束等；默认关闭，由大厅设置开启）
+- feat(disguise): 并入物品伪装（实验，默认关闭；纯服务端 + 客户端状态欺骗，不含空壳旁观实验）
+- fix(replay): 并入回放剪影候选池只认本局参与者、自爆幕项圈触发帧补齐、第一帧 id 相关修复
+- feat(dtbridge): 适配 DT_Tools 2.0 标签与命令 `tags` 字段，修复分类登记静默回退
+- chore: 排除 BearDestroy（保留在 `feat/bear-destroy` 测试分支，未进本版本）
 - fix(system): 新增 `[AreaGuard]` —— 原版 `AreaManager.GetArea` 的网格查找**没有边界检查**（姊妹方法 `ValidPosition` 有、`ClampToMapBounds` 就在楼下，唯独它裸奔）。贴边（最左/最右一列）刀杀时，尸体构造函数自带的 ±100 朝向偏移会把探针位送到网格外 ⇒ `ArgumentOutOfRangeException: index` ⇒ 死亡回调被拦腰截断（半死）。Finalizer 只在异常路径上把坐标夹取到合法区域并吞掉异常，正常入参路径零改动
 - fix(combat): 新增 `[DeathGuard]` —— 原版 `Player.OnDead` 是一条**无 try/catch 的直线**，任何一步抛异常都会被外层 `JobTimer.Flush` 静静吞掉、只留下半应用的状态（S_DEAD 已发、尸体没建、`ExitPlayer` 没跑 ⇒ 人还在 `AlivePlayers`、系统按活人结算、不给学分）。Finalizer 确认「死到一半」后补完 `ExitPlayer` 尾部并吞掉异常，健康死亡零改动
 - fix(combat): KillLagComp 失败开放 + 自证日志 —— 实机日志见 9/9 次拦截全部「目标样本缺失」，旧兜底（当前位+MaxRange336）吞掉了 d=353~504 的合法刀（黑方体感=刀不到人）；改为拿不到可靠回退样本时 `return true` 交原版判定（**绝不比原版严**），并加 `History.Note` 一次性异常探针 + 放行/放弃/拒绝三向日志（样本数/时刻/断裂原因），下局即可自证根因
