@@ -39,6 +39,9 @@ namespace HideAndSeek.Features.Rule
         private static readonly FieldInfo MasterMindField =
             AccessTools.Field(typeof(Server.Game.GameRoom), "<MasterMind>k__BackingField");
 
+        // DT_Tools 的 MastermindWeight 也挂同一个 SetMasterMind：显式先跑，
+        // 最终结果由 Priority.Last 的 Postfix 归一，不依赖挂载顺序。
+        [HarmonyPriority(Priority.First)]
         [HarmonyPrefix]
         private static bool Prefix(GamePlayer player)
         {
@@ -49,17 +52,58 @@ namespace HideAndSeek.Features.Rule
             if (player != null && player.Color == EPlayerColor.Dark)
                 player.Color = EPlayerColor.White;
 
-            ClearMasterMind();
+            ClearMasterMind(Server.Game.GameRoom.Instance);
             Plugin.Log.LogInfo("[HS] NoMasterMind：已跳过黑幕分配，该玩家保持白方（并清空 MasterMind）。");
             return false;
         }
 
+        /// <summary>
+        /// 在所有 Prefix 之后做最终归一。
+        /// </summary>
+        /// <remarks>
+        /// Harmony 2.2 起，Prefix 返回 false 只跳过原方法体，<b>不会再阻止其它 Prefix</b>。
+        /// DT_Tools 的 MastermindWeight 同样挂 <c>SetMasterMind</c>，且会把全员重设成 White、
+        /// 再把选中者设成 Dark；若它排在本类之后执行，就会出现「有人是 Dark，但 MasterMind
+        /// 已被清空」的半分配状态。Prefix 里改一次只能处理它之前的补丁，无法覆盖这种顺序，
+        /// 所以必须用 <c>Priority.Last</c> 的 Postfix 在所有 Prefix 结束后再收口一次。
+        /// </remarks>
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(Server.Game.GameRoom room)
+        {
+            if (ModeRuntime.Bypass || room == null)
+                return;
+
+            bool corrected = false;
+            var players = room.Players;
+            if (players != null)
+            {
+                for (int i = 0; i < players.Count; i++)
+                {
+                    var p = players[i];
+                    if (p != null && p.Color == EPlayerColor.Dark)
+                    {
+                        p.Color = EPlayerColor.White;
+                        corrected = true;
+                    }
+                }
+            }
+
+            ClearMasterMind(room);
+
+            if (corrected)
+            {
+                Diagnostics.Hit("NoMasterMind");
+                Plugin.Log.LogInfo(
+                    "[HS] NoMasterMind：检测到之后执行的补丁重新分配了黑幕，已在最终归一阶段撤销。");
+            }
+        }
+
         /// <summary>把 `GameRoom.MasterMind` 置 null（绕开 setter，避免递归进本 Prefix）。</summary>
-        private static void ClearMasterMind()
+        private static void ClearMasterMind(Server.Game.GameRoom room)
         {
             try
             {
-                var room = Server.Game.GameRoom.Instance;
                 if (room != null && MasterMindField != null && MasterMindField.GetValue(room) != null)
                     MasterMindField.SetValue(room, null);
             }

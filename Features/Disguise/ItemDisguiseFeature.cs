@@ -475,6 +475,9 @@ namespace HideAndSeek.Features.Disguise
         [HarmonyPatch(typeof(GameDeviceManager), nameof(GameDeviceManager.HandleEvent))]
         internal static class DeviceEventHook
         {
+            // 与 DT_Tools 的 Fusebox 同点 Prefix：伪装者必须先被本模块挡下，
+            // 否则上游先处理设备事件时可能已经触发交互。显式钉住，不依赖挂载顺序。
+            [HarmonyPriority(Priority.First)]
             [HarmonyPrefix]
             private static bool Prefix(GamePlayer player)
             {

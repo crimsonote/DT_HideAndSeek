@@ -108,6 +108,47 @@ namespace HideAndSeek.Features.Skill
             private static void Postfix() => ResetState();
         }
 
+        /// <summary>
+        /// 回合初始化完成后，纠正「技能是 Teleport，但服务端仍记成不可用」的状态。
+        /// </summary>
+        /// <remarks>
+        /// 原版 <c>Player.GameStart</c> 用 <c>SkillComponent.IsActive()</c> 写
+        /// <c>CanUseSkill</c>（0.1.18 :178860）。该值依赖 <c>SkillComponent.Data</c>
+        /// 已经由选角流程分配；房主本机的选角下发与 <c>GameRoom.GameStart</c> 存在时序差时，
+        /// 会留下 <c>CanUseSkill=false</c>，而之后的 <c>AllocateSkill</c> 只同步技能类型与
+        /// SkillState，不会把它改回来 ⇒ 诺艾尔整局按技能无反应，服务端也收不到 C_USE_SKILL。
+        /// 这里在 <c>GameRoom.GameStart</c> 返回后（所有玩家初始化完毕）只修正 Teleport，
+        /// 不影响其他技能、冷却或传统模式冻结（那些都在回合开始之后才发生）。
+        /// </remarks>
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.GameStart))]
+        internal static class RoundStartSkillReadyHook
+        {
+            [HarmonyPostfix]
+            private static void Postfix(GameRoom __instance)
+            {
+                if (ModeRuntime.Bypass || __instance?.Players == null)
+                    return;
+
+                var players = __instance.Players;
+                for (int i = 0; i < players.Count; i++)
+                {
+                    var p = players[i];
+                    if (p?.PublicInfo == null || p.SkillComponent?.Data == null)
+                        continue;
+                    if (p.SkillComponent.Data.Type != ESkillType.Teleport)
+                        continue;
+                    if (!p.IsAlive || p.IsSpectator || p.CanUseSkill)
+                        continue;
+
+                    // setter 会经 SendCanUseSkill（0.1.18 :178500-178501）同步客户端。
+                    p.CanUseSkill = true;
+                    Plugin.Log.LogInfo(
+                        $"[HS] TeleportGuard：回合开始修正 #{p.PublicInfo.PlayerId} 的黑洞可用状态"
+                        + "（原版 GameStart 读到尚未分配完成的技能数据）。");
+                }
+            }
+        }
+
         // ── L3：落点改写 ────────────────────────────────────────────
         [HarmonyPatch(typeof(GameSkill), "TryGetSafeLandingPos")]
         internal static class LandingHook
