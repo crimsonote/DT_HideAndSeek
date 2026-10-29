@@ -447,6 +447,18 @@ t=1~3s   静止段：SendSnapshotPins 用**快照位置**继续重发 → 标记
 t=3s     发删除哨兵 → pin 消失
 ```
 
+> ⚠️ **2026-10-09 修复：实时段判定曾被"时钟混用"整个吃掉。**
+> `MoveResendHook` 里用 `Time.realtimeSinceStartup`（启动至今，>数千）去比 `LiveUntil`，
+> 而 `LiveUntil` / `MarkerUntil` / `UnlockUntil` / `NextScanAt` 都是 `TickHook` 用
+> `TimeManager.SurviveTime`（**每局 `ResetSurvival` 回 420** 的 int/秒）写进去的
+> ⇒ `now >= live` **恒真** ⇒ 重发被 `continue` 全部吃掉，地图上的点只剩 1 Hz 的
+> `SurvivalTick` 在动。**实机表现**：实时段也只有一秒一跳、移动包看起来没用
+> （`ShowSelfOnRadar` 把自己画进去自测，同样一秒一跳）。
+> 现在实时段判定改用同一个时钟（`surviveNow = TimeManager.Instance?.SurviveTime`），
+> **节流**仍用 `realtimeSinceStartup` —— 同一方法里这两个时钟**不能合并**
+> （节流必须单调且跨局不复位，见 `docs/事实索引.md` 里相邻两条）。
+> 修复后**尚未实机验证**。
+
 **为什么静止段还要重发**：客户端 pin 有存活时间，不重发就会提前消失
 （实测现象："1 秒刚过白点就没了"）。所以用快照位置重发 —— 既保活，又保持静止，
 这就是需求里的"停留两秒"。这也是 `PinSnapshot` 的全部用途。
@@ -645,6 +657,22 @@ MigrateInt/Float/Bool(section, key, oldDefault, newDefault)
   —— `complete=false` ⇒ 回调永不执行 ⇒ **解锁永久丢失**。
 - 原版还有一条后路是"下一次换阶段"（`UIManager.<EndLoading>b__31_0` `:38652`）；但本玩法
   **禁用了报告尸体** ⇒ 侦探/审判阶段不再发生 ⇒ 那条后路被拉远到结算/回大厅，症状就成了"卡到本局结束"。
+
+**⚠ 已知未修（2026-10-08 复核）：本补丁只补回「解锁」，补不回 HUD** —— 被同一个 `Kill(false)` 取消的还有第二件事：
+
+- 那条死亡回调其实做**两件**事：`CanControl = true`（`:61050`）与 `BroadcastSceneEvent(ShowUI)`（`:61054`，
+  带 `state != TotalResult && != Lobby` 守卫）—— 后者是把 `Dead()` 那次 `HideAll`（`:28972`）收掉的 HUD 放回来。
+- 本补丁走的 `UIManager.<EndLoading>b__31_0`（`:38650-38673`）只置 `CanControl`；而 `ShowUI` 要靠
+  `GameManagerEX.State` setter 触发 `StartState`，那条 setter 自带 `_state != value` 守卫（`:28716`）
+  ⇒ **发同一个状态不会重跑** ⇒ HUD 要等下一次**真正**换阶段才回来
+  （表现为"人能动了，但倒计时之类的局内 HUD 不在"）。
+- **服务端无路**：`ShowUI` 是客户端本地场景事件，全程序只有 6 处产生点
+  （`:29011 StartState` / `:29173` / `:29197` / `:32142 RecordManager.Stop` / `:44661 回放播放` /
+  `:42071 Handle_S_ENTER_GAME` / `:61054 死亡回调`），逐一核过：`Handle_S_ENTER_GAME` 会**重建 `MyPlayer`**；
+  靠"假状态往返"则会踩 Lobby 的 `InitGame()`（把死者标成活的）与 Pick/Trial 的弹窗。
+- **不接受客户端补丁**：本模块是**房主端**模块（客人不装），改客户端只有房主自己那台生效，
+  对"在客人机器上死掉的人"零帮助 ⇒ 这一半**记为已知未修**，等官方修掉 `Kill(false)` 后自然消失。
+  （对照：DT_Tools 的同类修法之所以成立，是因为它的客户端补丁装在"装了 DT_Tools 的每台机器"上。）
 
 **本补丁做什么**：服务端**只对那一个人**补一次「当前阶段」刷新，让他重走原版每次换阶段都在走的那条路：
 
