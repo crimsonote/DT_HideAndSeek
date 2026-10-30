@@ -69,8 +69,11 @@ namespace HideAndSeek.Features.Rule
         /// </remarks>
         [HarmonyPostfix]
         [HarmonyPriority(Priority.Last)]
-        private static void Postfix(Server.Game.GameRoom room)
+        private static void Postfix(Server.Game.GameRoom __instance)
         {
+            // Harmony 的实例注入必须叫 __instance；写成 room 会被当成原方法参数，
+            // SetMasterMind 里找不到同名参数 ⇒ 整个功能补丁 IL 编译失败、静默跳过。
+            var room = __instance;
             if (ModeRuntime.Bypass || room == null)
                 return;
 
